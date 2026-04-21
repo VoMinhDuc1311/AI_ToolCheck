@@ -1,6 +1,8 @@
-spring:
-  application:
-    name: ai_toolcheck1_backend
-  
-  profiles:
-    active: dev
+
+  spring:
+    application:
+      name: ai_toolcheck1_backend
+
+    profiles:
+      active: dev
+
