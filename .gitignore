@@ -1,9 +1,58 @@
-HELP.md
+# ==========================================
+# 1. CÁC FILE XUẤT RA KHI BUILD (MẶC ĐỊNH)
+# ==========================================
 target/
-.mvn/wrapper/maven-wrapper.jar
+!.mvn/wrapper/maven-wrapper.jar
 !**/src/main/**/target/
 !**/src/test/**/target/
 
+# ==========================================
+# 2. XỬ LÝ FILE MARKDOWN (.md) (THEO YÊU CẦU CỦA BẠN)
+# ==========================================
+# Bỏ qua mặc định file HELP.md của Spring Boot
+HELP.md
+# Bỏ qua tất cả các file .md khác (ví dụ AI tự sinh ra báo cáo, document rác...)
+*.md
+# NGOẠI LỆ QUAN TRỌNG: LUÔN GIỮ LẠI file README.md để làm tài liệu hướng dẫn cho team
+!README.md
+
+# ==========================================
+# 3. BẢO MẬT & CẤU HÌNH MÔI TRƯỜNG (CỰC KỲ QUAN TRỌNG)
+# ==========================================
+# Tuyệt đối không đẩy các file chứa API Key (Gemini), DB Password lên Git
+.env
+.env.*
+application-secret.yml
+application-dev.yml
+application-local.yml
+*.properties.local
+
+# ==========================================
+# 4. THƯ MỤC CHẠY THỰC TẾ (RUNTIME & LOGS)
+# ==========================================
+# Bỏ qua thư mục chứa source code người dùng upload lên ở BƯỚC 1
+uploads/
+temp/
+# Bỏ qua các file ghi chú lỗi hệ thống
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ==========================================
+# 5. FILE RÁC CỦA HỆ ĐIỀU HÀNH
+# ==========================================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+$RECYCLE.BIN/
+
+# ==========================================
+# 6. FILE RÁC TỪ CÁC PHẦN MỀM LẬP TRÌNH (IDE)
+# ==========================================
 ### STS ###
 .apt_generated
 .classpath
@@ -18,6 +67,7 @@ target/
 *.iws
 *.iml
 *.ipr
+out/
 
 ### NetBeans ###
 /nbproject/private/
@@ -31,3 +81,4 @@ build/
 
 ### VS Code ###
 .vscode/
+*.code-workspace
