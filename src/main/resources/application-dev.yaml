@@ -1,42 +1,45 @@
-spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/ai_tool?useUnicode=true&characterEncoding=UTF-8&useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=Asia/Ho_Chi_Minh
-    username: root
-    password: ${MYSQL_PASSWORD:1234}
-    driver-class-name: com.mysql.cj.jdbc.Driver
-    
-    hikari:
-      connection-timeout: 20000
-      maximum-pool-size: 10
-      minimum-idle: 5
-      idle-timeout: 300000
 
-  jpa:
-    hibernate:
-      ddl-auto: update
-    show-sql: true
-    properties:
+  spring:
+    datasource:
+      url: ${DB_URL}
+      username: ${DB_USERNAME}
+      password: ${DB_PASSWORD}
+      driver-class-name: com.mysql.cj.jdbc.Driver
+
+      hikari:
+        connection-timeout: 30000
+        maximum-pool-size: 20
+        minimum-idle: 10
+        idle-timeout: 600000
+
+    jpa:
       hibernate:
-        dialect: org.hibernate.dialect.MySQL8Dialect
-        format_sql: true
+        ddl-auto: update
+      show-sql: false
+      open-in-view: false
+      properties:
+        hibernate:
+          format_sql: false
 
-server:
-  port: 8080
+  server:
+    port: ${SERVER_PORT:8080}
+    servlet:
+      context-path: /api
 
-springdoc:
-  api-docs:
-    path: /api-docs
-  swagger-ui:
-    path: /swagger-ui.html
-    operationsSorter: method
+  springdoc:
+    api-docs:
+      path: /api-docs
+    swagger-ui:
+      enabled: false
 
-ai:
-  gemini:
-    api-key: ${AI_GEMINI_API_KEY:AIzaSyDK9udrfHO-DdWwtILOyEqJQhKl7kj1-as}
+  ai:
+    gemini:
+      api-key: ${AI_GEMINI_API_KEY}
 
-logging:
-  level:
-    root: INFO
-    com.aitoolcheck: DEBUG
-  pattern:
-    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+  logging:
+    level:
+      root: WARN
+      com.aitoolcheck: INFO
+    pattern:
+      console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
