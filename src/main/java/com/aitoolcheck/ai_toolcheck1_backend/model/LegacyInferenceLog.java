@@ -25,7 +25,7 @@ public class LegacyInferenceLog {
     @Column(name = "confidence_score")
     private Integer confidenceScore;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)

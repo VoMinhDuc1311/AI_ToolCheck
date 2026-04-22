@@ -31,7 +31,7 @@ public class ApiSchemaField {
     @Column(name = "nullable_flag")
     private Boolean nullableFlag;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "api_schema_id", referencedColumnName = "id", nullable = false)

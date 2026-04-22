@@ -38,7 +38,6 @@ public class AiJobLog {
     @Enumerated(EnumType.STRING)
     private ExecutionStatus executionStatus;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)

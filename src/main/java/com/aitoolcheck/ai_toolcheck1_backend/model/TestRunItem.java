@@ -19,7 +19,7 @@ public class TestRunItem {
     @Column(name = "id", updatable = false, nullable = false)
     private UUID id;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     // This entity acts as the explicit join table for the test_run <-> test_case M-N
     @ManyToOne(fetch = FetchType.LAZY)
@@ -30,7 +30,7 @@ public class TestRunItem {
     @JoinColumn(name = "test_case_id", referencedColumnName = "id", nullable = false)
     private TestCase testCase;
 
-    // Inverse side: test_result holds the UNIQUE FK test_run_item_id
+
     @OneToOne(mappedBy = "testRunItem", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private TestResult testResult;
 }

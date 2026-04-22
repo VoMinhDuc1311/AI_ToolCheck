@@ -29,7 +29,7 @@ public class AiSkill {
     @Column(name = "description")
     private String description;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @OneToMany(mappedBy = "aiSkill", fetch = FetchType.LAZY)
     private List<AiJobLog> aiJobLogs;

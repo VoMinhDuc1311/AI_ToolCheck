@@ -1,0 +1,12 @@
+${AnsiStyle.BOLD}${AnsiColor.BRIGHT_CYAN}
+     █████╗ ██╗    ████████╗ ██████╗  ██████╗ ██╗
+    ██╔══██╗██║    ╚══██╔══╝██╔═══██╗██╔═══██╗██║
+    ███████║██║       ██║   ██║   ██║██║   ██║██║
+    ██╔══██║██║       ██║   ██║   ██║██║   ██║██║
+    ██║  ██║██║       ██║   ╚██████╔╝╚██████╔╝███████╗
+    ╚═╝  ╚═╝╚═╝       ╚═╝    ╚═════╝  ╚═════╝ ╚══════╝
+${AnsiStyle.RESET}
+${AnsiColor.BRIGHT_YELLOW}                    :: AI TOOL BACKEND ::${AnsiStyle.RESET}
+
+${AnsiColor.BRIGHT_GREEN}Application : ${spring.application.name}${AnsiStyle.RESET}
+${AnsiColor.BRIGHT_MAGENTA}Profile     : ${spring.profiles.active}${AnsiStyle.RESET}
