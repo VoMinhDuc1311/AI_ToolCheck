@@ -37,6 +37,9 @@ public class TestResult {
     @Column(name = "error_message")
     private String errorMessage;
 
+    @Column(name = "blocked_reason")
+    private String blockedReason;
+
     // ── Relationships ──────────────────────────────────────────────────────────
 
     // Owning side of the 1-1: holds the UNIQUE FK test_run_item_id

@@ -1,5 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BackendType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -31,10 +33,12 @@ public class SourceProject {
     private String description;
 
     @Column(name = "backend_type")
-    private String backendType;
+    @Enumerated(EnumType.STRING)
+    private BackendType backendType;
 
     @Column(name = "status")
-    private String status;
+    @Enumerated(EnumType.STRING)
+    private ProjectStatus status;
 
     @Column(name = "created_at")
     private LocalDateTime createdAt;

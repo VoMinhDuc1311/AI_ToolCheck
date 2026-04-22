@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.SchemaType;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -24,7 +25,8 @@ public class ApiSchema {
     private String schemaName;
 
     @Column(name = "schema_type")
-    private String schemaType;
+    @Enumerated(EnumType.STRING)
+    private SchemaType schemaType;
 
     @Column(name = "description")
     private String description;

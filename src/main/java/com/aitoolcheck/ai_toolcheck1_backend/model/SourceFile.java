@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.FileType;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -34,7 +35,8 @@ public class SourceFile {
     private String className;
 
     @Column(name = "file_type")
-    private String fileType;
+    @Enumerated(EnumType.STRING)
+    private FileType fileType;
 
     @Column(name = "checksum_sha256")
     private String checksumSha256;
