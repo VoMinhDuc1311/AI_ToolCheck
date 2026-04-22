@@ -44,6 +44,12 @@ public class TestCase {
     @Column(name = "active_flag")
     private Boolean activeFlag;
 
+    @Column(name = "requires_write")
+    private Boolean requiresWrite;
+
+    @Column(name = "cleanup_required")
+    private Boolean cleanupRequired;
+
     // ── Relationships ──────────────────────────────────────────────────────────
 
     @ManyToOne(fetch = FetchType.LAZY)

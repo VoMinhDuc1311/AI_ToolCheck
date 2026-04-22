@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -21,7 +22,8 @@ public class AiJobLog {
     private UUID id;
 
     @Column(name = "job_type")
-    private String jobType;
+    @Enumerated(EnumType.STRING)
+    private JobType jobType;
 
     @Column(name = "model_name")
     private String modelName;
