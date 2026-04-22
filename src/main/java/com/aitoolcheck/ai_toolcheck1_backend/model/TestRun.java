@@ -1,5 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import jakarta.persistence.*;
 import lombok.*;
@@ -25,7 +27,12 @@ public class TestRun {
     private String runCode;
 
     @Column(name = "environment_name")
-    private String environmentName;
+    @Enumerated(EnumType.STRING)
+    private EnvironmentType environmentName;
+
+    @Column(name = "execution_mode")
+    @Enumerated(EnumType.STRING)
+    private ExecutionMode executionMode;
 
     @Column(name = "base_url")
     private String baseUrl;

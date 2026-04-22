@@ -4,6 +4,7 @@ public enum ParamIn {
     PATH,
     QUERY,
     HEADER,
-    COOKIE,
-    BODY
+    BODY,
+    FORM,
+    COOKIE
 }

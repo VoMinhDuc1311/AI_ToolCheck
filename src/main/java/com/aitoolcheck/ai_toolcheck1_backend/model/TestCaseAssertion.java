@@ -1,5 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.AssertionType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ComparisonOperator;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -20,13 +22,15 @@ public class TestCaseAssertion {
     private UUID id;
 
     @Column(name = "assertion_type")
-    private String assertionType;
+    @Enumerated(EnumType.STRING)
+    private AssertionType assertionType;
 
     @Column(name = "target_path")
     private String targetPath;
 
     @Column(name = "operator")
-    private String operator;
+    @Enumerated(EnumType.STRING)
+    private ComparisonOperator operator;
 
     @Column(name = "expected_value")
     private String expectedValue;
