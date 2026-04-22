@@ -41,7 +41,7 @@ public class ApiDocumentVersion {
     @Column(name = "ai_enriched_flag")
     private Boolean aiEnrichedFlag;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "api_document_id", referencedColumnName = "id", nullable = false)

@@ -40,9 +40,8 @@ public class TestResult {
     @Column(name = "blocked_reason")
     private String blockedReason;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
 
-    // Owning side of the 1-1: holds the UNIQUE FK test_run_item_id
+
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "test_run_item_id", referencedColumnName = "id", unique = true, nullable = false)
     private TestRunItem testRunItem;

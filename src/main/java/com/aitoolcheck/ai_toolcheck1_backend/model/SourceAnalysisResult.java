@@ -36,9 +36,6 @@ public class SourceAnalysisResult {
     @Column(name = "ai_recommended")
     private Boolean aiRecommended;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
-
-    // Owning side of the 1-1: holds the FK column project_id (UNIQUE)
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", unique = true, nullable = false)
     private SourceProject sourceProject;

@@ -50,7 +50,7 @@ public class TestCase {
     @Column(name = "cleanup_required")
     private Boolean cleanupRequired;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)

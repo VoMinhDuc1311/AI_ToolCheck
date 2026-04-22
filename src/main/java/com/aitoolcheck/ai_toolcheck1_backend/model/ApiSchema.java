@@ -34,7 +34,7 @@ public class ApiSchema {
     @Column(name = "version_no")
     private Integer versionNo;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)

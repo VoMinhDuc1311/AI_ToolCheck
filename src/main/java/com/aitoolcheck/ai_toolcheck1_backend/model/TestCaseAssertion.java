@@ -35,7 +35,7 @@ public class TestCaseAssertion {
     @Column(name = "expected_value")
     private String expectedValue;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "test_case_id", referencedColumnName = "id", nullable = false)
