@@ -1,6 +1,11 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.common.res;
 
-import lombok.*;
+
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
 
 import java.time.LocalDateTime;
 @Getter
