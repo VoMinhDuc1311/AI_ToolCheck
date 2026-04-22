@@ -46,7 +46,7 @@ public class SourceProject {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @OneToOne(mappedBy = "sourceProject", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private SourceAnalysisResult sourceAnalysisResult;

@@ -53,7 +53,7 @@ public class ApiEndpoint {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)
@@ -66,7 +66,7 @@ public class ApiEndpoint {
     @OneToMany(mappedBy = "apiEndpoint", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private List<ApiParameter> apiParameters;
 
-    // Inverse side of the 1-1: api_document holds the UNIQUE FK
+
     @OneToOne(mappedBy = "apiEndpoint", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private ApiDocument apiDocument;
 

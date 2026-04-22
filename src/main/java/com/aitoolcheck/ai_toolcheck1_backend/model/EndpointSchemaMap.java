@@ -24,9 +24,6 @@ public class EndpointSchemaMap {
     @Enumerated(EnumType.STRING)
     private UsageType usageType;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
-
-    // This entity acts as the explicit join table for the api_endpoint <-> api_schema M-N
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "api_endpoint_id", referencedColumnName = "id", nullable = false)
     private ApiEndpoint apiEndpoint;

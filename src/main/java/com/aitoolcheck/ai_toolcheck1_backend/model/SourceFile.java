@@ -50,7 +50,7 @@ public class SourceFile {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)

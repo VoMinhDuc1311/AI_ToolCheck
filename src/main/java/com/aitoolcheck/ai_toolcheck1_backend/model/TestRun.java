@@ -41,7 +41,7 @@ public class TestRun {
     @Enumerated(EnumType.STRING)
     private RunStatus runStatus;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
+
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)

@@ -26,9 +26,8 @@ public class ApiDocument {
     @Column(name = "published_flag")
     private Boolean publishedFlag;
 
-    // ── Relationships ──────────────────────────────────────────────────────────
 
-    // Owning side of the 1-1: holds the UNIQUE FK api_endpoint_id
+
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "api_endpoint_id", referencedColumnName = "id", unique = true, nullable = false)
     private ApiEndpoint apiEndpoint;
