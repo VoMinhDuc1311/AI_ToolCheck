@@ -1,4 +1,25 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.req;
 
+import java.util.UUID;
+
+import com.aitoolcheck.ai_toolcheck1_backend.enums.FileType;
+import lombok.AllArgsConstructor;
+import lombok.Builder;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import lombok.Setter;
+
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
 public class CreateSourceFileRequest {
+
+    private UUID projectId;
+    private String filePath;
+    private String fileName;
+    private String packageName;
+    private String className;
+    private FileType fileType;
 }
