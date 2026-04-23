@@ -5,6 +5,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateSourceP
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
@@ -22,17 +24,15 @@ public class SourceProjectServiceImpl implements SourceProjectService {
 
     @Override
     public SourceProjectDetailResponse create(CreateSourceProjectRequest request) {
-        validateCreateRequest(request);
-
         String projectKey = request.getProjectKey().trim();
         String projectName = request.getProjectName().trim();
 
         if (sourceProjectRepository.existsByProjectKey(projectKey)) {
-            throw new RuntimeException("Project key already exists");
+            throw new BadRequestException("Project key already exists");
         }
 
         if (sourceProjectRepository.existsByProjectName(projectName)) {
-            throw new RuntimeException("Project name already exists");
+            throw new BadRequestException("Project name already exists");
         }
 
         SourceProject sourceProject = SourceProject.builder()
@@ -50,7 +50,7 @@ public class SourceProjectServiceImpl implements SourceProjectService {
     @Override
     public SourceProjectDetailResponse getById(UUID id) {
         SourceProject sourceProject = sourceProjectRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Source project not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + id));
 
         return mapToDetailResponse(sourceProject);
     }
@@ -65,15 +65,13 @@ public class SourceProjectServiceImpl implements SourceProjectService {
 
     @Override
     public SourceProjectDetailResponse update(UUID id, UpdateSourceProjectRequest request) {
-        validateUpdateRequest(request);
-
         SourceProject sourceProject = sourceProjectRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Source project not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + id));
 
         String projectName = request.getProjectName().trim();
 
         if (sourceProjectRepository.existsByProjectNameAndIdNot(projectName, id)) {
-            throw new RuntimeException("Project name already exists");
+            throw new BadRequestException("Project name already exists");
         }
 
         sourceProject.setProjectName(projectName);
@@ -88,65 +86,9 @@ public class SourceProjectServiceImpl implements SourceProjectService {
     @Override
     public void delete(UUID id) {
         SourceProject sourceProject = sourceProjectRepository.findById(id)
-                .orElseThrow(() -> new RuntimeException("Source project not found with id: " + id));
+                .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + id));
 
         sourceProjectRepository.delete(sourceProject);
-    }
-
-    private void validateCreateRequest(CreateSourceProjectRequest request) {
-        if (request == null) {
-            throw new RuntimeException("Create request must not be null");
-        }
-
-        if (isBlank(request.getProjectKey())) {
-            throw new RuntimeException("projectKey must not be blank");
-        }
-
-        if (request.getProjectKey().trim().length() > 100) {
-            throw new RuntimeException("projectKey must be at most 100 characters");
-        }
-
-        if (isBlank(request.getProjectName())) {
-            throw new RuntimeException("projectName must not be blank");
-        }
-
-        if (request.getProjectName().trim().length() > 255) {
-            throw new RuntimeException("projectName must be at most 255 characters");
-        }
-
-        if (request.getDescription() != null && request.getDescription().trim().length() > 1000) {
-            throw new RuntimeException("description must be at most 1000 characters");
-        }
-
-        if (request.getBackendType() == null) {
-            throw new RuntimeException("backendType must not be null");
-        }
-    }
-
-    private void validateUpdateRequest(UpdateSourceProjectRequest request) {
-        if (request == null) {
-            throw new RuntimeException("Update request must not be null");
-        }
-
-        if (isBlank(request.getProjectName())) {
-            throw new RuntimeException("projectName must not be blank");
-        }
-
-        if (request.getProjectName().trim().length() > 255) {
-            throw new RuntimeException("projectName must be at most 255 characters");
-        }
-
-        if (request.getDescription() != null && request.getDescription().trim().length() > 1000) {
-            throw new RuntimeException("description must be at most 1000 characters");
-        }
-
-        if (request.getBackendType() == null) {
-            throw new RuntimeException("backendType must not be null");
-        }
-
-        if (request.getStatus() == null) {
-            throw new RuntimeException("status must not be null");
-        }
     }
 
     private SourceProjectResponse mapToResponse(SourceProject sourceProject) {
@@ -173,15 +115,10 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .build();
     }
 
-    private boolean isBlank(String value) {
-        return value == null || value.trim().isEmpty();
-    }
-
     private String trimToNull(String value) {
         if (value == null) {
             return null;
         }
-
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
     }

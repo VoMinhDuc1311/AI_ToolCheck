@@ -5,6 +5,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateSourceP
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -21,7 +22,7 @@ public class SourceProjectController {
     private final SourceProjectService sourceProjectService;
 
     @PostMapping
-    public ResponseEntity<SourceProjectDetailResponse> create(@RequestBody CreateSourceProjectRequest request) {
+    public ResponseEntity<SourceProjectDetailResponse> create(@Valid @RequestBody CreateSourceProjectRequest request) {
         SourceProjectDetailResponse response = sourceProjectService.create(request);
         return new ResponseEntity<>(response, HttpStatus.CREATED);
     }
@@ -41,7 +42,7 @@ public class SourceProjectController {
     @PutMapping("/{id}")
     public ResponseEntity<SourceProjectDetailResponse> update(
             @PathVariable UUID id,
-            @RequestBody UpdateSourceProjectRequest request
+            @Valid @RequestBody UpdateSourceProjectRequest request
     ) {
         SourceProjectDetailResponse response = sourceProjectService.update(id, request);
         return ResponseEntity.ok(response);
