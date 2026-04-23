@@ -46,8 +46,6 @@ public class SourceProject {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-
-
     @OneToOne(mappedBy = "sourceProject", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private SourceAnalysisResult sourceAnalysisResult;
 
@@ -71,4 +69,16 @@ public class SourceProject {
 
     @OneToMany(mappedBy = "sourceProject", fetch = FetchType.LAZY)
     private List<LegacyInferenceLog> legacyInferenceLogs;
+
+    @PrePersist
+    public void prePersist() {
+        LocalDateTime now = LocalDateTime.now();
+        this.createdAt = now;
+        this.updatedAt = now;
+    }
+
+    @PreUpdate
+    public void preUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
 }
