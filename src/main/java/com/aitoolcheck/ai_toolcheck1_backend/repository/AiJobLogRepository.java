@@ -1,4 +1,11 @@
 package com.aitoolcheck.ai_toolcheck1_backend.repository;
 
-public interface AiJobLogRepository {
+import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.stereotype.Repository;
+
+import java.util.UUID;
+
+@Repository
+public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
 }
