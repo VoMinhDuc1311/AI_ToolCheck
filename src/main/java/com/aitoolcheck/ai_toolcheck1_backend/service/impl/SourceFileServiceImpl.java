@@ -12,6 +12,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
+import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -39,6 +40,7 @@ public class SourceFileServiceImpl implements SourceFileService {
     private final SourceProjectRepository sourceProjectRepository;
 
     @Override
+    @Transactional
     public SourceFileUploadResponse uploadZip(UUID projectId, MultipartFile file) {
         validateZipFile(file);
 
@@ -195,6 +197,14 @@ public class SourceFileServiceImpl implements SourceFileService {
         }
     }
 
+    private String readSourceContent(Path javaFile) {
+        try {
+            return Files.readString(javaFile);
+        } catch (IOException e) {
+            throw new BadRequestException("Failed to read source content for file: " + javaFile.getFileName());
+        }
+    }
+
     private SourceFile mapToSourceFile(Path javaFile, Path extractDir, SourceProject sourceProject) {
         Path relativePath = extractDir.relativize(javaFile);
         String fileName = javaFile.getFileName().toString();
@@ -206,6 +216,7 @@ public class SourceFileServiceImpl implements SourceFileService {
                 .className(extractClassName(fileName))
                 .fileType(detectFileType(relativePath, fileName))
                 .checksumSha256(calculateSha256(javaFile))
+                .sourceContent(readSourceContent(javaFile))
                 .parsedFlag(Boolean.FALSE)
                 .sourceProject(sourceProject)
                 .build();
