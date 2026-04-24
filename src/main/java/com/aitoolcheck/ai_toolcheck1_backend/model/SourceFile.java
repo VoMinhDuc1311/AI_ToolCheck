@@ -61,4 +61,16 @@ public class SourceFile {
 
     @OneToMany(mappedBy = "sourceFile", fetch = FetchType.LAZY)
     private List<LegacyInferenceLog> legacyInferenceLogs;
+
+    @PrePersist
+    public void prePersist() {
+        LocalDateTime now = LocalDateTime.now();
+        this.createdAt = now;
+        this.updatedAt = now;
+    }
+
+    @PreUpdate
+    public void preUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
 }
