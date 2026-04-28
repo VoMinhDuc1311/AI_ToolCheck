@@ -48,6 +48,9 @@ public class SourceFile {
     @Column(name = "parsed_flag")
     private Boolean parsedFlag;
 
+    @Column(name = "parse_error", length = 1000)
+    private String parseError;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
