@@ -12,8 +12,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
-import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
@@ -218,6 +218,7 @@ public class SourceFileServiceImpl implements SourceFileService {
                 .checksumSha256(calculateSha256(javaFile))
                 .sourceContent(readSourceContent(javaFile))
                 .parsedFlag(Boolean.FALSE)
+                .parseError(null)
                 .sourceProject(sourceProject)
                 .build();
     }
@@ -293,6 +294,7 @@ public class SourceFileServiceImpl implements SourceFileService {
                 .filePath(sourceFile.getFilePath())
                 .fileType(sourceFile.getFileType())
                 .parsedFlag(sourceFile.getParsedFlag())
+                .parseError(sourceFile.getParseError())
                 .build();
     }
 
@@ -307,6 +309,7 @@ public class SourceFileServiceImpl implements SourceFileService {
                 .fileType(sourceFile.getFileType())
                 .checksumSha256(sourceFile.getChecksumSha256())
                 .parsedFlag(sourceFile.getParsedFlag())
+                .parseError(sourceFile.getParseError())
                 .createdAt(sourceFile.getCreatedAt())
                 .updatedAt(sourceFile.getUpdatedAt())
                 .build();

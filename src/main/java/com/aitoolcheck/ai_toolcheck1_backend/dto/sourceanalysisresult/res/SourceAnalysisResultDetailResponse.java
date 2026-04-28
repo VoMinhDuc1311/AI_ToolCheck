@@ -24,4 +24,10 @@ public class SourceAnalysisResultDetailResponse {
     private Integer structureScore;
     private Boolean parserRecommended;
     private Boolean aiRecommended;
+    private Integer totalFiles;
+    private Integer analyzableFiles;
+    private Integer parsedSuccessFiles;
+    private Integer parsedFailedFiles;
+    private Double parseSuccessRate;
+    private String summary;
 }

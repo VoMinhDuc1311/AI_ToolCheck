@@ -36,6 +36,24 @@ public class SourceAnalysisResult {
     @Column(name = "ai_recommended")
     private Boolean aiRecommended;
 
+    @Column(name = "total_files")
+    private Integer totalFiles;
+
+    @Column(name = "analyzable_files")
+    private Integer analyzableFiles;
+
+    @Column(name = "parsed_success_files")
+    private Integer parsedSuccessFiles;
+
+    @Column(name = "parsed_failed_files")
+    private Integer parsedFailedFiles;
+
+    @Column(name = "parse_success_rate")
+    private Double parseSuccessRate;
+
+    @Column(name = "summary", length = 1000)
+    private String summary;
+
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", unique = true, nullable = false)
     private SourceProject sourceProject;

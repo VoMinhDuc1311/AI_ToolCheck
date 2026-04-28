@@ -16,16 +16,22 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.expr.AnnotationExpr;
-import jakarta.transaction.Transactional;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultService {
+
+    private static final int MAX_PARSE_ERROR_LENGTH = 1000;
 
     private final SourceAnalysisResultRepository sourceAnalysisResultRepository;
     private final SourceFileRepository sourceFileRepository;
@@ -51,79 +57,24 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
             throw new BadRequestException("No source content found for project id: " + projectId);
         }
 
-        int parsedSuccess = 0;
-        int parsedFailed = 0;
-
-        int restControllerCount = 0;
-        int controllerCount = 0;
-        int serviceCount = 0;
-        int repositoryCount = 0;
-        int entityCount = 0;
-        int tableCount = 0;
-        int requestMappingCount = 0;
-        int getMappingCount = 0;
-        int postMappingCount = 0;
-        int putMappingCount = 0;
-        int deleteMappingCount = 0;
-        int autowiredCount = 0;
-
-        for (SourceFile sourceFile : analyzableFiles) {
-            try {
-                CompilationUnit compilationUnit = StaticJavaParser.parse(sourceFile.getSourceContent());
-
-                List<AnnotationExpr> annotations = compilationUnit.findAll(AnnotationExpr.class);
-
-                for (AnnotationExpr annotation : annotations) {
-                    String name = annotation.getNameAsString();
-
-                    switch (name) {
-                        case "RestController" -> restControllerCount++;
-                        case "Controller" -> controllerCount++;
-                        case "Service" -> serviceCount++;
-                        case "Repository" -> repositoryCount++;
-                        case "Entity" -> entityCount++;
-                        case "Table" -> tableCount++;
-                        case "RequestMapping" -> requestMappingCount++;
-                        case "GetMapping" -> getMappingCount++;
-                        case "PostMapping" -> postMappingCount++;
-                        case "PutMapping" -> putMappingCount++;
-                        case "DeleteMapping" -> deleteMappingCount++;
-                        case "Autowired" -> autowiredCount++;
-                    }
-                }
-
-                sourceFile.setParsedFlag(Boolean.TRUE);
-                parsedSuccess++;
-
-            } catch (Exception e) {
-                sourceFile.setParsedFlag(Boolean.FALSE);
-                parsedFailed++;
-            }
-        }
-
+        AnalysisSignals signals = analyzeFiles(projectId, analyzableFiles);
         sourceFileRepository.saveAll(analyzableFiles);
 
-        int annotationScore = calculateAnnotationScore(
-                restControllerCount,
-                controllerCount,
-                serviceCount,
-                repositoryCount,
-                entityCount,
-                tableCount,
-                requestMappingCount,
-                getMappingCount,
-                postMappingCount,
-                putMappingCount,
-                deleteMappingCount,
-                autowiredCount
+        double parseSuccessRate = calculateRate(signals.parsedSuccessFiles(), analyzableFiles.size());
+        int annotationScore = calculateAnnotationScore(signals);
+        int structureScore = calculateStructureScore(analyzableFiles, parseSuccessRate);
+
+        SourceStyle sourceStyle = determineSourceStyle(parseSuccessRate, annotationScore, structureScore);
+        boolean parserRecommended = determineParserRecommended(parseSuccessRate, annotationScore, structureScore);
+        boolean aiRecommended = determineAiRecommended(
+                sourceStyle,
+                parseSuccessRate,
+                annotationScore,
+                structureScore,
+                signals.parsedFailedFiles(),
+                analyzableFiles.size()
         );
-
-        int structureScore = calculateStructureScore(analyzableFiles, parsedSuccess, parsedFailed);
-
-        SourceStyle sourceStyle = determineSourceStyle(annotationScore, structureScore, parsedSuccess, parsedFailed);
-
-        boolean parserRecommended = determineParserRecommended(annotationScore, structureScore, parsedSuccess, parsedFailed);
-        boolean aiRecommended = !parserRecommended;
+        String summary = buildSummary(sourceStyle, parserRecommended, aiRecommended);
 
         SourceAnalysisResult analysisResult = sourceAnalysisResultRepository.findBySourceProjectId(projectId)
                 .orElse(SourceAnalysisResult.builder()
@@ -135,6 +86,12 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         analysisResult.setStructureScore(structureScore);
         analysisResult.setParserRecommended(parserRecommended);
         analysisResult.setAiRecommended(aiRecommended);
+        analysisResult.setTotalFiles(sourceFiles.size());
+        analysisResult.setAnalyzableFiles(analyzableFiles.size());
+        analysisResult.setParsedSuccessFiles(signals.parsedSuccessFiles());
+        analysisResult.setParsedFailedFiles(signals.parsedFailedFiles());
+        analysisResult.setParseSuccessRate(parseSuccessRate);
+        analysisResult.setSummary(summary);
 
         SourceAnalysisResult savedResult = sourceAnalysisResultRepository.save(analysisResult);
 
@@ -156,32 +113,94 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         return mapToDetailResponse(result);
     }
 
-    private int calculateAnnotationScore(
-            int restControllerCount,
-            int controllerCount,
-            int serviceCount,
-            int repositoryCount,
-            int entityCount,
-            int tableCount,
-            int requestMappingCount,
-            int getMappingCount,
-            int postMappingCount,
-            int putMappingCount,
-            int deleteMappingCount,
-            int autowiredCount
-    ) {
+    private AnalysisSignals analyzeFiles(UUID projectId, List<SourceFile> analyzableFiles) {
+        AnalysisSignals signals = new AnalysisSignals();
+
+        for (SourceFile sourceFile : analyzableFiles) {
+            try {
+                CompilationUnit compilationUnit = StaticJavaParser.parse(sourceFile.getSourceContent());
+                List<String> annotationNames = compilationUnit.findAll(AnnotationExpr.class)
+                        .stream()
+                        .map(AnnotationExpr::getNameAsString)
+                        .toList();
+
+                signals.accept(annotationNames);
+                updateFileTypeFromAnnotations(sourceFile, annotationNames);
+
+                sourceFile.setParsedFlag(Boolean.TRUE);
+                sourceFile.setParseError(null);
+                signals.incrementParsedSuccessFiles();
+            } catch (Exception e) {
+                String parseError = shorten(e.getMessage());
+                sourceFile.setParsedFlag(Boolean.FALSE);
+                sourceFile.setParseError(parseError);
+                signals.incrementParsedFailedFiles();
+
+                log.warn(
+                        "JavaParser failed. projectId={}, sourceFileId={}, fileName={}, filePath={}, reason={}",
+                        projectId,
+                        sourceFile.getId(),
+                        sourceFile.getFileName(),
+                        sourceFile.getFilePath(),
+                        parseError
+                );
+            }
+        }
+
+        return signals;
+    }
+
+    private void updateFileTypeFromAnnotations(SourceFile sourceFile, List<String> annotationNames) {
+        if (hasAny(annotationNames, "RestController", "Controller")) {
+            sourceFile.setFileType(FileType.CONTROLLER);
+            return;
+        }
+        if (hasAny(annotationNames, "Service")) {
+            sourceFile.setFileType(FileType.SERVICE);
+            return;
+        }
+        if (hasAny(annotationNames, "Repository")) {
+            sourceFile.setFileType(FileType.REPOSITORY);
+            return;
+        }
+        if (hasAny(annotationNames, "Entity", "Table")) {
+            sourceFile.setFileType(FileType.ENTITY);
+            return;
+        }
+        if (hasAny(annotationNames, "Configuration")) {
+            sourceFile.setFileType(FileType.CONFIG);
+        }
+    }
+
+    private int calculateAnnotationScore(AnalysisSignals signals) {
         int score = 0;
-        score += (restControllerCount + controllerCount) * 15;
-        score += (requestMappingCount + getMappingCount + postMappingCount + putMappingCount + deleteMappingCount) * 10;
-        score += serviceCount * 5;
-        score += repositoryCount * 5;
-        score += entityCount * 5;
-        score += tableCount * 5;
-        score += autowiredCount * 2;
+
+        if (signals.hasControllerAnnotation()) {
+            score += 25;
+        }
+        if (signals.hasMappingAnnotation()) {
+            score += 30;
+        }
+        if (signals.hasServiceAnnotation()) {
+            score += 10;
+        }
+        if (signals.hasRepositoryAnnotation()) {
+            score += 10;
+        }
+        if (signals.hasEntityAnnotation()) {
+            score += 10;
+        }
+        if (signals.hasDependencyInjectionAnnotation()) {
+            score += 5;
+        }
+        if (signals.annotationGroups().size() >= 3) {
+            score += 10;
+        }
+
         return Math.min(score, 100);
     }
 
-    private int calculateStructureScore(List<SourceFile> files, int parsedSuccess, int parsedFailed) {
+    private int calculateStructureScore(List<SourceFile> files, double parseSuccessRate) {
         int score = 0;
 
         boolean hasController = files.stream().anyMatch(file -> file.getFileType() == FileType.CONTROLLER);
@@ -200,43 +219,54 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
                 .filter(file -> file.getPackageName() != null && !file.getPackageName().isBlank())
                 .count();
 
-        if (!files.isEmpty()) {
-            double packageRate = (double) packageCount / files.size();
-            if (packageRate >= 0.7) {
-                score += 10;
-            }
+        double packageRate = calculateRate((int) packageCount, files.size());
+        if (packageRate >= 0.70) {
+            score += 10;
         }
 
-        int total = parsedSuccess + parsedFailed;
-        if (total > 0) {
-            double parseSuccessRate = (double) parsedSuccess / total;
-            if (parseSuccessRate >= 0.8) {
-                score += 15;
-            }
+        if (parseSuccessRate >= 0.80) {
+            score += 15;
         }
 
         return Math.min(score, 100);
     }
 
-    private SourceStyle determineSourceStyle(int annotationScore, int structureScore, int parsedSuccess, int parsedFailed) {
-        int total = parsedSuccess + parsedFailed;
-        double parseSuccessRate = total == 0 ? 0 : (double) parsedSuccess / total;
-
-        if (parseSuccessRate >= 0.7 && (annotationScore >= 30 || structureScore >= 50)) {
+    private SourceStyle determineSourceStyle(double parseSuccessRate, int annotationScore, int structureScore) {
+        if (parseSuccessRate >= 0.70 && annotationScore >= 50 && structureScore >= 50) {
             return SourceStyle.MODERN;
         }
-
         return SourceStyle.LEGACY;
     }
 
-    private boolean determineParserRecommended(int annotationScore, int structureScore, int parsedSuccess, int parsedFailed) {
-        int total = parsedSuccess + parsedFailed;
-        if (total == 0) {
-            return false;
-        }
+    private boolean determineParserRecommended(double parseSuccessRate, int annotationScore, int structureScore) {
+        return parseSuccessRate >= 0.70 && annotationScore >= 50 && structureScore >= 50;
+    }
 
-        double parseSuccessRate = (double) parsedSuccess / total;
-        return parseSuccessRate >= 0.7 && (annotationScore >= 25 || structureScore >= 50);
+    private boolean determineAiRecommended(
+            SourceStyle sourceStyle,
+            double parseSuccessRate,
+            int annotationScore,
+            int structureScore,
+            int parsedFailedFiles,
+            int analyzableFiles
+    ) {
+        double parseFailureRate = calculateRate(parsedFailedFiles, analyzableFiles);
+
+        return parseSuccessRate < 0.70
+                || annotationScore < 40
+                || structureScore < 40
+                || sourceStyle == SourceStyle.LEGACY
+                || (parsedFailedFiles > 0 && parseFailureRate >= 0.20);
+    }
+
+    private String buildSummary(SourceStyle sourceStyle, boolean parserRecommended, boolean aiRecommended) {
+        if (sourceStyle == SourceStyle.MODERN && parserRecommended && !aiRecommended) {
+            return "Modern Spring project. Parser recommended because annotation and structure scores are high.";
+        }
+        if (sourceStyle == SourceStyle.MODERN && parserRecommended) {
+            return "Modern Spring project with mixed parse confidence. Parser can be used, but AI fallback is also recommended.";
+        }
+        return "Legacy or weakly structured project. AI fallback recommended because parse success rate or scores are low.";
     }
 
     private SourceAnalysisResultDetailResponse mapToDetailResponse(SourceAnalysisResult result) {
@@ -248,6 +278,132 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
                 .structureScore(result.getStructureScore())
                 .parserRecommended(result.getParserRecommended())
                 .aiRecommended(result.getAiRecommended())
+                .totalFiles(result.getTotalFiles())
+                .analyzableFiles(result.getAnalyzableFiles())
+                .parsedSuccessFiles(result.getParsedSuccessFiles())
+                .parsedFailedFiles(result.getParsedFailedFiles())
+                .parseSuccessRate(result.getParseSuccessRate())
+                .summary(result.getSummary())
                 .build();
+    }
+
+    private boolean hasAny(List<String> annotationNames, String... candidates) {
+        for (String candidate : candidates) {
+            if (annotationNames.contains(candidate)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private double calculateRate(int numerator, int denominator) {
+        if (denominator <= 0) {
+            return 0.0;
+        }
+        return (double) numerator / denominator;
+    }
+
+    private String shorten(String message) {
+        String normalized = (message == null || message.isBlank())
+                ? "Unknown parse error"
+                : message.replace('\n', ' ').replace('\r', ' ').trim();
+
+        if (normalized.length() <= MAX_PARSE_ERROR_LENGTH) {
+            return normalized;
+        }
+        return normalized.substring(0, MAX_PARSE_ERROR_LENGTH);
+    }
+
+    private static class AnalysisSignals {
+
+        private int parsedSuccessFiles;
+        private int parsedFailedFiles;
+        private boolean hasControllerAnnotation;
+        private boolean hasMappingAnnotation;
+        private boolean hasServiceAnnotation;
+        private boolean hasRepositoryAnnotation;
+        private boolean hasEntityAnnotation;
+        private boolean hasDependencyInjectionAnnotation;
+        private final Set<String> annotationGroups = new HashSet<>();
+
+        void accept(List<String> annotationNames) {
+            if (containsAny(annotationNames, "RestController", "Controller")) {
+                hasControllerAnnotation = true;
+                annotationGroups.add("controller");
+            }
+            if (containsAny(annotationNames, "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping")) {
+                hasMappingAnnotation = true;
+                annotationGroups.add("mapping");
+            }
+            if (containsAny(annotationNames, "Service")) {
+                hasServiceAnnotation = true;
+                annotationGroups.add("service");
+            }
+            if (containsAny(annotationNames, "Repository")) {
+                hasRepositoryAnnotation = true;
+                annotationGroups.add("repository");
+            }
+            if (containsAny(annotationNames, "Entity", "Table")) {
+                hasEntityAnnotation = true;
+                annotationGroups.add("entity");
+            }
+            if (containsAny(annotationNames, "Autowired", "RequiredArgsConstructor", "AllArgsConstructor")) {
+                hasDependencyInjectionAnnotation = true;
+                annotationGroups.add("dependencyInjection");
+            }
+        }
+
+        void incrementParsedSuccessFiles() {
+            parsedSuccessFiles++;
+        }
+
+        void incrementParsedFailedFiles() {
+            parsedFailedFiles++;
+        }
+
+        int parsedSuccessFiles() {
+            return parsedSuccessFiles;
+        }
+
+        int parsedFailedFiles() {
+            return parsedFailedFiles;
+        }
+
+        boolean hasControllerAnnotation() {
+            return hasControllerAnnotation;
+        }
+
+        boolean hasMappingAnnotation() {
+            return hasMappingAnnotation;
+        }
+
+        boolean hasServiceAnnotation() {
+            return hasServiceAnnotation;
+        }
+
+        boolean hasRepositoryAnnotation() {
+            return hasRepositoryAnnotation;
+        }
+
+        boolean hasEntityAnnotation() {
+            return hasEntityAnnotation;
+        }
+
+        boolean hasDependencyInjectionAnnotation() {
+            return hasDependencyInjectionAnnotation;
+        }
+
+        Set<String> annotationGroups() {
+            return annotationGroups;
+        }
+
+        private static boolean containsAny(List<String> annotationNames, String... candidates) {
+            for (String candidate : candidates) {
+                if (annotationNames.contains(candidate)) {
+                    return true;
+                }
+            }
+            return false;
+        }
     }
 }

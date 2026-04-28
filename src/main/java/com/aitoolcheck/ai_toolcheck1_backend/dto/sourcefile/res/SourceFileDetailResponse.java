@@ -20,6 +20,7 @@ public class SourceFileDetailResponse {
     private FileType fileType;
     private String checksumSha256;
     private Boolean parsedFlag;
+    private String parseError;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

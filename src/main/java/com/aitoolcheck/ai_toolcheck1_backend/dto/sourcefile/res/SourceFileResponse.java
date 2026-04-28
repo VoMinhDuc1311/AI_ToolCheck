@@ -21,4 +21,5 @@ public class SourceFileResponse {
     private String filePath;
     private FileType fileType;
     private Boolean parsedFlag;
+    private String parseError;
 }
