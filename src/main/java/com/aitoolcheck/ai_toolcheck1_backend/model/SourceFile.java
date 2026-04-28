@@ -41,6 +41,10 @@ public class SourceFile {
     @Column(name = "checksum_sha256")
     private String checksumSha256;
 
+    @Lob
+    @Column(name = "source_content", columnDefinition = "LONGTEXT")
+    private String sourceContent;
+
     @Column(name = "parsed_flag")
     private Boolean parsedFlag;
 

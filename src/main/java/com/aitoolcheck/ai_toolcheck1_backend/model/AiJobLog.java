@@ -5,6 +5,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Entity
@@ -37,6 +38,15 @@ public class AiJobLog {
     @Column(name = "execution_status")
     @Enumerated(EnumType.STRING)
     private ExecutionStatus executionStatus;
+
+    @Column(name = "started_at")
+    private LocalDateTime startedAt;
+
+    @Column(name = "completed_at")
+    private LocalDateTime completedAt;
+
+    @Column(name = "error_message", columnDefinition = "TEXT")
+    private String errorMessage;
 
 
     @ManyToOne(fetch = FetchType.LAZY)
