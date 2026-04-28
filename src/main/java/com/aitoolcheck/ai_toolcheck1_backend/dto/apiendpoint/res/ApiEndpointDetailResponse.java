@@ -4,16 +4,15 @@ import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
-import org.springframework.stereotype.Service;
+import lombok.Setter;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Getter
-@Service
+@Setter
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-
 public class ApiEndpointDetailResponse {
     private UUID id;
     private UUID projectId;
