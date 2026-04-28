@@ -1,6 +1,8 @@
 package com.aitoolcheck.ai_toolcheck1_backend.config;
 
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.netty.channel.ChannelOption;
 import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.handler.timeout.WriteTimeoutHandler;
@@ -19,62 +21,79 @@ import reactor.netty.resources.ConnectionProvider;
 import java.util.concurrent.TimeUnit;
 
 /**
- * WebClient Configuration for Google Gemini API
+ * Configuration for Google Gemini API Integrations
  *
- * Configures a non-blocking WebClient with:
- * - Custom timeout settings (Connection: 10s, Read/Write: 60s)
- * - Default headers (Content-Type, API Key)
- * - Connection pooling (Max 100 connections)
- * - Increased memory buffer for large AI responses (16MB)
+ * Configures:
+ * 1. A non-blocking WebClient with custom timeouts, headers, pooling, and 16MB
+ * buffer.
+ * 2. A global ObjectMapper configured to safely parse AI-generated JSON.
  */
 @Slf4j
 @Configuration
 @RequiredArgsConstructor
 public class GeminiWebClientConfig {
 
-    private final GeminiProperties geminiProperties;
+        private final GeminiProperties geminiProperties;
 
-    /**
-     * Creates a WebClient bean configured for Google Gemini API calls
-     *
-     * @return Configured WebClient bean
-     */
-    @Bean(name = "geminiWebClient")
-    public WebClient geminiWebClient() {
-        log.info("Initializing GeminiWebClient with base URL: {}", geminiProperties.getBaseUrl());
+        /**
+         * Creates a WebClient bean configured for Google Gemini API calls
+         *
+         * @return Configured WebClient bean
+         */
+        @Bean(name = "geminiWebClient")
+        public WebClient geminiWebClient() {
+                log.info("Initializing GeminiWebClient with base URL: {}", geminiProperties.getBaseUrl());
 
-        // Configure connection provider with pooling for performance optimization
-        ConnectionProvider connectionProvider = ConnectionProvider.builder("gemini-pool")
-                .maxConnections(100)
-                .maxIdleTime(java.time.Duration.ofSeconds(60))
-                .maxLifeTime(java.time.Duration.ofMinutes(30))
-                .pendingAcquireTimeout(java.time.Duration.ofSeconds(45))
-                .evictInBackground(java.time.Duration.ofSeconds(120))
-                .build();
+                // Configure connection provider with pooling for performance optimization
+                ConnectionProvider connectionProvider = ConnectionProvider.builder("gemini-pool")
+                                .maxConnections(100)
+                                .maxIdleTime(java.time.Duration.ofSeconds(60))
+                                .maxLifeTime(java.time.Duration.ofMinutes(30))
+                                .pendingAcquireTimeout(java.time.Duration.ofSeconds(45))
+                                .evictInBackground(java.time.Duration.ofSeconds(120))
+                                .build();
 
-        // Configure HttpClient with timeout handlers
-        // Removed the explicit .secure() block as Netty handles standard HTTPS automatically
-        HttpClient httpClient = HttpClient.create(connectionProvider)
-                // Connection timeout: 10 seconds
-                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10000)
-                // Read timeout: 60 seconds (AI generation can take time)
-                .responseTimeout(java.time.Duration.ofSeconds(60))
-                // Add read/write timeout handlers at TCP layer
-                .doOnConnected(connection -> {
-                    connection.addHandlerLast(new ReadTimeoutHandler(60, TimeUnit.SECONDS));
-                    connection.addHandlerLast(new WriteTimeoutHandler(60, TimeUnit.SECONDS));
-                });
+                // Configure HttpClient with timeout handlers
+                HttpClient httpClient = HttpClient.create(connectionProvider)
+                                // Connection timeout: 10 seconds
+                                .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10000)
+                                // Read timeout: 60 seconds (AI generation can take time)
+                                .responseTimeout(java.time.Duration.ofSeconds(60))
+                                // Add read/write timeout handlers at TCP layer
+                                .doOnConnected(connection -> {
+                                        connection.addHandlerLast(new ReadTimeoutHandler(60, TimeUnit.SECONDS));
+                                        connection.addHandlerLast(new WriteTimeoutHandler(60, TimeUnit.SECONDS));
+                                });
 
-        // Configure WebClient with custom HttpClient and exchange strategies
-        return WebClient.builder()
-                .baseUrl(geminiProperties.getBaseUrl())
-                .clientConnector(new ReactorClientHttpConnector(httpClient))
-                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
-                .defaultHeader("x-goog-api-key", geminiProperties.getApiKey())
-                // Optimize for large payloads (e.g., long text generation)
-                .exchangeStrategies(ExchangeStrategies.builder()
-                        .codecs(configurer -> configurer.defaultCodecs().maxInMemorySize(1024 * 1024 * 16)) // 16MB buffer
-                        .build())
-                .build();
-    }
+                // Configure WebClient with custom HttpClient and exchange strategies
+                return WebClient.builder()
+                                .baseUrl(geminiProperties.getBaseUrl())
+                                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                                .defaultHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON_VALUE)
+                                .defaultHeader("x-goog-api-key", geminiProperties.getApiKey())
+                                // Optimize for large payloads (e.g., long text generation)
+                                .exchangeStrategies(ExchangeStrategies.builder()
+                                                .codecs(configurer -> configurer.defaultCodecs()
+                                                                .maxInMemorySize(1024 * 1024 * 16)) // 16MB buffer
+                                                .build())
+                                .build();
+        }
+
+        /**
+         * Creates a globally available ObjectMapper bean.
+         * Configured specifically for parsing AI JSON safely without crashing the app.
+         *
+         * @return Configured ObjectMapper bean
+         */
+        @Bean
+        public ObjectMapper objectMapper() {
+                ObjectMapper mapper = new ObjectMapper();
+
+                // CRITICAL FOR AI: Ignore extra fields hallucinated by the model
+                // If the AI returns {"path": "/api", "unexpected_field": "xyz"}, it won't
+                // crash.
+                mapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+
+                return mapper;
+        }
 }
