@@ -1,13 +1,42 @@
 package com.aitoolcheck.ai_toolcheck1_backend.enums;
 
 public enum FileType {
+    APPLICATION,
+
     CONTROLLER,
     SERVICE,
+    SERVICE_IMPL,
     REPOSITORY,
+
     ENTITY,
-    DTO,
-    CONFIG,
-    UTIL,
     MODEL,
+    DTO,
+    REQUEST,
+    RESPONSE,
+
+    ENUM,
+    INTERFACE,
+    ANNOTATION,
+
+    CONFIG,
+    SECURITY,
+    FILTER,
+    INTERCEPTOR,
+
+    EXCEPTION,
+    EXCEPTION_HANDLER,
+
+    UTIL,
+    CONSTANT,
+    VALIDATOR,
+    MAPPER,
+
+    EVENT,
+    LISTENER,
+    SCHEDULER,
+    COMMAND,
+
+    TEST,
+
     UNKNOWN
 }

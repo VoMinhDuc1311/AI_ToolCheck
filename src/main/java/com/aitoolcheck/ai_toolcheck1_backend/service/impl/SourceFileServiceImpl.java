@@ -244,31 +244,73 @@ public class SourceFileServiceImpl implements SourceFileService {
     }
 
     private FileType detectFileType(Path relativePath, String fileName) {
-        String normalizedPath = relativePath.toString().replace("\\", "/").toLowerCase();
-        String normalizedFileName = fileName.toLowerCase();
+        String path = relativePath.toString().replace("\\", "/").toLowerCase();
+        String name = fileName == null ? "" : fileName.toLowerCase();
 
-        if (normalizedPath.contains("/controller/") || normalizedFileName.contains("controller")) {
+        if (path.startsWith("src/test/") || path.contains("/src/test/") || name.endsWith("test.java") || name.endsWith("tests.java")) {
+            return FileType.TEST;
+        }
+        if (name.endsWith("application.java")) {
+            return FileType.APPLICATION;
+        }
+        if (path.contains("/controller/") || name.contains("controller")) {
             return FileType.CONTROLLER;
         }
-        if (normalizedPath.contains("/service/") || normalizedFileName.contains("service")) {
+        if (path.contains("/service/impl/") || name.endsWith("serviceimpl.java")) {
+            return FileType.SERVICE_IMPL;
+        }
+        if (path.contains("/service/") || name.contains("service")) {
             return FileType.SERVICE;
         }
-        if (normalizedPath.contains("/repository/") || normalizedFileName.contains("repository")) {
+        if (path.contains("/repository/") || path.contains("/respository/") || name.contains("repository")) {
             return FileType.REPOSITORY;
         }
-        if (normalizedPath.contains("/entity/") || normalizedFileName.contains("entity")) {
+        if (path.contains("/entity/") || name.contains("entity")) {
             return FileType.ENTITY;
         }
-        if (normalizedPath.contains("/dto/") || normalizedFileName.contains("dto")) {
+        if (path.contains("/request/") || path.contains("/req/") || name.endsWith("request.java")) {
+            return FileType.REQUEST;
+        }
+        if (path.contains("/response/") || path.contains("/res/") || name.endsWith("response.java")) {
+            return FileType.RESPONSE;
+        }
+        if (path.contains("/dto/") || name.contains("dto")) {
             return FileType.DTO;
         }
-        if (normalizedPath.contains("/config/") || normalizedFileName.contains("config")) {
+        if (path.contains("/security/") || path.contains("/auth/") || name.contains("security") || name.contains("jwt") || name.contains("token")) {
+            return FileType.SECURITY;
+        }
+        if (name.contains("filter")) {
+            return FileType.FILTER;
+        }
+        if (name.contains("interceptor")) {
+            return FileType.INTERCEPTOR;
+        }
+        if (name.contains("exceptionhandler") || name.contains("advice")) {
+            return FileType.EXCEPTION_HANDLER;
+        }
+        if (name.contains("exception")) {
+            return FileType.EXCEPTION;
+        }
+        if (path.contains("/config/") || name.contains("config")) {
             return FileType.CONFIG;
         }
-        if (normalizedPath.contains("/util/") || normalizedFileName.contains("util")) {
+        if (path.contains("/enum/") || path.contains("/enums/")) {
+            return FileType.ENUM;
+        }
+        if (path.contains("/mapper/") || name.contains("mapper")) {
+            return FileType.MAPPER;
+        }
+        if (name.contains("validator")) {
+            return FileType.VALIDATOR;
+        }
+        if (name.contains("constant") || name.contains("constants") || name.contains("errorcode")) {
+            return FileType.CONSTANT;
+        }
+        if (path.contains("/util/") || path.contains("/utils/") || name.contains("util") || name.contains("helper")) {
             return FileType.UTIL;
         }
-        if (normalizedPath.contains("/model/") || normalizedFileName.contains("model")) {
+        if (path.contains("/model/")) {
             return FileType.MODEL;
         }
 
