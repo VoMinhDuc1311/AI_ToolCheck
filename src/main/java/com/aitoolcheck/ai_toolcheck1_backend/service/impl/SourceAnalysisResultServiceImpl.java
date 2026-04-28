@@ -15,6 +15,9 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.body.AnnotationDeclaration;
+import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
+import com.github.javaparser.ast.body.EnumDeclaration;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -125,7 +128,7 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
                         .toList();
 
                 signals.accept(annotationNames);
-                updateFileTypeFromAnnotations(sourceFile, annotationNames);
+                updateFileTypeFromParsedSource(sourceFile, compilationUnit, annotationNames);
 
                 sourceFile.setParsedFlag(Boolean.TRUE);
                 sourceFile.setParseError(null);
@@ -150,26 +153,129 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         return signals;
     }
 
-    private void updateFileTypeFromAnnotations(SourceFile sourceFile, List<String> annotationNames) {
-        if (hasAny(annotationNames, "RestController", "Controller")) {
-            sourceFile.setFileType(FileType.CONTROLLER);
-            return;
+    private void updateFileTypeFromParsedSource(
+            SourceFile sourceFile,
+            CompilationUnit compilationUnit,
+            List<String> annotationNames
+    ) {
+        FileType detectedType = detectFileTypeFromAst(sourceFile, compilationUnit, annotationNames);
+
+        if (detectedType != FileType.UNKNOWN) {
+            sourceFile.setFileType(detectedType);
         }
-        if (hasAny(annotationNames, "Service")) {
-            sourceFile.setFileType(FileType.SERVICE);
-            return;
+    }
+
+    private FileType detectFileTypeFromAst(
+            SourceFile sourceFile,
+            CompilationUnit compilationUnit,
+            List<String> annotationNames
+    ) {
+        String path = normalizedPath(sourceFile);
+        String name = normalizedName(sourceFile);
+        List<ClassOrInterfaceDeclaration> classes = compilationUnit.findAll(ClassOrInterfaceDeclaration.class);
+
+        if (hasAny(annotationNames, "SpringBootApplication")) {
+            return FileType.APPLICATION;
         }
-        if (hasAny(annotationNames, "Repository")) {
-            sourceFile.setFileType(FileType.REPOSITORY);
-            return;
+        if (hasAny(annotationNames, "RestController", "Controller", "RequestMapping", "GetMapping", "PostMapping", "PutMapping", "DeleteMapping", "PatchMapping")) {
+            return FileType.CONTROLLER;
         }
-        if (hasAny(annotationNames, "Entity", "Table")) {
-            sourceFile.setFileType(FileType.ENTITY);
-            return;
+        if (hasAny(annotationNames, "RestControllerAdvice", "ControllerAdvice", "ExceptionHandler")) {
+            return FileType.EXCEPTION_HANDLER;
         }
-        if (hasAny(annotationNames, "Configuration")) {
-            sourceFile.setFileType(FileType.CONFIG);
+        if (hasAny(annotationNames, "EnableWebSecurity", "PreAuthorize")
+                || path.contains("/security/")
+                || path.contains("/auth/")
+                || name.contains("security")
+                || name.contains("jwt")
+                || name.contains("token")) {
+            return FileType.SECURITY;
         }
+        if (extendsOrImplements(classes, "OncePerRequestFilter") || extendsOrImplements(classes, "Filter")) {
+            return FileType.FILTER;
+        }
+        if (extendsOrImplements(classes, "HandlerInterceptor")) {
+            return FileType.INTERCEPTOR;
+        }
+        if (path.contains("/service/impl/") || name.endsWith("serviceimpl.java")) {
+            return FileType.SERVICE_IMPL;
+        }
+        if (hasAny(annotationNames, "Service") || path.contains("/service/")) {
+            return FileType.SERVICE;
+        }
+        if (hasAny(annotationNames, "Repository")
+                || extendsOrImplements(classes, "JpaRepository")
+                || extendsOrImplements(classes, "CrudRepository")
+                || extendsOrImplements(classes, "PagingAndSortingRepository")
+                || extendsOrImplements(classes, "MongoRepository")
+                || path.contains("/repository/")
+                || path.contains("/respository/")
+                || name.contains("repository")) {
+            return FileType.REPOSITORY;
+        }
+        if (hasAny(annotationNames, "Entity", "Table", "MappedSuperclass", "Embeddable")) {
+            return FileType.ENTITY;
+        }
+        if (path.contains("/request/") || path.contains("/req/") || name.endsWith("request.java")) {
+            return FileType.REQUEST;
+        }
+        if (path.contains("/response/") || path.contains("/res/") || name.endsWith("response.java")) {
+            return FileType.RESPONSE;
+        }
+        if (path.contains("/dto/") || name.contains("dto")) {
+            return FileType.DTO;
+        }
+        if (!compilationUnit.findAll(EnumDeclaration.class).isEmpty()) {
+            return FileType.ENUM;
+        }
+        if (!compilationUnit.findAll(AnnotationDeclaration.class).isEmpty()) {
+            return FileType.ANNOTATION;
+        }
+        if (isInterfaceOnly(classes)) {
+            return FileType.INTERFACE;
+        }
+        if (hasAny(annotationNames, "Configuration", "Bean")) {
+            return FileType.CONFIG;
+        }
+        if (extendsOrImplements(classes, "ConstraintValidator") || name.contains("validator")) {
+            return FileType.VALIDATOR;
+        }
+        if (hasAny(annotationNames, "Mapper") || path.contains("/mapper/") || name.contains("mapper")) {
+            return FileType.MAPPER;
+        }
+        if (extendsOrImplements(classes, "RuntimeException") || extendsOrImplements(classes, "Exception")) {
+            return FileType.EXCEPTION;
+        }
+        if (hasAny(annotationNames, "Scheduled") || name.contains("scheduler") || name.contains("job") || name.contains("task")) {
+            return FileType.SCHEDULER;
+        }
+        if (hasAny(annotationNames, "EventListener") || name.contains("listener")) {
+            return FileType.LISTENER;
+        }
+        if (name.endsWith("event.java")) {
+            return FileType.EVENT;
+        }
+        if (extendsOrImplements(classes, "CommandLineRunner") || extendsOrImplements(classes, "ApplicationRunner")) {
+            return FileType.COMMAND;
+        }
+        if (name.contains("constant") || name.contains("constants") || name.contains("errorcode")) {
+            return FileType.CONSTANT;
+        }
+        if (path.contains("/util/") || path.contains("/utils/") || name.contains("util") || name.contains("helper")) {
+            return FileType.UTIL;
+        }
+        if (path.startsWith("src/test/")
+                || path.contains("/src/test/")
+                || name.endsWith("test.java")
+                || name.endsWith("tests.java")
+                || hasAny(annotationNames, "Test", "SpringBootTest", "WebMvcTest", "DataJpaTest")) {
+            return FileType.TEST;
+        }
+        if (path.contains("/model/")) {
+            return FileType.MODEL;
+        }
+
+        return FileType.UNKNOWN;
     }
 
     private int calculateAnnotationScore(AnalysisSignals signals) {
@@ -204,16 +310,20 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         int score = 0;
 
         boolean hasController = files.stream().anyMatch(file -> file.getFileType() == FileType.CONTROLLER);
-        boolean hasService = files.stream().anyMatch(file -> file.getFileType() == FileType.SERVICE);
+        boolean hasService = files.stream().anyMatch(file -> file.getFileType() == FileType.SERVICE || file.getFileType() == FileType.SERVICE_IMPL);
         boolean hasRepository = files.stream().anyMatch(file -> file.getFileType() == FileType.REPOSITORY);
         boolean hasModel = files.stream().anyMatch(file -> file.getFileType() == FileType.MODEL || file.getFileType() == FileType.ENTITY);
-        boolean hasDto = files.stream().anyMatch(file -> file.getFileType() == FileType.DTO);
+        boolean hasDto = files.stream().anyMatch(file -> file.getFileType() == FileType.DTO || file.getFileType() == FileType.REQUEST || file.getFileType() == FileType.RESPONSE);
+        boolean hasConfig = files.stream().anyMatch(file -> file.getFileType() == FileType.CONFIG || file.getFileType() == FileType.APPLICATION);
+        boolean hasEnum = files.stream().anyMatch(file -> file.getFileType() == FileType.ENUM);
 
         if (hasController) score += 20;
         if (hasService) score += 15;
         if (hasRepository) score += 15;
         if (hasModel) score += 15;
         if (hasDto) score += 10;
+        if (hasConfig) score += 5;
+        if (hasEnum) score += 5;
 
         long packageCount = files.stream()
                 .filter(file -> file.getPackageName() != null && !file.getPackageName().isBlank())
@@ -294,6 +404,31 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
             }
         }
         return false;
+    }
+
+    private boolean extendsOrImplements(List<ClassOrInterfaceDeclaration> classes, String typeName) {
+        return classes.stream().anyMatch(declaration ->
+                declaration.getExtendedTypes().stream().anyMatch(type -> type.getNameAsString().equals(typeName))
+                        || declaration.getImplementedTypes().stream().anyMatch(type -> type.getNameAsString().equals(typeName))
+        );
+    }
+
+    private boolean isInterfaceOnly(List<ClassOrInterfaceDeclaration> classes) {
+        return !classes.isEmpty() && classes.stream().allMatch(ClassOrInterfaceDeclaration::isInterface);
+    }
+
+    private String normalizedPath(SourceFile sourceFile) {
+        if (sourceFile.getFilePath() == null) {
+            return "";
+        }
+        return sourceFile.getFilePath().replace("\\", "/").toLowerCase();
+    }
+
+    private String normalizedName(SourceFile sourceFile) {
+        if (sourceFile.getFileName() == null) {
+            return "";
+        }
+        return sourceFile.getFileName().toLowerCase();
     }
 
     private double calculateRate(int numerator, int denominator) {
