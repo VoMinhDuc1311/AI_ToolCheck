@@ -43,47 +43,58 @@ public class AnalysisSignals {
         }
     }
 
-    public void incrementParsedSuccessFiles() {
+    public void incrementParsedSuccessFiles()
+    {
         parsedSuccessFiles++;
     }
 
-    public void incrementParsedFailedFiles() {
+    public void incrementParsedFailedFiles()
+    {
         parsedFailedFiles++;
     }
 
-    public int parsedSuccessFiles() {
+    public int parsedSuccessFiles()
+    {
         return parsedSuccessFiles;
     }
 
-    public int parsedFailedFiles() {
+    public int parsedFailedFiles()
+    {
         return parsedFailedFiles;
     }
 
-    public boolean hasControllerAnnotation() {
+    public boolean hasControllerAnnotation()
+    {
         return hasControllerAnnotation;
     }
 
-    public boolean hasMappingAnnotation() {
+    public boolean hasMappingAnnotation()
+    {
         return hasMappingAnnotation;
     }
 
-    public boolean hasServiceAnnotation() {
+    public boolean hasServiceAnnotation()
+    {
         return hasServiceAnnotation;
     }
 
-    public boolean hasRepositoryAnnotation() {
+    public boolean hasRepositoryAnnotation()
+    {
         return hasRepositoryAnnotation;
     }
 
-    public boolean hasEntityAnnotation() {
+    public boolean hasEntityAnnotation()
+    {
         return hasEntityAnnotation;
     }
 
-    public boolean hasDependencyInjectionAnnotation() {
+    public boolean hasDependencyInjectionAnnotation()
+    {
         return hasDependencyInjectionAnnotation;
     }
 
-    public Set<String> annotationGroups() {
+    public Set<String> annotationGroups()
+    {
         return annotationGroups;
     }
 
