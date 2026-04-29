@@ -3,6 +3,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.model;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -38,8 +39,18 @@ public class ApiDocumentVersion {
     @Column(name = "openapi_fragment_json", columnDefinition = "TEXT")
     private String openapiFragmentJson;
 
+    @Lob
+    @Column(name = "content_json", columnDefinition = "LONGTEXT")
+    private String contentJson;
+
     @Column(name = "ai_enriched_flag")
     private Boolean aiEnrichedFlag;
+
+    @Column(name = "created_at")
+    private LocalDateTime createdAt;
+
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
 
 
 
@@ -49,4 +60,19 @@ public class ApiDocumentVersion {
 
     @OneToMany(mappedBy = "apiDocumentVersion", fetch = FetchType.LAZY)
     private List<TestCase> testCases;
+
+    @PrePersist
+    public void prePersist() {
+        LocalDateTime now = LocalDateTime.now();
+        this.createdAt = now;
+        this.updatedAt = now;
+        if (this.aiEnrichedFlag == null) {
+            this.aiEnrichedFlag = false;
+        }
+    }
+
+    @PreUpdate
+    public void preUpdate() {
+        this.updatedAt = LocalDateTime.now();
+    }
 }
