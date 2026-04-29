@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
@@ -36,6 +37,8 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         AiJobLog jobLog = AiJobLog.builder()
                 .executionStatus(ExecutionStatus.PENDING)
                 .startedAt(LocalDateTime.now())
+                .jobType(JobType.LEGACY_INFERENCE) // Gán cứng loại Job
+                .modelName("gemini-1.5-flash")     // Gán tên model
                 .sourceProject(projectRef)   // ← Liên kết với SourceProject của Dev A
                 .build();
 

@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.model;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -49,18 +50,22 @@ public class AiJobLog {
     private String errorMessage;
 
 
+    @JsonIgnore  // Tránh LazyInitializationException khi Jackson serialize response
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)
     private SourceProject sourceProject;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "api_endpoint_id", referencedColumnName = "id")
     private ApiEndpoint apiEndpoint;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "test_result_id", referencedColumnName = "id")
     private TestResult testResult;
 
+    @JsonIgnore
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "ai_skill_id", referencedColumnName = "id")
     private AiSkill aiSkill;

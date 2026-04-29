@@ -369,8 +369,8 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                 generationConfig.put("responseMimeType", "application/json");
 
                 try {
-                        JsonNode schemaNode = objectMapper.readTree(JSON_SCHEMA);
-                        generationConfig.put("responseSchema", schemaNode);
+                        Map<String, Object> schemaMap = objectMapper.readValue(JSON_SCHEMA, Map.class);
+                        generationConfig.put("responseSchema", schemaMap);
                 } catch (Exception e) {
                         log.warn("Không parse được JSON_SCHEMA, tiếp tục chỉ dùng MIME Type: {}", e.getMessage());
                 }
