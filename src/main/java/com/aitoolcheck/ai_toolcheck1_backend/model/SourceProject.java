@@ -49,6 +49,9 @@ public class SourceProject {
     @OneToOne(mappedBy = "sourceProject", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private SourceAnalysisResult sourceAnalysisResult;
 
+    @OneToOne(mappedBy = "sourceProject", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
+    private ApiDocument apiDocument;
+
     @OneToMany(mappedBy = "sourceProject", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private List<SourceFile> sourceFiles;
 
