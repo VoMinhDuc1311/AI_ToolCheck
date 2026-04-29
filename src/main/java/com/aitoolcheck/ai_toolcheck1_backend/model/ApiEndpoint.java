@@ -67,8 +67,7 @@ public class ApiEndpoint {
     private List<ApiParameter> apiParameters;
 
 
-    @OneToOne(mappedBy = "apiEndpoint", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
-    private ApiDocument apiDocument;
+
 
     @OneToMany(mappedBy = "apiEndpoint", fetch = FetchType.LAZY)
     private List<TestCase> testCases;
