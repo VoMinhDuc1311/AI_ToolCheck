@@ -13,4 +13,10 @@ public class AiTaskMessage {
     private String jobId;
     private String promptText;
     private String skillCode;
+
+    /** UUID của SourceProject — dùng để ghi Audit Log (LegacyInferenceLog). */
+    private String projectId;
+
+    /** UUID của SourceFile — dùng để ghi Audit Log (nullable nếu không liên quan file cụ thể). */
+    private String sourceFileId;
 }

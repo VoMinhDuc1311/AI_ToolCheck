@@ -35,6 +35,9 @@ public class ApiEndpoint {
     @Column(name = "endpoint_path")
     private String endpointPath;
 
+    @Column(name = "description", columnDefinition = "TEXT")
+    private String description;
+
     @Column(name = "operation_id")
     private String operationId;
 

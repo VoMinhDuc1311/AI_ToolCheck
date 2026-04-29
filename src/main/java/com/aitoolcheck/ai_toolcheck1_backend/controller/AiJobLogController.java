@@ -38,8 +38,10 @@ public class AiJobLogController {
         
         // Gọi service tạo Job PENDING và ném vào queue
         AiJobLog savedJob = aiJobLogService.createPendingJobAndTriggerAi(
-                request.getPromptText(), 
-                request.getSkillCode()
+                request.getPromptText(),
+                request.getSkillCode(),
+                request.getProjectId(),
+                request.getSourceFileId()
         );
         
         log.info("Đã xử lý Trigger AI Job thành công. Job ID: {}", savedJob.getId());
