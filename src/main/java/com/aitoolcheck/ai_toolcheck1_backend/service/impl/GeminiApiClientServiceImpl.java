@@ -203,10 +203,10 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                         ObjectMapper objectMapper) {
                 this.webClient = webClient;
                 this.geminiProperties = geminiProperties;
-
-                // Cấu hình ObjectMapper chịu lỗi: bỏ qua field lạ nếu AI ảo giác sinh thêm
                 this.objectMapper = objectMapper;
-                this.objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+                // KHÔNG configure objectMapper global ở đây.
+                // AiJsonParserServiceImpl.mapToDto() dùng objectMapper.copy() để
+                // disable FAIL_ON_UNKNOWN_PROPERTIES an toàn, không mutate bean dùng chung.
         }
 
         // =========================================================================================
@@ -279,51 +279,76 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                                 .doOnError(e -> log.error("Ngoại lệ xảy ra trong quá trình gọi Gemini API: ", e));
         }
 
-        // =========================================================================================
-        // LOGIC MỚI: AI Skill 0 - Đọc code Legacy trả về DTO chuẩn (Dành cho xử lý chạy
-        // ngầm RabbitMQ)
-        // =========================================================================================
-        @Override
-        public AiInferenceResultDto extractLegacyApi(String sourceCode) {
-                try {
-                        log.info("Bắt đầu phân tích file source code (Độ dài: {} ký tự)", sourceCode.length());
+    // =========================================================================================
+    // LOGIC MỚI: AI Skill 0 - Đọc code Legacy trả về DTO chuẩn (Dành cho xử lý chạy
+    // ngầm RabbitMQ)
+    // =========================================================================================
 
-                        // 1. Build Payload với cấu hình JSON Mode và SCHEMAS
-                        Map<String, Object> payload = buildJsonModePayload(sourceCode);
-                        String uriPath = "/" + geminiProperties.getModel() + ":generateContent?key="
-                                        + geminiProperties.getApiKey();
+    /**
+     * [Task 3] Gọi Gemini API và trả về raw String chưa parse.
+     * Consumer sẽ gọi method này, sau đó đưa String vào AiJsonParserService.
+     * Tách bạch hoàn toàn: Gemini Client chỉ lo gọi HTTP, không tự parse.
+     */
+    @Override
+    public String getRawAiResponse(String sourceCode) {
+        try {
+            log.info("[GeminiClient] Bắt đầu gọi Gemini Skill 0 (Legacy Extractor) – độ dài source: {} ký tự",
+                     sourceCode.length());
 
-                        // 2. Gọi API & Xử lý lỗi/Retry
-                        String rawResponse = webClient.post()
-                                        .uri(uriPath)
-                                        .bodyValue(payload)
-                                        .retrieve()
-                                        .onStatus(status -> status.isSameCodeAs(HttpStatus.TOO_MANY_REQUESTS),
-                                                        resp -> resp.bodyToMono(String.class)
-                                                                        .flatMap(err -> Mono.error(new RuntimeException(
-                                                                                        "Rate Limit 429"))))
-                                        .onStatus(HttpStatusCode::isError, resp -> resp.bodyToMono(String.class)
-                                                        .flatMap(err -> Mono.error(
-                                                                        new RuntimeException("API Error: " + err))))
-                                        .bodyToMono(String.class)
-                                        .retryWhen(Retry.backoff(3, Duration.ofSeconds(2)))
-                                        .block(); // Chặn luồng vì method này sẽ được gọi từ Background Thread của
-                                                  // RabbitMQ
+            Map<String, Object> payload = buildJsonModePayload(sourceCode);
+            String uriPath = "/" + geminiProperties.getModel() + ":generateContent?key="
+                    + geminiProperties.getApiKey();
 
-                        // 3. Bóc lõi Text từ cục JSON tổng của Google
-                        String extractedText = extractTextFromGoogleResponse(rawResponse);
+            String rawGeminiResponse = webClient.post()
+                    .uri(uriPath)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .onStatus(status -> status.isSameCodeAs(HttpStatus.TOO_MANY_REQUESTS),
+                            resp -> resp.bodyToMono(String.class)
+                                    .flatMap(err -> Mono.error(new RuntimeException("Rate Limit 429: " + err))))
+                    .onStatus(HttpStatusCode::isError, resp -> resp.bodyToMono(String.class)
+                            .flatMap(err -> Mono.error(new RuntimeException("Gemini API Error: " + err))))
+                    .bodyToMono(String.class)
+                    .retryWhen(Retry.backoff(3, Duration.ofSeconds(2))
+                            .doBeforeRetry(s -> log.warn("[GeminiClient] Retry lần {}/3 – lý do: {}",
+                                    s.totalRetries() + 1, s.failure().getMessage())))
+                    .block();
 
-                        // 4. Regex Dọn rác (Cắt bỏ ```json ... ```)
-                        String cleanJsonString = cleanMarkdownBlocks(extractedText);
+            // Bóc lõi text từ cấu trúc JSON của Google (candidates[0].content.parts[0].text)
+            String extractedText = extractTextFromGoogleResponse(rawGeminiResponse);
+            log.info("[GeminiClient] Nhận phản hồi thô từ Gemini – độ dài: {} ký tự", extractedText.length());
+            return extractedText;
 
-                        // 5. Parse sang Java DTO
-                        return objectMapper.readValue(cleanJsonString, AiInferenceResultDto.class);
-
-                } catch (Exception e) {
-                        log.error("AI Skill 0 Inference Failed: {}", e.getMessage());
-                        throw new RuntimeException("Lỗi phân tích mã nguồn legacy: " + e.getMessage(), e);
-                }
+        } catch (Exception e) {
+            log.error("[GeminiClient] getRawAiResponse thất bại: {}", e.getMessage());
+            throw new RuntimeException("Lỗi gọi Gemini API (getRawAiResponse): " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * @deprecated Dùng getRawAiResponse() + AiJsonParserService.parseToDto() thay thế.
+     *             Giữ lại để tránh breaking change.
+     */
+    @Override
+    @Deprecated(since = "Task3", forRemoval = false)
+    public AiInferenceResultDto extractLegacyApi(String sourceCode) {
+        try {
+            log.info("Bắt đầu phân tích file source code (Độ dài: {} ký tự)", sourceCode.length());
+
+            // Delegate sang getRawAiResponse() thay vì duplicate HTTP logic
+            String extractedText = getRawAiResponse(sourceCode);
+
+            // Regex dọn rác (markdown fences)
+            String cleanJsonString = cleanMarkdownBlocks(extractedText);
+
+            // Parse sang Java DTO
+            return objectMapper.readValue(cleanJsonString, AiInferenceResultDto.class);
+
+        } catch (Exception e) {
+            log.error("AI Skill 0 Inference Failed: {}", e.getMessage());
+            throw new RuntimeException("Lỗi phân tích mã nguồn legacy: " + e.getMessage(), e);
+        }
+    }
 
         // --- CÁC HÀM TIỆN ÍCH (HELPER METHODS) ---
 

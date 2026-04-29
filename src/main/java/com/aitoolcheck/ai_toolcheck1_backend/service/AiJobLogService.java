@@ -2,6 +2,8 @@ package com.aitoolcheck.ai_toolcheck1_backend.service;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 
+import java.util.UUID;
+
 public interface AiJobLogService {
 
     /**
@@ -13,5 +15,6 @@ public interface AiJobLogService {
      * @param skillCode Mã kỹ năng (skill code) cần sử dụng
      * @return Đối tượng AiJobLog đã được lưu trong database với trạng thái PENDING
      */
-    AiJobLog createPendingJobAndTriggerAi(String promptText, String skillCode);
+    AiJobLog createPendingJobAndTriggerAi(String promptText, String skillCode,
+                                           UUID projectId, UUID sourceFileId);
 }

@@ -13,10 +13,29 @@ public interface GeminiApiClientService {
     Mono<String> sendPrompt(String promptText);
 
     /**
+     * Gọi Gemini với Skill 0 (Legacy Extractor) và trả về raw String chưa parse.
+     * <p>
+     * Đây là method được thiết kế để Consumer gọi — trả về text thô từ AI
+     * để sau đó đưa qua {@code AiJsonParserService} làm sạch và parse.
+     * Tách bạch hoàn toàn trách nhiệm: Gemini Client chỉ lo gọi API,
+     * không tự parse JSON.
+     * </p>
+     *
+     * @param sourceCode Mã nguồn Java cần phân tích.
+     * @return Chuỗi JSON thô từ Gemini (có thể còn chứa markdown hoặc text dư thừa).
+     */
+    String getRawAiResponse(String sourceCode);
+
+    /**
      * Phân tích mã nguồn legacy để trích xuất các API endpoints.
+     * <p>
+     * @deprecated Dùng {@link #getRawAiResponse(String)} thay thế để tách trách nhiệm parse.
+     * Giữ lại để tránh breaking change với các caller cũ.
+     * </p>
      *
      * @param sourceCode Mã nguồn cần phân tích.
      * @return AiInferenceResultDto chứa kết quả phân tích.
      */
+    @Deprecated(since = "Task3", forRemoval = false)
     AiInferenceResultDto extractLegacyApi(String sourceCode);
 }
