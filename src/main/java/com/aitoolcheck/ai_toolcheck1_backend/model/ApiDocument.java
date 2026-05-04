@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -24,8 +25,9 @@ public class ApiDocument {
     @Column(name = "document_name")
     private String documentName;
 
+    @Enumerated(EnumType.STRING)
     @Column(name = "document_type")
-    private String documentType;
+    private DocumentType documentType;
 
     @Column(name = "current_version_no")
     private Integer currentVersionNo;
@@ -38,8 +40,6 @@ public class ApiDocument {
 
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
-
-
 
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", unique = true, nullable = false)
@@ -60,7 +60,7 @@ public class ApiDocument {
             this.publishedFlag = false;
         }
         if (this.documentType == null) {
-            this.documentType = "OPENAPI_3";
+            this.documentType = DocumentType.OPENAPI_3;
         }
     }
 
