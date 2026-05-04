@@ -18,7 +18,7 @@ import java.util.UUID;
 
 @Slf4j
 @RestController
-@RequestMapping("/api/v1/ai-job-logs")
+@RequestMapping("/v1/ai-job-logs")
 @RequiredArgsConstructor
 public class AiJobLogController {
 
@@ -83,6 +83,25 @@ public class AiJobLogController {
                 .code("200")
                 .message("Success")
                 .data(responseDto)
+                .timestamp(LocalDateTime.now())
+                .build();
+                
+        return ResponseEntity.ok(response);
+    }
+
+    /**
+     * Endpoint lấy thống kê tổng hợp của AI Job Logs.
+     */
+    @GetMapping("/statistics")
+    public ResponseEntity<ApiResponse<com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse>> getJobStatistics() {
+        log.info("Nhận yêu cầu lấy thống kê AiJobLog");
+        
+        com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse stats = aiJobLogService.getJobStatistics();
+        
+        ApiResponse<com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse> response = ApiResponse.<com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse>builder()
+                .code("200")
+                .message("Success")
+                .data(stats)
                 .timestamp(LocalDateTime.now())
                 .build();
                 

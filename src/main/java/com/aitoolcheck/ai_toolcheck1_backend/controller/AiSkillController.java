@@ -14,7 +14,7 @@ import java.time.LocalDateTime;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/api/v1/ai-skills")
+@RequestMapping("/v1/ai-skills")
 @RequiredArgsConstructor
 public class AiSkillController {
 

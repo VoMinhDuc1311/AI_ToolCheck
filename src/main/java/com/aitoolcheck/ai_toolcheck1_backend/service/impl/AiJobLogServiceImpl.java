@@ -25,6 +25,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.UUID;
 
+import com.aitoolcheck.ai_toolcheck1_backend.repository.AiSkillRepository;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -34,6 +36,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     private final AiTaskProducer aiTaskProducer;
     private final SourceProjectRepository sourceProjectRepository;
     private final EntityManager entityManager;
+    private final AiSkillRepository aiSkillRepository;
 
     @Override
     @Transactional
@@ -41,12 +44,34 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                                                   UUID projectId, UUID sourceFileId) {
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
+        AiSkill aiSkill = aiSkillRepository.findBySkillCode(skillCode)
+                .orElseThrow(() -> new BadRequestException("SkillCode không hợp lệ: " + skillCode));
+
+        JobType jobType;
+        switch (skillCode.toLowerCase()) {
+            case "legacy_code_reader":
+                jobType = JobType.LEGACY_INFERENCE;
+                break;
+            case "enrich_api_doc":
+                jobType = JobType.DOCUMENT_ENRICHMENT;
+                break;
+            case "generate_testcases":
+                jobType = JobType.TEST_CASE_GENERATION;
+                break;
+            case "analyze_test_result":
+                jobType = JobType.FAILURE_ANALYSIS;
+                break;
+            default:
+                jobType = JobType.LEGACY_INFERENCE;
+        }
+
         AiJobLog jobLog = AiJobLog.builder()
                 .executionStatus(ExecutionStatus.PENDING)
                 .startedAt(LocalDateTime.now())
-                .jobType(JobType.LEGACY_INFERENCE)
+                .jobType(jobType)
                 .modelName("gemini-1.5-flash")
                 .sourceProject(projectRef)
+                .aiSkill(aiSkill)
                 .build();
 
         AiJobLog savedJob = aiJobLogRepository.save(jobLog);
@@ -61,8 +86,15 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .sourceFileId(sourceFileId != null ? sourceFileId.toString() : null)
                 .build();
 
-        aiTaskProducer.sendAiTask(message);
-        log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}]", savedJob.getId());
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+            new org.springframework.transaction.support.TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    aiTaskProducer.sendAiTask(message);
+                    log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}]", savedJob.getId());
+                }
+            }
+        );
 
         return mapToResponse(savedJob);
     }
@@ -120,6 +152,18 @@ public class AiJobLogServiceImpl implements AiJobLogService {
 
     @Override
     @Transactional
+    public void updateTokens(UUID id, Integer tokenInput, Integer tokenOutput) {
+        AiJobLog jobLog = aiJobLogRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
+
+        jobLog.setTokenInput(tokenInput);
+        jobLog.setTokenOutput(tokenOutput);
+        aiJobLogRepository.save(jobLog);
+        log.info("Job {} updated with tokens: Input={}, Output={}", id, tokenInput, tokenOutput);
+    }
+
+    @Override
+    @Transactional
     public void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
@@ -155,6 +199,24 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
         return mapToResponse(jobLog);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse getJobStatistics() {
+        long totalJobs = aiJobLogRepository.count();
+        long totalSuccessfulJobs = aiJobLogRepository.countByExecutionStatus(ExecutionStatus.SUCCESS);
+        long totalFailedJobs = aiJobLogRepository.countByExecutionStatus(ExecutionStatus.FAILED);
+        long totalTokenInput = aiJobLogRepository.sumTotalTokenInput();
+        long totalTokenOutput = aiJobLogRepository.sumTotalTokenOutput();
+
+        return com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse.builder()
+                .totalJobs(totalJobs)
+                .totalSuccessfulJobs(totalSuccessfulJobs)
+                .totalFailedJobs(totalFailedJobs)
+                .totalTokenInput(totalTokenInput)
+                .totalTokenOutput(totalTokenOutput)
+                .build();
     }
 
     private AiJobLogResponse mapToResponse(AiJobLog jobLog) {

@@ -52,9 +52,8 @@ public class AiTaskConsumer {
     private final AiTaskPersistenceService persistenceService;
     private final LegacyInferenceLogService legacyInferenceLogService;
     private final AiJobLogRepository aiJobLogRepository;
-    // ✅ Fix LazyInitializationException: dùng getReferenceById() từ projectId trong message
-    //    thay vì jobLog.getSourceProject() (lazy proxy, session đã đóng)
     private final SourceProjectRepository sourceProjectRepository;
+    private final com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService aiJobLogService;
 
     // =========================================================================
     // ENTRY POINT
@@ -66,45 +65,33 @@ public class AiTaskConsumer {
                  message.getJobId(), message.getSkillCode());
 
         AiJobLog jobLog = null;
-
-        // rawAiResponse khai báo ngoài try để catch FAILED có thể lấy và ghi Audit Log
         String rawAiResponse = null;
 
         try {
             jobLog = loadJobLog(message.getJobId());
-            updateJobStatus(jobLog, ExecutionStatus.RUNNING, null);
+            aiJobLogService.markJobAsRunning(jobLog.getId());
 
-            if ("SKILL_0".equalsIgnoreCase(message.getSkillCode())) {
-                rawAiResponse = executeSkill0(message, jobLog);
+            if ("legacy_code_reader".equalsIgnoreCase(message.getSkillCode()) || "SKILL_0".equalsIgnoreCase(message.getSkillCode())) {
+                rawAiResponse = executeLegacyCodeReader(message, jobLog);
             } else {
                 log.info("[RabbitMQ] SkillCode '{}' chưa hỗ trợ — bỏ qua.", message.getSkillCode());
+                aiJobLogService.markJobAsFailed(jobLog.getId(), "SkillCode chưa hỗ trợ: " + message.getSkillCode());
             }
-
-            updateJobStatus(jobLog, ExecutionStatus.SUCCESS, null);
-            log.info("[RabbitMQ] Hoàn thành JobId: {}", message.getJobId());
 
         } catch (AiJsonParseException jsonEx) {
-            // FALLBACK 1: AI trả rác / JSON sai / DTO thiếu trường
             String errorDetail = "[" + jsonEx.getErrorType() + "] " + jsonEx.getMessage();
-            log.warn("[RabbitMQ] AI Data Error — JobId: {}, Lý do: {}",
-                     message.getJobId(), errorDetail);
-
+            log.warn("[RabbitMQ] AI Data Error — JobId: {}, Lý do: {}", message.getJobId(), errorDetail);
+            
             if (jobLog != null) {
-                updateJobStatus(jobLog, ExecutionStatus.FAILED, errorDetail);
+                aiJobLogService.markJobAsFailed(jobLog.getId(), errorDetail);
             }
-
-            // Ghi Audit Log FAILED — lưu rawResponse làm bằng chứng AI ảo giác
             recordFailedAuditLog(message, rawAiResponse, jsonEx);
-            // KHÔNG throw — tránh RabbitMQ infinite loop
 
         } catch (Exception e) {
-            // FALLBACK 2: Lỗi mạng, timeout, lỗi DB
-            log.error("[RabbitMQ] System Error — JobId: {}, Lý do: {}",
-                      message.getJobId(), e.getMessage(), e);
+            log.error("[RabbitMQ] System Error — JobId: {}, Lý do: {}", message.getJobId(), e.getMessage(), e);
             if (jobLog != null) {
-                updateJobStatus(jobLog, ExecutionStatus.FAILED, "System Error: " + e.getMessage());
+                aiJobLogService.markJobAsFailed(jobLog.getId(), "System Error: " + e.getMessage());
             }
-            // KHÔNG throw — tránh RabbitMQ infinite loop
         }
     }
 
@@ -118,41 +105,47 @@ public class AiTaskConsumer {
      *
      * @return rawAiResponse — chuỗi thô từ Gemini, chưa qua Parser.
      */
-    private String executeSkill0(AiTaskMessage message, AiJobLog jobLog) {
-        log.info("[RabbitMQ][Skill0] Bắt đầu — độ dài source: {} ký tự",
+    private String executeLegacyCodeReader(AiTaskMessage message, AiJobLog jobLog) {
+        log.info("[RabbitMQ][LegacyCodeReader] Bắt đầu — độ dài source: {} ký tự",
                  message.getPromptText().length());
 
-        // Bước A: Gọi Gemini — chỉ lấy String thô, KHÔNG lock DB
-        String rawAiResponse = geminiApiClientService.getRawAiResponse(message.getPromptText());
+        com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse response = 
+                geminiApiClientService.getFullAiResponse(message.getPromptText());
+        
+        Integer tokenInput = 0;
+        Integer tokenOutput = 0;
+        if (response.getUsageMetadata() != null) {
+            tokenInput = response.getUsageMetadata().getPromptTokenCount() != null ? response.getUsageMetadata().getPromptTokenCount() : 0;
+            tokenOutput = response.getUsageMetadata().getCandidatesTokenCount() != null ? response.getUsageMetadata().getCandidatesTokenCount() : 0;
+        }
 
-        // Bước B: Tấm khiên Parser 6 Layer (Task 1 + Task 2)
+        // Cập nhật Token ngay lập tức vào DB để không bị thất thoát nếu Parser ném lỗi
+        aiJobLogService.updateTokens(jobLog.getId(), tokenInput, tokenOutput);
+
+        String rawAiResponse = response.extractText();
+
         String cleanJson = aiJsonParserService.extractAndSanitizeJson(rawAiResponse);
         AiInferenceResultDto result = aiJsonParserService.parseToDto(cleanJson);
 
-        // Bước C: Lưu DB + Audit Log SUCCESS (Transaction <100ms)
         UUID projectId    = parseUuidOrNull(message.getProjectId());
         UUID sourceFileId = parseUuidOrNull(message.getSourceFileId());
 
-        // ✅ getReferenceById() — không tốn SELECT, chỉ tạo Proxy với ID
-        //    Tránh hoàn toàn LazyInitializationException vì không đi qua jobLog.getSourceProject()
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
         persistenceService.persistLegacyInference(
                 projectRef,
                 sourceFileId,
-                rawAiResponse,   // Truyền raw để lưu vào Audit Log
+                rawAiResponse,
                 cleanJson,
                 result
         );
 
-        // Token tracking (ước tính 1 token ≈ 4 ký tự)
-        jobLog.setTokenInput(message.getPromptText().length() / 4);
-        jobLog.setTokenOutput(cleanJson.length() / 4);
+        aiJobLogService.markJobAsSuccess(jobLog.getId(), tokenInput, tokenOutput);
 
-        log.info("[RabbitMQ][Skill0] Hoàn thành — {} endpoint(s) đã lưu.",
-                 result.getEndpoints().size());
+        log.info("[RabbitMQ][LegacyCodeReader] Hoàn thành JobId: {}, {} endpoint(s) đã lưu.",
+                 jobLog.getId(), result.getEndpoints().size());
 
-        return rawAiResponse; // Trả về để Consumer giữ tham chiếu
+        return rawAiResponse;
     }
 
     // =========================================================================
@@ -220,6 +213,27 @@ public class AiTaskConsumer {
         }
         aiJobLogRepository.save(jobLog);
         log.debug("[RabbitMQ] JobLog {} → {}", jobLog.getId(), status);
+    }
+
+    /**
+     * SNIPPET: Demonstrates safely extracting token metrics from GeminiResponse
+     * and passing them to aiJobLogService.markJobAsSuccess with null-safety.
+     * 
+     * @param jobId The UUID of the job
+     * @param response The parsed GeminiResponse object
+     * @param aiJobLogService The injected AiJobLogService
+     */
+    private void finalizeJobWithTokensSnippet(UUID jobId, com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse response, com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService aiJobLogService) {
+        Integer tokenInput = 0;
+        Integer tokenOutput = 0;
+
+        if (response != null && response.getUsageMetadata() != null) {
+            com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse.UsageMetadata metadata = response.getUsageMetadata();
+            tokenInput = metadata.getPromptTokenCount() != null ? metadata.getPromptTokenCount() : 0;
+            tokenOutput = metadata.getCandidatesTokenCount() != null ? metadata.getCandidatesTokenCount() : 0;
+        }
+
+        aiJobLogService.markJobAsSuccess(jobId, tokenInput, tokenOutput);
     }
 
     /** Parse UUID an toàn — trả null nếu chuỗi null hoặc không hợp lệ. */

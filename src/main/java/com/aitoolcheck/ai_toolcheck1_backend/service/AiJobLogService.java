@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.req.CreateAiJobLogRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobLogResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse;
 
 import java.util.UUID;
 
@@ -21,9 +22,13 @@ public interface AiJobLogService {
 
     void markJobAsRunning(UUID id);
 
+    void updateTokens(UUID id, Integer tokenInput, Integer tokenOutput);
+
     void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput);
 
     void markJobAsFailed(UUID id, String errorMessage);
 
     AiJobLogResponse getJobById(UUID id);
+
+    AiJobStatisticResponse getJobStatistics();
 }
