@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.openapi.res.OpenApiGenerateResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ParamIn;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.UsageType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
@@ -76,7 +77,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
                 .orElseGet(() -> apiDocumentRepository.save(ApiDocument.builder()
                         .sourceProject(project)
                         .documentName(project.getProjectName() + " OpenAPI")
-                        .documentType("OPENAPI_3")
+                        .documentType(DocumentType.OPENAPI_3)
                         .currentVersionNo(0)
                         .publishedFlag(false)
                         .build()));
