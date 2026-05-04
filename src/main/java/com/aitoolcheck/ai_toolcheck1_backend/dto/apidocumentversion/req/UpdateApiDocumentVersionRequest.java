@@ -13,11 +13,7 @@ import lombok.Setter;
 @AllArgsConstructor
 
 public class UpdateApiDocumentVersionRequest {
-    private Integer version;
     private String summary;
+
     private String description;
-    private String exampleRequestJson;
-    private String exampleResponseJson;
-    private String openapiFragmentJson;
-    private Boolean aiEnrichedFlag;
 }
