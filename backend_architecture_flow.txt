@@ -1,0 +1,329 @@
+Cấu trúc thư mục đầy đủ và bản tóm tắt luồng hoạt động (Architecture Flow) chi tiết của hệ thống Backend Spring Boot.
+
+### 1. Cấu trúc thư mục CHI TIẾT TOÀN BỘ DỰ ÁN
+Dự án được tổ chức theo mô hình Domain-Driven Design (lai với MVC Layered) chuẩn Enterprise. Dưới đây là cây thư mục chi tiết tất cả các file trong hệ thống:
+
+src/main/java/com/aitoolcheck/ai_toolcheck1_backend
+|   AiToolcheck1BackendApplication.java
+|   
++---config
+|   |   GeminiWebClientConfig.java
+|   |   RabbitMQConfig.java
+|   |   
+|   \---properties
+|           GeminiProperties.java
+|           
++---controller
+|       AiJobLogController.java
+|       SourceAnalysisResultController.java
+|       SourceFileController.java
+|       SourceProjectController.java
+|       
++---dto
+|   +---aijoblog
+|   |   +---req
+|   |   |       CreateAiJobLogRequest.java
+|   |   |       TriggerAiJobRequest.java
+|   |   |       UpdateAiJobLogRequest.java
+|   |   \---res
+|   |           AiJobLogDetailResponse.java
+|   |           AiJobLogResponse.java
+|   +---aiskill
+|   |   +---req
+|   |   |       CreateAiSkillRequest.java
+|   |   |       UpdateAiSkillRequest.java
+|   |   \---res
+|   |           AiInferenceResultDto.java
+|   |           AiSkillDetailResponse.java
+|   |           AiSkillResponse.java
+|   +---apidocument
+|   |   +---req
+|   |   |       CreateApiDocumentRequest.java
+|   |   |       GenerateApiDocumentRequest.java
+|   |   |       PublishApiDocumentRequest.java
+|   |   |       UpdateApiDocumentRequest.java
+|   |   \---res
+|   |           ApiDocumentDetailResponse.java
+|   |           ApiDocumentResponse.java
+|   +---apidocumentversion
+|   |   +---req
+|   |   |       CreateApiDocumentVersionRequest.java
+|   |   |       UpdateApiDocumentVersionRequest.java
+|   |   \---res
+|   |           ApiDocumentVersionDetailResponse.java
+|   |           ApiDocumentVersionResponse.java
+|   +---apiendpoint
+|   |   +---req
+|   |   |       CreateApiEndpointRequest.java
+|   |   |       UpdateApiEndpointRequest.java
+|   |   \---res
+|   |           ApiEndpointDetailResponse.java
+|   |           ApiEndpointResponse.java
+|   +---apiparameter
+|   |   +---req
+|   |   |       CreateApiParameterRequest.java
+|   |   |       UpdateApiParameterRequest.java
+|   |   \---res
+|   |           ApiParameterDetailResponse.java
+|   |           ApiParameterResponse.java
+|   +---apischema
+|   |   +---req
+|   |   |       CreateApiSchemaRequest.java
+|   |   |       UpdateApiSchemaRequest.java
+|   |   \---res
+|   |           ApiSchemaDetailResponse.java
+|   |           ApiSchemaResponse.java
+|   +---apischemafield
+|   |   +---req
+|   |   |       CreateApiSchemaFieldRequest.java
+|   |   |       UpdateApiSchemaFieldRequest.java
+|   |   \---res
+|   |           ApiSchemaFieldDetailResponse.java
+|   |           ApiSchemaFieldResponse.java
+|   +---common
+|   |   +---req
+|   |   |       PageRequestDto.java
+|   |   \---res
+|   |           ApiResponse.java
+|   |           ErrorResponse.java
+|   |           MessageResponse.java
+|   |           PageResponseDto.java
+|   +---endpointschemamap
+|   |   +---req
+|   |   |       CreateEndpointSchemaMapRequest.java
+|   |   |       UpdateEndpointSchemaMapRequest.java
+|   |   \---res
+|   |           EndpointSchemaMapDetailResponse.java
+|   |           EndpointSchemaMapResponse.java
+|   +---gemini
+|   |   +---req
+|   |   |       GeminiRequest.java
+|   |   \---res
+|   |           GeminiResponse.java
+|   +---legacyinferencelog
+|   |   +---req
+|   |   |       CreateLegacyInferenceLogRequest.java
+|   |   |       UpdateLegacyInferenceLogRequest.java
+|   |   \---res
+|   |           LegacyInferenceLogDetailResponse.java
+|   |           LegacyInferenceLogResponse.java
+|   +---rabbitmq
+|   |       AiTaskMessage.java
+|   +---sourceanalysisresult
+|   |   +---req
+|   |   |       CreateSourceAnalysisResultRequest.java
+|   |   |       UpdateSourceAnalysisResultRequest.java
+|   |   \---res
+|   |           SourceAnalysisResultDetailResponse.java
+|   |           SourceAnalysisResultResponse.java
+|   +---sourcefile
+|   |   +---req
+|   |   |       CreateSourceFileRequest.java
+|   |   |       UpdateSourceFileRequest.java
+|   |   \---res
+|   |           SourceFileDetailResponse.java
+|   |           SourceFileResponse.java
+|   |           SourceFileUploadResponse.java
+|   +---sourceproject
+|   |   +---req
+|   |   |       CreateSourceProjectRequest.java
+|   |   |       UpdateSourceProjectRequest.java
+|   |   |       UploadSourceProjectRequest.java
+|   |   \---res
+|   |           SourceProjectDetailResponse.java
+|   |           SourceProjectResponse.java
+|   +---testcase
+|   |   +---req
+|   |   |       CreateTestCaseRequest.java
+|   |   |       GenerateTestCaseRequest.java
+|   |   |       UpdateTestCaseRequest.java
+|   |   \---res
+|   |           TestCaseDetailResponse.java
+|   |           TestCaseResponse.java
+|   +---testcaseassertion
+|   |   +---req
+|   |   |       CreateTestCaseAssertionRequest.java
+|   |   |       UpdateTestCaseAssertionRequest.java
+|   |   \---res
+|   |           TestCaseAssertionDetailResponse.java
+|   |           TestCaseAssertionResponse.java
+|   +---testcaseinput
+|   |   +---req
+|   |   |       CreateTestCaseInputRequest.java
+|   |   |       UpdateTestCaseInputRequest.java
+|   |   \---res
+|   |           TestCaseInputDetailResponse.java
+|   |           TestCaseInputResponse.java
+|   +---testresult
+|   |   +---req
+|   |   |       CreateTestResultRequest.java
+|   |   |       UpdateTestResultRequest.java
+|   |   \---res
+|   |           TestResultDetailResponse.java
+|   |           TestResultResponse.java
+|   +---testrun
+|   |   +---req
+|   |   |       CreateTestRunRequest.java
+|   |   |       ExecuteTestRunRequest.java
+|   |   |       UpdateTestRunRequest.java
+|   |   \---res
+|   |           TestRunDetailResponse.java
+|   |           TestRunResponse.java
+|   \---testrunitem
+|       +---req
+|       |       CreateTestRunItemRequest.java
+|       |       UpdateTestRunItemRequest.java
+|       \---res
+|               TestRunItemDetailResponse.java
+|               TestRunItemResponse.java
++---enums
+|       AssertionType.java
+|       BackendType.java
+|       CaseType.java
+|       ComparisonOperator.java
+|       EnvironmentType.java
+|       ExecutionMode.java
+|       ExecutionStatus.java
+|       FileType.java
+|       GeneratedBy.java
+|       HttpMethod.java
+|       JobType.java
+|       ParamIn.java
+|       PriorityLevel.java
+|       ProjectStatus.java
+|       ResultStatus.java
+|       RunStatus.java
+|       SchemaType.java
+|       SourceStyle.java
+|       UsageType.java
++---exception
+|       ApiErrorResponse.java
+|       BadRequestException.java
+|       GlobalExceptionHandler.java
+|       ResourceNotFoundException.java
++---model
+|       AiJobLog.java
+|       AiSkill.java
+|       ApiDocument.java
+|       ApiDocumentVersion.java
+|       ApiEndpoint.java
+|       ApiParameter.java
+|       ApiSchema.java
+|       ApiSchemaField.java
+|       EndpointSchemaMap.java
+|       LegacyInferenceLog.java
+|       SourceAnalysisResult.java
+|       SourceFile.java
+|       SourceProject.java
+|       TestCase.java
+|       TestCaseAssertion.java
+|       TestCaseInput.java
+|       TestResult.java
+|       TestRun.java
+|       TestRunItem.java
++---repository
+|       AiJobLogRepository.java
+|       AiSkillRepository.java
+|       ApiDocumentRepository.java
+|       ApiDocumentVersionRepository.java
+|       ApiEndpointRepository.java
+|       ApiParameterRepository.java
+|       ApiSchemaFieldRepository.java
+|       ApiSchemaRepository.java
+|       EndpointSchemaMapRepository.java
+|       LegacyInferenceLogRepository.java
+|       SourceAnalysisResultRepository.java
+|       SourceFileRepository.java
+|       SourceProjectRepository.java
+|       TestCaseAssertionRepository.java
+|       TestCaseInputRepository.java
+|       TestCaseRepository.java
+|       TestResultRepository.java
+|       TestRunItemRepository.java
+|       TestRunRepository.java
+\---service
+    |   AiJobLogService.java
+    |   AiSkillService.java
+    |   ApiDocumentService.java
+    |   ApiDocumentVersionService.java
+    |   ApiEndpointService.java
+    |   ApiParameterService.java
+    |   ApiSchemaFieldService.java
+    |   ApiSchemaService.java
+    |   EndpointSchemaMapService.java
+    |   GeminiApiClientService.java
+    |   LegacyInferenceLogService.java
+    |   SourceAnalysisResultService.java
+    |   SourceFileService.java
+    |   SourceProjectService.java
+    |   TestCaseAssertionService.java
+    |   TestCaseInputService.java
+    |   TestCaseService.java
+    |   TestResultService.java
+    |   TestRunItemService.java
+    |   TestRunService.java
+    +---analysis
+    |       AnalysisSignals.java
+    |       JavaSourceAnalyzer.java
+    |       SourceAnalysisDecisionService.java
+    |       SourceAnalysisScoringService.java
+    |       SourceAnalysisSummaryBuilder.java
+    |       SourceFileClassificationService.java
+    +---impl
+    |       AiJobLogServiceImpl.java
+    |       AiSkillServiceImpl.java
+    |       ApiDocumentServiceImpl.java
+    |       ApiDocumentVersionServiceImpl.java
+    |       ApiEndpointServiceImpl.java
+    |       ApiParameterServiceImpl.java
+    |       ApiSchemaFieldServiceImpl.java
+    |       ApiSchemaServiceImpl.java
+    |       EndpointSchemaMapServiceImpl.java
+    |       GeminiApiClientServiceImpl.java
+    |       LegacyInferenceLogServiceImpl.java
+    |       SourceAnalysisResultServiceImpl.java
+    |       SourceFileServiceImpl.java
+    |       SourceProjectServiceImpl.java
+    |       TestCaseAssertionServiceImpl.java
+    |       TestCaseInputServiceImpl.java
+    |       TestCaseServiceImpl.java
+    |       TestResultServiceImpl.java
+    |       TestRunItemServiceImpl.java
+    |       TestRunServiceImpl.java
+    \---rabbitmq
+            AiTaskConsumer.java
+            AiTaskProducer.java
+
+---
+
+### 2. Luồng hoạt động chi tiết (Hệ thống phân tích mã nguồn bằng AI)
+
+Hệ thống có một luồng chạy Bất đồng bộ (Asynchronous) để tránh làm treo server khi chờ AI xử lý (Gemini xử lý code có thể mất từ 10s - 30s). Dưới đây là luồng đi của dữ liệu từ lúc User bấm nút đến khi ra kết quả:
+
+#### Bước 1: Tiếp nhận dữ liệu (Synchronous - Phản hồi ngay lập tức)
+1. Frontend gửi file code Legacy (Java) hoặc thông tin Project lên qua `SourceFileController` / `SourceProjectController`.
+2. Controller gọi xuống `SourceFileService` để lưu thông tin file thô vào Database.
+3. Hệ thống sử dụng package `service/analysis` (vd: `JavaSourceAnalyzer`) để quét sơ bộ file code xem nó thuộc loại gì (Servlet, Controller, Utility, Entity...) và đánh giá xem file này có đáng để gọi AI hay không.
+
+#### Bước 2: Đưa vào hàng đợi xử lý ngầm (RabbitMQ Producer)
+1. Nếu file được xác định là cần bóc tách API, hệ thống sẽ tạo ra một bản ghi `AiJobLog` trong Database với trạng thái `PENDING` (Chờ xử lý).
+2. `AiTaskProducer` (trong package `rabbitmq`) sẽ đóng gói ID của file, loại Skill AI cần dùng (AI Skill 0) thành một Message và đẩy vào hàng đợi RabbitMQ.
+3. Controller lập tức trả về cho Frontend ID của Job (HTTP 202 Accepted). Frontend không phải chờ đợi mà có thể dùng ID này để hiển thị loading (polling/websocket) cho User.
+
+#### Bước 3: Tiêu thụ và gọi AI (RabbitMQ Consumer & Gemini Service)
+1. Ở dưới nền (Background Thread), `AiTaskConsumer` liên tục lắng nghe hàng đợi. Khi có Message mới, nó bốc ra xử lý.
+2. Nó cập nhật trạng thái của `AiJobLog` trong DB thành `RUNNING`.
+3. `AiTaskConsumer` lấy mã nguồn từ DB và gọi sang `GeminiApiClientServiceImpl`.
+4. Tại đây, `GeminiApiClientServiceImpl` sẽ nhúng Master System Prompt (Luật phân tích) + JSON Schema + Mã nguồn cũ, sau đó gửi yêu cầu POST đến Google Gemini API qua cấu hình WebClient.
+
+#### Bước 4: Nhận kết quả và Lưu trữ
+1. Gemini trả về một cục JSON chuẩn chỉ. `GeminiApiClientServiceImpl` dùng ObjectMapper để parse JSON này thành đối tượng Java (`AiInferenceResultDto`).
+2. `AiTaskConsumer` nhận lại đối tượng này. Nó tiến hành lưu các thông tin bóc tách được (Tên API, Path, Method, Parameters...) vào các bảng `ApiEndpoint`, `ApiParameter` trong Database thông qua các Repository.
+3. Cuối cùng, cập nhật trạng thái của `AiJobLog` thành `SUCCESS` (hoặc `FAILED` nếu Gemini API lỗi/timeout và ghi lại log lỗi).
+
+#### Bước 5: Cập nhật Frontend
+1. Frontend (đang định kỳ gọi API lên `AiJobLogController` để check ID) sẽ thấy trạng thái đã chuyển sang `SUCCESS`.
+2. Frontend gọi tiếp API để lấy danh sách `ApiEndpoint` vừa được phân tích ra màn hình để hiển thị cho User.
+
+**Tóm tắt ngắn gọn nhất:**
+Frontend ➜ Controller ➜ Lưu file DB ➜ Tạo Job PENDING ➜ Đẩy vào RabbitMQ ➜ Trả ID ngay cho FE ➜ RabbitMQ Consumer bốc Job ➜ Đổi trạng thái RUNNING ➜ Gọi Google Gemini API ➜ Ép trả JSON ➜ Lưu API Endpoints vào DB ➜ Đổi trạng thái SUCCESS ➜ Frontend lấy kết quả hiển thị.

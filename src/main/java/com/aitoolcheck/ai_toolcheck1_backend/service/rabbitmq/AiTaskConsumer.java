@@ -4,165 +4,232 @@ import com.aitoolcheck.ai_toolcheck1_backend.config.RabbitMQConfig;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
-import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
-import com.aitoolcheck.ai_toolcheck1_backend.enums.ParamIn;
-import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
-import com.aitoolcheck.ai_toolcheck1_backend.model.*;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.LogStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
+import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
+import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
-import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
-import com.aitoolcheck.ai_toolcheck1_backend.repository.LegacyInferenceLogRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
-import java.util.ArrayList;
-import java.util.List;
 import java.util.UUID;
 
+/**
+ * RabbitMQ Consumer — điều phối luồng xử lý AI Task.
+ *
+ * <h3>Luồng Audit Trail hoàn chỉnh</h3>
+ * <pre>
+ * SUCCESS path:
+ *   Gemini → rawString → Parser → DTO → persistLegacyInference()
+ *                                           └─ createLog(SUCCESS) per endpoint
+ *
+ * FAILED path (AiJsonParseException):
+ *   Gemini → rawString → Parser THROW
+ *       └─ updateJobStatus(FAILED)
+ *       └─ createLog(FAILED, rawResponse, errorType)  ← ghi bằng chứng AI ảo giác
+ * </pre>
+ *
+ * <h3>Quy tắc RabbitMQ</h3>
+ * <p>
+ * TUYỆT ĐỐI KHÔNG throw ra ngoài {@code @RabbitListener} —
+ * sẽ gây infinite retry loop làm sập server.
+ * </p>
+ */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class AiTaskConsumer {
 
     private final GeminiApiClientService geminiApiClientService;
+    private final AiJsonParserService aiJsonParserService;
+    private final AiTaskPersistenceService persistenceService;
+    private final LegacyInferenceLogService legacyInferenceLogService;
     private final AiJobLogRepository aiJobLogRepository;
-    private final LegacyInferenceLogRepository legacyInferenceLogRepository;
-    private final ApiEndpointRepository apiEndpointRepository; // Bổ sung Repository này
-    private final ObjectMapper objectMapper;
+    // ✅ Fix LazyInitializationException: dùng getReferenceById() từ projectId trong message
+    //    thay vì jobLog.getSourceProject() (lazy proxy, session đã đóng)
+    private final SourceProjectRepository sourceProjectRepository;
+
+    // =========================================================================
+    // ENTRY POINT
+    // =========================================================================
 
     @RabbitListener(queues = RabbitMQConfig.QUEUE_NAME)
-    @Transactional // Rất quan trọng để lưu cascade nhiều bảng (Log, Endpoint, Parameter)
-    public void receiveAiTask(AiTaskMessage message) {
-        log.info("Consumer: Received AI Task Message - JobId: {}, SkillCode: {}",
-                message.getJobId(), message.getSkillCode());
+    public void processAiTask(AiTaskMessage message) {
+        log.info("[RabbitMQ] Nhận AI Task — JobId: {}, SkillCode: {}",
+                 message.getJobId(), message.getSkillCode());
 
         AiJobLog jobLog = null;
+
+        // rawAiResponse khai báo ngoài try để catch FAILED có thể lấy và ghi Audit Log
+        String rawAiResponse = null;
+
         try {
-            // 1. Lấy lại AiJobLog từ DB
-            UUID jobId = UUID.fromString(message.getJobId());
-            jobLog = aiJobLogRepository.findById(jobId)
-                    .orElseThrow(() -> new RuntimeException("Không tìm thấy JobLog với ID: " + jobId));
+            jobLog = loadJobLog(message.getJobId());
+            updateJobStatus(jobLog, ExecutionStatus.RUNNING, null);
 
-            // Set trạng thái RUNNING
-            jobLog.setExecutionStatus(ExecutionStatus.RUNNING);
-            aiJobLogRepository.save(jobLog);
-
-            // Lấy SourceProject từ JobLog (Giải quyết vấn đề nullable = false)
-            SourceProject currentProject = jobLog.getSourceProject();
-
-            // 2. Routing logic theo SkillCode
             if ("SKILL_0".equalsIgnoreCase(message.getSkillCode())) {
-
-                log.info("=> Executing AI Skill 0 (Legacy Extractor)...");
-                String sourceCode = message.getPromptText();
-
-                // 2.1. Gọi API AI
-                AiInferenceResultDto resultDto = geminiApiClientService.extractLegacyApi(sourceCode);
-
-                // 2.2. LƯU LOG THÔ: LegacyInferenceLog
-                LegacyInferenceLog legacyLog = new LegacyInferenceLog();
-                legacyLog.setSourceProject(currentProject);
-                // legacyLog.setSourceFile(jobLog.getSourceFile()); // Nếu AiJobLog có mapping
-                // tới SourceFile thì lấy ra set vào đây
-                legacyLog.setInferredMetadataJson(objectMapper.writeValueAsString(resultDto));
-
-                // Mặc định cho confidenceScore nếu AI không trả về
-                if (resultDto.getEndpoints() != null && !resultDto.getEndpoints().isEmpty()
-                        && resultDto.getEndpoints().get(0).getConfidence() != null) {
-                    legacyLog.setConfidenceScore((int) (resultDto.getEndpoints().get(0).getConfidence() * 100));
-                } else {
-                    legacyLog.setConfidenceScore(80); // Tạm set 80% nếu thiếu
-                }
-                legacyInferenceLogRepository.save(legacyLog);
-
-                // 2.3. MAPPING DỮ LIỆU: Bóc tách DTO lưu vào ApiEndpoint & ApiParameter
-                if (resultDto.getEndpoints() != null && !resultDto.getEndpoints().isEmpty()) {
-                    for (AiInferenceResultDto.EndpointDto epDto : resultDto.getEndpoints()) {
-
-                        // Map sang ApiEndpoint
-                        ApiEndpoint endpoint = new ApiEndpoint();
-                        endpoint.setSourceProject(currentProject);
-                        endpoint.setEndpointPath(epDto.getPath());
-
-                        // Parse an toàn HttpMethod từ chuỗi AI trả về
-                        try {
-                            endpoint.setHttpMethod(HttpMethod.valueOf(epDto.getHttpMethod().toUpperCase()));
-                        } catch (IllegalArgumentException | NullPointerException e) {
-                            endpoint.setHttpMethod(HttpMethod.GET); // Default fallback
-                        }
-
-                        if (epDto.getSource() != null) {
-                            endpoint.setControllerName(epDto.getSource().getClassName());
-                            endpoint.setMethodName(epDto.getSource().getMethodName());
-                        }
-
-                        endpoint.setCreatedAt(LocalDateTime.now());
-
-                        // Khởi tạo danh sách tham số
-                        List<ApiParameter> parameters = new ArrayList<>();
-                        if (epDto.getParameters() != null) {
-                            for (AiInferenceResultDto.ParameterDto paramDto : epDto.getParameters()) {
-                                ApiParameter parameter = new ApiParameter();
-                                parameter.setApiEndpoint(endpoint); // Set reference ngược lại
-                                parameter.setParamName(paramDto.getName());
-                                parameter.setDataType(paramDto.getType() != null ? paramDto.getType() : "String");
-                                parameter.setRequiredFlag(
-                                        paramDto.getRequired() != null ? paramDto.getRequired() : false);
-                                parameter.setExampleValue(paramDto.getExample());
-
-                                try {
-                                    parameter.setParamIn(ParamIn.valueOf(paramDto.getIn().toUpperCase()));
-                                } catch (IllegalArgumentException | NullPointerException e) {
-                                    parameter.setParamIn(ParamIn.QUERY); // Default
-                                }
-                                parameters.add(parameter);
-                            }
-                        }
-
-                        // Lưu cascade cả Endpoint và Parameter (Vì ở Model ApiEndpoint bạn đã có
-                        // cascade = CascadeType.ALL)
-                        endpoint.setApiParameters(parameters);
-                        apiEndpointRepository.save(endpoint);
-                    }
-                }
-
-                // 2.4 Tracking Token (Mô phỏng lưu trữ, bạn có thể bóc số lượng token thật từ
-                // GeminiResponse sau)
-                jobLog.setTokenInput(sourceCode.length() / 4); // Ước tính 1 token ~ 4 ký tự
-                jobLog.setTokenOutput(legacyLog.getInferredMetadataJson().length() / 4);
-
+                rawAiResponse = executeSkill0(message, jobLog);
             } else {
-                log.info("=> Calling Standard Gemini API (Mono)...");
-                geminiApiClientService.sendPrompt(message.getPromptText()).block();
+                log.info("[RabbitMQ] SkillCode '{}' chưa hỗ trợ — bỏ qua.", message.getSkillCode());
             }
 
-            // 3. Cập nhật status thành SUCCESS
-            log.info("=> Gemini API Call SUCCESS. Saving status for JobId: {}", message.getJobId());
-            jobLog.setExecutionStatus(ExecutionStatus.SUCCESS);
-            jobLog.setCompletedAt(LocalDateTime.now());
-            aiJobLogRepository.save(jobLog);
+            updateJobStatus(jobLog, ExecutionStatus.SUCCESS, null);
+            log.info("[RabbitMQ] Hoàn thành JobId: {}", message.getJobId());
 
-        } catch (Exception e) {
-            log.error("=> Error occurred while processing AI Task for JobId: {}. Exception: {}",
-                    message.getJobId(), e.getMessage(), e);
+        } catch (AiJsonParseException jsonEx) {
+            // FALLBACK 1: AI trả rác / JSON sai / DTO thiếu trường
+            String errorDetail = "[" + jsonEx.getErrorType() + "] " + jsonEx.getMessage();
+            log.warn("[RabbitMQ] AI Data Error — JobId: {}, Lý do: {}",
+                     message.getJobId(), errorDetail);
 
             if (jobLog != null) {
-                try {
-                    jobLog.setExecutionStatus(ExecutionStatus.FAILED);
-                    jobLog.setErrorMessage(e.getMessage());
-                    jobLog.setCompletedAt(LocalDateTime.now());
-                    aiJobLogRepository.save(jobLog);
-
-                    log.info("=> Saved FAILED status to DB for JobId: {}", jobLog.getId());
-                } catch (Exception dbEx) {
-                    log.error("=> Failed to save FAILED status to DB for JobId: {}", jobLog.getId(), dbEx);
-                }
+                updateJobStatus(jobLog, ExecutionStatus.FAILED, errorDetail);
             }
+
+            // Ghi Audit Log FAILED — lưu rawResponse làm bằng chứng AI ảo giác
+            recordFailedAuditLog(message, rawAiResponse, jsonEx);
+            // KHÔNG throw — tránh RabbitMQ infinite loop
+
+        } catch (Exception e) {
+            // FALLBACK 2: Lỗi mạng, timeout, lỗi DB
+            log.error("[RabbitMQ] System Error — JobId: {}, Lý do: {}",
+                      message.getJobId(), e.getMessage(), e);
+            if (jobLog != null) {
+                updateJobStatus(jobLog, ExecutionStatus.FAILED, "System Error: " + e.getMessage());
+            }
+            // KHÔNG throw — tránh RabbitMQ infinite loop
+        }
+    }
+
+    // =========================================================================
+    // Skill Executors
+    // =========================================================================
+
+    /**
+     * Thực thi Skill 0 và trả về {@code rawAiResponse} để Consumer lưu tham chiếu
+     * — dùng cho Audit Log FAILED nếu bước sau đó throw exception.
+     *
+     * @return rawAiResponse — chuỗi thô từ Gemini, chưa qua Parser.
+     */
+    private String executeSkill0(AiTaskMessage message, AiJobLog jobLog) {
+        log.info("[RabbitMQ][Skill0] Bắt đầu — độ dài source: {} ký tự",
+                 message.getPromptText().length());
+
+        // Bước A: Gọi Gemini — chỉ lấy String thô, KHÔNG lock DB
+        String rawAiResponse = geminiApiClientService.getRawAiResponse(message.getPromptText());
+
+        // Bước B: Tấm khiên Parser 6 Layer (Task 1 + Task 2)
+        String cleanJson = aiJsonParserService.extractAndSanitizeJson(rawAiResponse);
+        AiInferenceResultDto result = aiJsonParserService.parseToDto(cleanJson);
+
+        // Bước C: Lưu DB + Audit Log SUCCESS (Transaction <100ms)
+        UUID projectId    = parseUuidOrNull(message.getProjectId());
+        UUID sourceFileId = parseUuidOrNull(message.getSourceFileId());
+
+        // ✅ getReferenceById() — không tốn SELECT, chỉ tạo Proxy với ID
+        //    Tránh hoàn toàn LazyInitializationException vì không đi qua jobLog.getSourceProject()
+        SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
+
+        persistenceService.persistLegacyInference(
+                projectRef,
+                sourceFileId,
+                rawAiResponse,   // Truyền raw để lưu vào Audit Log
+                cleanJson,
+                result
+        );
+
+        // Token tracking (ước tính 1 token ≈ 4 ký tự)
+        jobLog.setTokenInput(message.getPromptText().length() / 4);
+        jobLog.setTokenOutput(cleanJson.length() / 4);
+
+        log.info("[RabbitMQ][Skill0] Hoàn thành — {} endpoint(s) đã lưu.",
+                 result.getEndpoints().size());
+
+        return rawAiResponse; // Trả về để Consumer giữ tham chiếu
+    }
+
+    // =========================================================================
+    // Audit Log FAILED
+    // =========================================================================
+
+    /**
+     * Ghi Audit Log FAILED khi Parser throw AiJsonParseException.
+     * <p>
+     * Nếu Gemini đã kịp trả về (rawAiResponse != null), lưu nguyên văn vào DB
+     * — đây là bằng chứng AI ảo giác để debug ngày hôm sau.
+     * Nếu Gemini chưa kịp trả về (lỗi ở bước gọi API), bỏ qua việc ghi Log này.
+     * </p>
+     */
+    private void recordFailedAuditLog(AiTaskMessage message,
+                                       String rawAiResponse,
+                                       AiJsonParseException jsonEx) {
+        if (rawAiResponse == null) {
+            log.warn("[RabbitMQ] rawAiResponse=null — Gemini chưa kịp trả về. Bỏ qua Audit Log FAILED.");
+            return;
+        }
+
+        try {
+            UUID projectId   = parseUuidOrNull(message.getProjectId());
+            UUID sourceFileId = parseUuidOrNull(message.getSourceFileId());
+
+            if (projectId == null) {
+                log.warn("[RabbitMQ] projectId null trong message — không thể ghi Audit Log FAILED.");
+                return;
+            }
+
+            legacyInferenceLogService.createLog(
+                    projectId,
+                    sourceFileId,
+                    null,                          // Chưa có ApiEndpoint (parse thất bại)
+                    rawAiResponse,                 // Bằng chứng AI ảo giác
+                    null,                          // Chưa có cleanJson
+                    null,                          // Chưa có confidence
+                    LogStatus.FAILED,
+                    jsonEx.getErrorType().name()   // Ví dụ: "INVALID_JSON_SYNTAX"
+            );
+
+            log.info("[RabbitMQ] Audit Log FAILED đã ghi — ErrorType: {}", jsonEx.getErrorType());
+
+        } catch (Exception auditEx) {
+            // Lỗi khi ghi Audit Log KHÔNG được phép làm sập luồng chính
+            log.error("[RabbitMQ] Không thể ghi Audit Log FAILED — Lý do: {}", auditEx.getMessage());
+        }
+    }
+
+    // =========================================================================
+    // Utility
+    // =========================================================================
+
+    private AiJobLog loadJobLog(String jobIdStr) {
+        return aiJobLogRepository.findById(UUID.fromString(jobIdStr))
+                .orElseThrow(() -> new RuntimeException("Không tìm thấy JobLog: " + jobIdStr));
+    }
+
+    private void updateJobStatus(AiJobLog jobLog, ExecutionStatus status, String errorMsg) {
+        jobLog.setExecutionStatus(status);
+        if (errorMsg != null) jobLog.setErrorMessage(errorMsg);
+        if (status == ExecutionStatus.SUCCESS || status == ExecutionStatus.FAILED) {
+            jobLog.setCompletedAt(LocalDateTime.now());
+        }
+        aiJobLogRepository.save(jobLog);
+        log.debug("[RabbitMQ] JobLog {} → {}", jobLog.getId(), status);
+    }
+
+    /** Parse UUID an toàn — trả null nếu chuỗi null hoặc không hợp lệ. */
+    private UUID parseUuidOrNull(String uuidStr) {
+        if (uuidStr == null || uuidStr.isBlank()) return null;
+        try {
+            return UUID.fromString(uuidStr);
+        } catch (IllegalArgumentException e) {
+            log.warn("[RabbitMQ] UUID không hợp lệ: '{}' — dùng null.", uuidStr);
+            return null;
         }
     }
 }
