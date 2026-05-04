@@ -13,7 +13,17 @@ public interface ApiDocumentVersionRepository extends JpaRepository<ApiDocumentV
 
     List<ApiDocumentVersion> findByApiDocumentId(UUID apiDocumentId);
 
+    List<ApiDocumentVersion> findByApiDocumentIdOrderByVersionNoDesc(UUID apiDocumentId);
+
     Optional<ApiDocumentVersion> findTopByApiDocumentIdOrderByVersionNoDesc(UUID apiDocumentId);
 
     List<ApiDocumentVersion> findByApiDocumentSourceProjectId(UUID projectId);
+
+    List<ApiDocumentVersion> findByApiDocumentSourceProjectIdOrderByVersionNoDesc(UUID projectId);
+
+    Optional<ApiDocumentVersion> findByApiDocumentIdAndVersionNo(UUID apiDocumentId, Integer versionNo);
+
+    boolean existsByApiDocumentIdAndVersionNo(UUID apiDocumentId, Integer versionNo);
+
+    long countByApiDocumentId(UUID apiDocumentId);
 }

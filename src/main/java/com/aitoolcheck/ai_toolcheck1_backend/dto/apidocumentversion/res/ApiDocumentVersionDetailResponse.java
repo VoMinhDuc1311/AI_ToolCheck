@@ -6,6 +6,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Getter
@@ -16,12 +17,30 @@ import java.util.UUID;
 
 public class ApiDocumentVersionDetailResponse {
     private UUID id;
+
     private UUID apiDocumentId;
-    private Integer version;
+
+    private UUID projectId;
+
+    private Integer versionNo;
+
     private String summary;
+
     private String description;
+
+    private String contentJson;
+
     private String exampleRequestJson;
+
     private String exampleResponseJson;
+
     private String openapiFragmentJson;
+
     private Boolean aiEnrichedFlag;
+
+    private Integer contentLength;
+
+    private LocalDateTime createdAt;
+
+    private LocalDateTime updatedAt;
 }
