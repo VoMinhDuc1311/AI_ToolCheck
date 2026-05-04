@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import jakarta.validation.constraints.NotNull;
 
 import java.util.UUID;
 
@@ -14,9 +15,10 @@ import java.util.UUID;
 @NoArgsConstructor
 @AllArgsConstructor
 public class CreateApiDocumentRequest {
+    @NotNull(message = "projectId is required")
     private UUID projectId;
+
     private String documentName;
+
     private String documentType;
-    private Integer currentVersionNo;
-    private Boolean publishedFlag;
 }

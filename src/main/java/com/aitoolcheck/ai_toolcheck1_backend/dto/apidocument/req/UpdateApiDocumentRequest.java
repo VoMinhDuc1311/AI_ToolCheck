@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.apidocument.req;
 
+import jakarta.validation.constraints.Min;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -13,6 +14,9 @@ import lombok.Setter;
 @AllArgsConstructor
 
 public class UpdateApiDocumentRequest {
-    private Integer currentVersion;
-    private Boolean publishedFlag;
-}
+    private String documentName;
+
+    private String documentType;
+
+    @Min(value = 1, message = "currentVersionNo must be greater than or equal to 1")
+    private Integer currentVersionNo;}
