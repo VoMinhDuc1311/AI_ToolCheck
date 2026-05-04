@@ -11,7 +11,7 @@ import java.util.UUID;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/source-projects")
+@RequestMapping("/v1/source-projects")
 public class OpenApiGeneratorController {
 
     private final OpenApiGeneratorService openApiGeneratorService;

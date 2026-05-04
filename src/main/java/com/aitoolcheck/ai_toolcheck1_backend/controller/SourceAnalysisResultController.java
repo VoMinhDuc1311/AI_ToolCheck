@@ -11,7 +11,10 @@ import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
 
+import org.springframework.web.bind.annotation.RequestMapping;
+
 @RestController
+@RequestMapping("/v1")
 @RequiredArgsConstructor
 public class SourceAnalysisResultController {
 

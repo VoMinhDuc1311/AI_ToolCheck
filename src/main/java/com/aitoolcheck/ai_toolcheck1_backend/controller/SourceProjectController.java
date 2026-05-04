@@ -15,7 +15,7 @@ import java.util.List;
 import java.util.UUID;
 
 @RestController
-@RequestMapping("/source-projects")
+@RequestMapping("/v1/source-projects")
 @RequiredArgsConstructor
 public class SourceProjectController {
 

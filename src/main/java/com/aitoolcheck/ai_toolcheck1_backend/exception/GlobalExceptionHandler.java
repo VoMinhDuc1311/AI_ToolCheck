@@ -169,6 +169,14 @@ public class GlobalExceptionHandler {
                 ex.getMessage(), null, request);
     }
 
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleNoResourceFound(
+            org.springframework.web.servlet.resource.NoResourceFoundException ex, HttpServletRequest request) {
+
+        return build(HttpStatus.NOT_FOUND, "Not Found",
+                "Endpoint or resource not found: " + ex.getResourcePath(), null, request);
+    }
+
 
 
     @ExceptionHandler(Exception.class)
