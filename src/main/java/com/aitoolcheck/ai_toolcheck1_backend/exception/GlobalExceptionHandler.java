@@ -38,6 +38,20 @@ public class GlobalExceptionHandler {
         return build(HttpStatus.BAD_REQUEST, "Bad Request", ex.getMessage(), null, request);
     }
 
+    @ExceptionHandler(UnauthorizedException.class)
+    public ResponseEntity<ApiErrorResponse> handleUnauthorized(
+            UnauthorizedException ex, HttpServletRequest request) {
+
+        return build(HttpStatus.UNAUTHORIZED, "Unauthorized", ex.getMessage(), null, request);
+    }
+
+    @ExceptionHandler(ForbiddenException.class)
+    public ResponseEntity<ApiErrorResponse> handleForbidden(
+            ForbiddenException ex, HttpServletRequest request) {
+
+        return build(HttpStatus.FORBIDDEN, "Forbidden", ex.getMessage(), null, request);
+    }
+
 
 
 
@@ -167,6 +181,14 @@ public class GlobalExceptionHandler {
 
         return build(HttpStatus.NOT_FOUND, "Not Found",
                 ex.getMessage(), null, request);
+    }
+
+    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+    public ResponseEntity<ApiErrorResponse> handleNoResourceFound(
+            org.springframework.web.servlet.resource.NoResourceFoundException ex, HttpServletRequest request) {
+
+        return build(HttpStatus.NOT_FOUND, "Not Found",
+                "Endpoint or resource not found: " + ex.getResourcePath(), null, request);
     }
 
 

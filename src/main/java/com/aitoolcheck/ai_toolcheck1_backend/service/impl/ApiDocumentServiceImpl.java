@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.apidocument.req.CreateApiDocume
 import com.aitoolcheck.ai_toolcheck1_backend.dto.apidocument.req.UpdateApiDocumentRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.apidocument.res.ApiDocumentDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.apidocumentversion.res.ApiDocumentVersionResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocument;
@@ -47,9 +48,9 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
                 ? request.getDocumentName().trim()
                 : buildDefaultDocumentName(sourceProject);
 
-        String documentType = hasText(request.getDocumentType())
-                ? request.getDocumentType().trim()
-                : "OPENAPI_3";
+        DocumentType documentType = request.getDocumentType() != null
+                ? request.getDocumentType()
+                : DocumentType.OPENAPI_3;
 
         ApiDocument apiDocument = ApiDocument.builder()
                 .sourceProject(sourceProject)
@@ -90,8 +91,8 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
             apiDocument.setDocumentName(request.getDocumentName().trim());
         }
 
-        if (hasText(request.getDocumentType())) {
-            apiDocument.setDocumentType(request.getDocumentType().trim());
+        if (request.getDocumentType() != null) {
+            apiDocument.setDocumentType(request.getDocumentType());
         }
 
         if (request.getCurrentVersionNo() != null) {

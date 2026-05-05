@@ -13,6 +13,15 @@ public interface GeminiApiClientService {
     Mono<String> sendPrompt(String promptText);
 
     /**
+     * Gọi Gemini và trả về toàn bộ đối tượng GeminiResponse đã được parse, 
+     * chứa cả usageMetadata (Token tracking) và content.
+     *
+     * @param sourceCode Mã nguồn Java cần phân tích.
+     * @return Đối tượng GeminiResponse chứa metadata và chuỗi text.
+     */
+    com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse getFullAiResponse(String sourceCode);
+
+    /**
      * Gọi Gemini với Skill 0 (Legacy Extractor) và trả về raw String chưa parse.
      * <p>
      * Đây là method được thiết kế để Consumer gọi — trả về text thô từ AI

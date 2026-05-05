@@ -290,10 +290,9 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
      * Tách bạch hoàn toàn: Gemini Client chỉ lo gọi HTTP, không tự parse.
      */
     @Override
-    public String getRawAiResponse(String sourceCode) {
+    public GeminiResponse getFullAiResponse(String sourceCode) {
         try {
-            log.info("[GeminiClient] Bắt đầu gọi Gemini Skill 0 (Legacy Extractor) – độ dài source: {} ký tự",
-                     sourceCode.length());
+            log.info("[GeminiClient] Bắt đầu gọi Gemini API – độ dài source: {} ký tự", sourceCode.length());
 
             Map<String, Object> payload = buildJsonModePayload(sourceCode);
             String uriPath = "/" + geminiProperties.getModel() + ":generateContent?key="
@@ -314,11 +313,31 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                                     s.totalRetries() + 1, s.failure().getMessage())))
                     .block();
 
-            // Bóc lõi text từ cấu trúc JSON của Google (candidates[0].content.parts[0].text)
-            String extractedText = extractTextFromGoogleResponse(rawGeminiResponse);
-            log.info("[GeminiClient] Nhận phản hồi thô từ Gemini – độ dài: {} ký tự", extractedText.length());
-            return extractedText;
+            // Parse json từ Google thành Object chứa cả usageMetadata và content
+            objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+            GeminiResponse geminiResponse = objectMapper.readValue(rawGeminiResponse, GeminiResponse.class);
+            
+            log.info("[GeminiClient] Phản hồi đã parse thành công thành GeminiResponse");
+            return geminiResponse;
 
+        } catch (Exception e) {
+            log.error("[GeminiClient] getFullAiResponse thất bại: {}", e.getMessage());
+            throw new RuntimeException("Lỗi gọi Gemini API (getFullAiResponse): " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * [Task 3] Gọi Gemini API và trả về raw String chưa parse.
+     * Consumer sẽ gọi method này, sau đó đưa String vào AiJsonParserService.
+     * Tách bạch hoàn toàn: Gemini Client chỉ lo gọi HTTP, không tự parse.
+     */
+    @Override
+    public String getRawAiResponse(String sourceCode) {
+        try {
+            GeminiResponse response = getFullAiResponse(sourceCode);
+            String extractedText = response.extractText();
+            log.info("[GeminiClient] Trích xuất text thô từ GeminiResponse – độ dài: {} ký tự", extractedText != null ? extractedText.length() : 0);
+            return extractedText;
         } catch (Exception e) {
             log.error("[GeminiClient] getRawAiResponse thất bại: {}", e.getMessage());
             throw new RuntimeException("Lỗi gọi Gemini API (getRawAiResponse): " + e.getMessage(), e);

@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.apidocument.res;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -18,7 +19,7 @@ public class ApiDocumentResponse {
     private UUID id;
     private UUID projectId;
     private String documentName;
-    private String documentType;
+    private DocumentType documentType;
     private Integer currentVersionNo;
     private Boolean publishedFlag;
     private LocalDateTime createdAt;

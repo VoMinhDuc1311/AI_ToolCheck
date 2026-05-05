@@ -25,3 +25,15 @@ logging:
     com.aitoolcheck: INFO
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n"
+
+app:
+  auth:
+    jwt-secret: ${APP_AUTH_JWT_SECRET}
+    access-token-minutes: ${APP_AUTH_ACCESS_TOKEN_MINUTES:15}
+    refresh-token-days: ${APP_AUTH_REFRESH_TOKEN_DAYS:14}
+    refresh-token-bytes: ${APP_AUTH_REFRESH_TOKEN_BYTES:64}
+    seed-admin:
+      enabled: ${APP_AUTH_SEED_ADMIN_ENABLED:false}
+      email: ${APP_AUTH_SEED_ADMIN_EMAIL:}
+      password: ${APP_AUTH_SEED_ADMIN_PASSWORD:}
+      full-name: ${APP_AUTH_SEED_ADMIN_FULL_NAME:System Admin}

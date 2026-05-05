@@ -13,6 +13,17 @@ import java.util.List;
 @AllArgsConstructor
 public class GeminiResponse {
     private List<Candidate> candidates;
+    private UsageMetadata usageMetadata;
+
+    @Data
+    @Builder
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class UsageMetadata {
+        private Integer promptTokenCount;
+        private Integer candidatesTokenCount;
+        private Integer totalTokenCount;
+    }
 
     @Data
     @Builder

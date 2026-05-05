@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.apidocument.req;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -20,5 +21,5 @@ public class CreateApiDocumentRequest {
 
     private String documentName;
 
-    private String documentType;
+    private DocumentType documentType;
 }
