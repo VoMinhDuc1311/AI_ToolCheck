@@ -4,6 +4,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.apidocumentversion.req.UpdateAp
 import com.aitoolcheck.ai_toolcheck1_backend.dto.apidocumentversion.res.ApiDocumentVersionDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiDocumentVersionService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
@@ -14,12 +16,18 @@ import java.util.UUID;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/api-document-versions")
+@RequestMapping("/v1/api-document-versions")
+@Tag(name = "API Document Versions", description = "API document version detail and update APIs")
 public class ApiDocumentVersionController {
 
     private final ApiDocumentVersionService apiDocumentVersionService;
 
     @GetMapping("/{versionId}")
+    @Operation(
+            summary = "Get API document version by id",
+            description = "Get API document version detail by UUID.",
+            operationId = "getApiDocumentVersionById"
+    )
     public ResponseEntity<ApiResponse<ApiDocumentVersionDetailResponse>> getById(
             @PathVariable UUID versionId
     ) {
@@ -29,6 +37,11 @@ public class ApiDocumentVersionController {
     }
 
     @PatchMapping("/{versionId}")
+    @Operation(
+            summary = "Update API document version",
+            description = "Update API document version metadata such as summary and description.",
+            operationId = "updateApiDocumentVersion"
+    )
     public ResponseEntity<ApiResponse<ApiDocumentVersionDetailResponse>> update(
             @PathVariable UUID versionId,
             @Valid @RequestBody UpdateApiDocumentVersionRequest request
