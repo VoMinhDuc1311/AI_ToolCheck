@@ -82,3 +82,4 @@ build/
 ### VS Code ###
 .vscode/
 *.code-workspace
+.m2/
