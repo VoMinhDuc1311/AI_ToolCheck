@@ -6,6 +6,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobLogResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,15 +22,17 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/v1/ai-job-logs")
 @RequiredArgsConstructor
+@Tag(name = "AI Job Logs", description = "AI job creation, triggering, lookup, and statistics APIs")
 public class AiJobLogController {
 
     private final AiJobLogService aiJobLogService;
 
-    /**
-     * Endpoint tiếp nhận yêu cầu phân tích/sinh mã từ AI (Fire-and-Forget).
-     * Yêu cầu sẽ được lưu trạng thái PENDING và đẩy vào hàng đợi (RabbitMQ) để xử lý ngầm.
-     */
     @PostMapping("/trigger")
+    @Operation(
+            summary = "Trigger AI job",
+            description = "Create a pending AI job and send it to the AI processing queue.",
+            operationId = "triggerAiJob"
+    )
     public ResponseEntity<ApiResponse<AiJobLogResponse>> triggerAiJob(@Valid @RequestBody TriggerAiJobRequest request) {
         log.info("Đã nhận yêu cầu Trigger AI Job với Skill Code: {}", request.getSkillCode());
         
@@ -55,6 +59,11 @@ public class AiJobLogController {
      * Endpoint tạo một AI Job Log ở trạng thái PENDING.
      */
     @PostMapping
+    @Operation(
+            summary = "Create pending AI job",
+            description = "Create an AI job log in PENDING status.",
+            operationId = "createPendingAiJob"
+    )
     public ResponseEntity<ApiResponse<AiJobLogResponse>> createPendingJob(@Valid @RequestBody CreateAiJobLogRequest request) {
         log.info("Nhận yêu cầu tạo AiJobLog PENDING: {}", request.getJobType());
         
@@ -74,6 +83,11 @@ public class AiJobLogController {
      * Endpoint lấy chi tiết trạng thái của AI Job Log.
      */
     @GetMapping("/{id}")
+    @Operation(
+            summary = "Get AI job by id",
+            description = "Get AI job log detail by UUID.",
+            operationId = "getAiJobById"
+    )
     public ResponseEntity<ApiResponse<AiJobLogResponse>> getJobById(@PathVariable UUID id) {
         log.info("Nhận yêu cầu lấy chi tiết AiJobLog ID: {}", id);
         
@@ -93,6 +107,11 @@ public class AiJobLogController {
      * Endpoint lấy thống kê tổng hợp của AI Job Logs.
      */
     @GetMapping("/statistics")
+    @Operation(
+            summary = "Get AI job statistics",
+            description = "Get aggregate statistics for AI job logs.",
+            operationId = "getAiJobStatistics"
+    )
     public ResponseEntity<ApiResponse<com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse>> getJobStatistics() {
         log.info("Nhận yêu cầu lấy thống kê AiJobLog");
         

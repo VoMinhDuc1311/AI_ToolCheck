@@ -7,6 +7,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.user.req.UpdateUserRoleRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.user.req.UpdateUserStatusRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.user.res.UserResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.UserService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -19,12 +21,18 @@ import java.util.UUID;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/users")
+@RequestMapping("/v1/users")
+@Tag(name = "Users", description = "Admin user management APIs")
 public class UserController {
 
     private final UserService userService;
 
     @PostMapping
+    @Operation(
+            summary = "Create user",
+            description = "Create a new ADMIN or MEMBER account. ADMIN only.",
+            operationId = "createUser"
+    )
     public ResponseEntity<ApiResponse<UserResponse>> createUser(@Valid @RequestBody CreateUserRequest request) {
         UserResponse response = userService.createUser(request);
 
@@ -37,6 +45,11 @@ public class UserController {
     }
 
     @GetMapping
+    @Operation(
+            summary = "Get all users",
+            description = "Get all user accounts. ADMIN only.",
+            operationId = "getAllUsers"
+    )
     public ResponseEntity<ApiResponse<List<UserResponse>>> getUsers() {
         List<UserResponse> response = userService.getUsers();
 
@@ -49,6 +62,11 @@ public class UserController {
     }
 
     @GetMapping("/{id}")
+    @Operation(
+            summary = "Get user by id",
+            description = "Get a user account by UUID. ADMIN only.",
+            operationId = "getUserById"
+    )
     public ResponseEntity<ApiResponse<UserResponse>> getUserById(@PathVariable UUID id) {
         UserResponse response = userService.getUserById(id);
 
@@ -61,6 +79,11 @@ public class UserController {
     }
 
     @PatchMapping("/{id}/role")
+    @Operation(
+            summary = "Update user role",
+            description = "Update a user's role to ADMIN or MEMBER. ADMIN only.",
+            operationId = "updateUserRole"
+    )
     public ResponseEntity<ApiResponse<UserResponse>> updateRole(
             @PathVariable UUID id,
             @Valid @RequestBody UpdateUserRoleRequest request
@@ -76,6 +99,11 @@ public class UserController {
     }
 
     @PatchMapping("/{id}/status")
+    @Operation(
+            summary = "Update user status",
+            description = "Update a user's status to ACTIVE, DISABLED, or LOCKED. ADMIN only.",
+            operationId = "updateUserStatus"
+    )
     public ResponseEntity<ApiResponse<UserResponse>> updateStatus(
             @PathVariable UUID id,
             @Valid @RequestBody UpdateUserStatusRequest request
@@ -91,6 +119,11 @@ public class UserController {
     }
 
     @PatchMapping("/{id}/reset-password")
+    @Operation(
+            summary = "Reset user password",
+            description = "Reset a user's password. ADMIN only.",
+            operationId = "resetUserPassword"
+    )
     public ResponseEntity<ApiResponse<UserResponse>> resetPassword(
             @PathVariable UUID id,
             @Valid @RequestBody AdminResetPasswordRequest request

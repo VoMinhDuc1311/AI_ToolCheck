@@ -6,6 +6,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.apidocument.res.ApiDocumentDeta
 import com.aitoolcheck.ai_toolcheck1_backend.dto.apidocumentversion.res.ApiDocumentVersionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiDocumentService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -18,12 +20,18 @@ import java.util.UUID;
 
 @RestController
 @RequiredArgsConstructor
-@RequestMapping("/api-documents")
+@RequestMapping("/v1/api-documents")
+@Tag(name = "API Documents", description = "API document lifecycle, publication, and version listing APIs")
 public class ApiDocumentController {
 
     private final ApiDocumentService apiDocumentService;
 
     @PostMapping
+    @Operation(
+            summary = "Create API document",
+            description = "Create an API document record for a source project.",
+            operationId = "createApiDocument"
+    )
     public ResponseEntity<ApiResponse<ApiDocumentDetailResponse>> create(
             @Valid @RequestBody CreateApiDocumentRequest request
     ) {
@@ -34,6 +42,11 @@ public class ApiDocumentController {
     }
 
     @GetMapping("/project/{projectId}")
+    @Operation(
+            summary = "Get API document by project",
+            description = "Get the API document associated with a source project.",
+            operationId = "getApiDocumentByProject"
+    )
     public ResponseEntity<ApiResponse<ApiDocumentDetailResponse>> getByProjectId(
             @PathVariable UUID projectId
     ) {
@@ -43,6 +56,11 @@ public class ApiDocumentController {
     }
 
     @GetMapping("/{id}")
+    @Operation(
+            summary = "Get API document by id",
+            description = "Get API document detail by UUID.",
+            operationId = "getApiDocumentById"
+    )
     public ResponseEntity<ApiResponse<ApiDocumentDetailResponse>> getById(
             @PathVariable UUID id
     ) {
@@ -52,6 +70,11 @@ public class ApiDocumentController {
     }
 
     @PatchMapping("/{id}")
+    @Operation(
+            summary = "Update API document",
+            description = "Partially update API document metadata.",
+            operationId = "updateApiDocument"
+    )
     public ResponseEntity<ApiResponse<ApiDocumentDetailResponse>> update(
             @PathVariable UUID id,
             @Valid @RequestBody UpdateApiDocumentRequest request
@@ -62,6 +85,11 @@ public class ApiDocumentController {
     }
 
     @GetMapping("/{id}/versions")
+    @Operation(
+            summary = "Get API document versions",
+            description = "Get all versions of an API document.",
+            operationId = "getApiDocumentVersions"
+    )
     public ResponseEntity<ApiResponse<List<ApiDocumentVersionResponse>>> getVersions(
             @PathVariable UUID id
     ) {
@@ -71,6 +99,11 @@ public class ApiDocumentController {
     }
 
     @PatchMapping("/{id}/publish")
+    @Operation(
+            summary = "Publish API document",
+            description = "Mark an API document as published. ADMIN only.",
+            operationId = "publishApiDocument"
+    )
     public ResponseEntity<ApiResponse<ApiDocumentDetailResponse>> publish(
             @PathVariable UUID id
     ) {
@@ -80,6 +113,11 @@ public class ApiDocumentController {
     }
 
     @PatchMapping("/{id}/unpublish")
+    @Operation(
+            summary = "Unpublish API document",
+            description = "Mark an API document as unpublished. ADMIN only.",
+            operationId = "unpublishApiDocument"
+    )
     public ResponseEntity<ApiResponse<ApiDocumentDetailResponse>> unpublish(
             @PathVariable UUID id
     ) {
