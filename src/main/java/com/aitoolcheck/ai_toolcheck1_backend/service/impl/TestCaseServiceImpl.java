@@ -26,12 +26,12 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import tools.jackson.core.JacksonException;
+import tools.jackson.databind.JsonNode;
+import tools.jackson.databind.json.JsonMapper;
 
 import java.util.Comparator;
 import java.util.List;
@@ -45,8 +45,7 @@ public class TestCaseServiceImpl implements TestCaseService {
     private final SourceProjectRepository sourceProjectRepository;
     private final ApiEndpointRepository apiEndpointRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
-
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final JsonMapper jsonMapper;
 
     @Override
     @Transactional
@@ -428,8 +427,8 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         try {
-            return objectMapper.writeValueAsString(jsonNode);
-        } catch (JsonProcessingException ex) {
+            return jsonMapper.writeValueAsString(jsonNode);
+        } catch (JacksonException ex) {
             throw new BadRequestException("Invalid JSON value.");
         }
     }
@@ -440,8 +439,8 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         try {
-            return objectMapper.readTree(json);
-        } catch (JsonProcessingException ex) {
+            return jsonMapper.readTree(json);
+        } catch (JacksonException ex) {
             throw new BadRequestException("Stored JSON value is invalid.");
         }
     }

@@ -1,7 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.req;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
-import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.NotBlank;
@@ -12,6 +11,7 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
+import tools.jackson.databind.JsonNode;
 
 @Getter
 @Setter
