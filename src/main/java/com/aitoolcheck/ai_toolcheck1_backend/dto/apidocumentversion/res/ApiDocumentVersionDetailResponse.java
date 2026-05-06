@@ -30,9 +30,7 @@ public class ApiDocumentVersionDetailResponse {
 
     private String contentJson;
 
-    private String exampleRequestJson;
 
-    private String exampleResponseJson;
 
     private String openapiFragmentJson;
 

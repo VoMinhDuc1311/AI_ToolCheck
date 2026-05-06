@@ -19,4 +19,7 @@ public class AiTaskMessage {
 
     /** UUID của SourceFile — dùng để ghi Audit Log (nullable nếu không liên quan file cụ thể). */
     private String sourceFileId;
+
+    /** UUID của ApiEndpoint — dùng để cập nhật dữ liệu AI Enrichment cho từng Endpoint cụ thể. */
+    private String apiEndpointId;
 }

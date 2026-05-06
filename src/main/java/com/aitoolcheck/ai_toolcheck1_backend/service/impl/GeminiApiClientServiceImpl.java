@@ -209,75 +209,102 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                 // disable FAIL_ON_UNKNOWN_PROPERTIES an toàn, không mutate bean dùng chung.
         }
 
-        // =========================================================================================
-        // LOGIC CŨ: Gọi API cơ bản trả về Mono<String> (Dành cho các Task sinh Text
-        // thông thường)
-        // =========================================================================================
-        @Override
-        public Mono<String> sendPrompt(String promptText) {
-                // Build DTO Request dựa vào tham số promptText
-                GeminiRequest request = GeminiRequest.builder()
-                                .contents(List.of(
-                                                GeminiRequest.Content.builder()
-                                                                .parts(List.of(
-                                                                                GeminiRequest.Part.builder()
-                                                                                                .text(promptText)
-                                                                                                .build()))
-                                                                .build()))
-                                .build();
+    // =========================================================================================
+    // LOGIC CŨ: Gọi API cơ bản trả về Mono<String> (Dành cho các Task sinh Text
+    // thông thường)
+    // =========================================================================================
+    @Override
+    public Mono<String> sendPrompt(String promptText) {
+        // Build DTO Request dựa vào tham số promptText
+        GeminiRequest request = GeminiRequest.builder()
+                        .contents(List.of(
+                                        GeminiRequest.Content.builder()
+                                                        .parts(List.of(
+                                                                        GeminiRequest.Part.builder()
+                                                                                        .text(promptText)
+                                                                                        .build()))
+                                                        .build()))
+                        .build();
 
-                // URI Path động từ model trong properties
-                String uriPath = "/" + geminiProperties.getModel() + ":generateContent";
+        // URI Path động từ model trong properties
+        String uriPath = "/" + geminiProperties.getModel() + ":generateContent";
 
-                // Gửi POST request thông qua WebClient
-                return webClient.post()
-                                .uri(uriPath)
-                                .bodyValue(request)
-                                .retrieve()
-                                .onStatus(status -> status.isSameCodeAs(HttpStatus.TOO_MANY_REQUESTS),
-                                                clientResponse -> {
-                                                        log.warn("Rate limit bị chạm (429 - TOO MANY REQUESTS) từ Gemini API");
-                                                        return clientResponse.bodyToMono(String.class)
-                                                                        .flatMap(errorBody -> Mono.error(
-                                                                                        new RuntimeException(
-                                                                                                        "Rate Limit Exceeded (429): "
-                                                                                                                        + errorBody)));
-                                                })
-                                .onStatus(HttpStatusCode::is5xxServerError, clientResponse -> {
-                                        log.error("Server error từ Gemini API: {}", clientResponse.statusCode());
-                                        return clientResponse.bodyToMono(String.class)
-                                                        .flatMap(errorBody -> Mono.error(
-                                                                        new RuntimeException("Gemini Server Error ("
-                                                                                        + clientResponse.statusCode()
-                                                                                        + "): " + errorBody)));
-                                })
-                                .onStatus(HttpStatusCode::is4xxClientError, clientResponse -> {
-                                        log.error("Client error từ Gemini API: {}", clientResponse.statusCode());
-                                        return clientResponse.bodyToMono(String.class)
-                                                        .flatMap(errorBody -> Mono.error(
-                                                                        new RuntimeException("Gemini Client Error ("
-                                                                                        + clientResponse.statusCode()
-                                                                                        + "): " + errorBody)));
-                                })
-                                .bodyToMono(GeminiResponse.class)
-                                .map(response -> {
-                                        String extractedText = response.extractText();
-                                        if (extractedText == null) {
-                                                log.warn("Không trích xuất được text từ phản hồi của Gemini: {}",
-                                                                response);
-                                                throw new RuntimeException(
-                                                                "Failed to extract text from Gemini API response");
-                                        }
-                                        return extractedText;
-                                })
-                                // Thêm cơ chế Retry (Backoff 3 lần, delay 2 giây)
-                                .retryWhen(Retry.backoff(3, Duration.ofSeconds(2))
-                                                .doBeforeRetry(retrySignal -> log.warn(
-                                                                "Đang thử lại lần thứ {}/3 do lỗi: {}",
-                                                                retrySignal.totalRetries() + 1,
-                                                                retrySignal.failure().getMessage())))
-                                .doOnError(e -> log.error("Ngoại lệ xảy ra trong quá trình gọi Gemini API: ", e));
-        }
+        // Gửi POST request thông qua WebClient
+        return webClient.post()
+                        .uri(uriPath)
+                        .bodyValue(request)
+                        .retrieve()
+                        .onStatus(status -> status.isSameCodeAs(HttpStatus.TOO_MANY_REQUESTS),
+                                        clientResponse -> {
+                                                log.warn("Rate limit bị chạm (429 - TOO MANY REQUESTS) từ Gemini API");
+                                                return clientResponse.bodyToMono(String.class)
+                                                                .flatMap(errorBody -> Mono.error(
+                                                                                new RuntimeException(
+                                                                                                "Rate Limit Exceeded (429): "
+                                                                                                                + errorBody)));
+                                        })
+                        .onStatus(HttpStatusCode::is5xxServerError, clientResponse -> {
+                                log.error("Server error từ Gemini API: {}", clientResponse.statusCode());
+                                return clientResponse.bodyToMono(String.class)
+                                                .flatMap(errorBody -> Mono.error(
+                                                                new RuntimeException("Gemini Server Error ("
+                                                                                + clientResponse.statusCode()
+                                                                                + "): " + errorBody)));
+                        })
+                        .onStatus(HttpStatusCode::is4xxClientError, clientResponse -> {
+                                log.error("Client error từ Gemini API: {}", clientResponse.statusCode());
+                                return clientResponse.bodyToMono(String.class)
+                                                .flatMap(errorBody -> Mono.error(
+                                                                new RuntimeException("Gemini Client Error ("
+                                                                                + clientResponse.statusCode()
+                                                                                + "): " + errorBody)));
+                        })
+                        .bodyToMono(GeminiResponse.class)
+                        .map(response -> {
+                                String extractedText = response.extractText();
+                                if (extractedText == null) {
+                                        log.warn("Không trích xuất được text từ phản hồi của Gemini: {}",
+                                                        response);
+                                        throw new RuntimeException(
+                                                        "Failed to extract text from Gemini API response");
+                                }
+                                return extractedText;
+                        })
+                        // Thêm cơ chế Retry (Backoff 4 lần, base delay 15 giây)
+                        .retryWhen(Retry.backoff(4, Duration.ofSeconds(15))
+                                        .doBeforeRetry(retrySignal -> log.warn(
+                                                        "Đang thử lại lần thứ {}/4 do lỗi: {}",
+                                                        retrySignal.totalRetries() + 1,
+                                                        retrySignal.failure().getMessage())))
+                        .doOnError(e -> log.error("Ngoại lệ xảy ra trong quá trình gọi Gemini API: ", e));
+    }
+
+    // =========================================================================================
+    // LlmClientService contract: generateText (blocking wrapper cho Router)
+    // =========================================================================================
+
+    /**
+     * Implements {@link com.aitoolcheck.ai_toolcheck1_backend.service.LlmClientService#generateText(String)}.
+     * Wraps {@link #sendPrompt(String)} with a synchronous block() call for use
+     * in the {@code AiModelRouterService} fallback chain.
+     *
+     * <p>A 60-second Reactor timeout is applied before blocking to protect
+     * the RabbitMQ consumer thread from hanging indefinitely.
+     *
+     * @param prompt The full prompt string.
+     * @return Raw text response from Gemini.
+     */
+    @Override
+    public String generateText(String prompt) {
+        log.info("[GeminiClient][generateText] Gọi Gemini Cloud — độ dài prompt: {} chars", prompt.length());
+        return sendPrompt(prompt)
+                .timeout(Duration.ofSeconds(60),
+                        Mono.error(new RuntimeException("[GeminiClient] Timeout 60s khi gọi Gemini Cloud.")))
+                .doOnError(ex -> log.error("[GeminiClient][generateText] Thất bại: {}", ex.getMessage()))
+                .block();
+    }
+
+
 
     // =========================================================================================
     // LOGIC MỚI: AI Skill 0 - Đọc code Legacy trả về DTO chuẩn (Dành cho xử lý chạy
@@ -308,8 +335,8 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                     .onStatus(HttpStatusCode::isError, resp -> resp.bodyToMono(String.class)
                             .flatMap(err -> Mono.error(new RuntimeException("Gemini API Error: " + err))))
                     .bodyToMono(String.class)
-                    .retryWhen(Retry.backoff(3, Duration.ofSeconds(2))
-                            .doBeforeRetry(s -> log.warn("[GeminiClient] Retry lần {}/3 – lý do: {}",
+                    .retryWhen(Retry.backoff(4, Duration.ofSeconds(15))
+                            .doBeforeRetry(s -> log.warn("[GeminiClient] Retry lần {}/4 – lý do: {}",
                                     s.totalRetries() + 1, s.failure().getMessage())))
                     .block();
 

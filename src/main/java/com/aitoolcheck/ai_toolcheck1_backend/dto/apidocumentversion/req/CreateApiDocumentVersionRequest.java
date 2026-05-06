@@ -26,9 +26,7 @@ public class CreateApiDocumentVersionRequest {
 
     private String contentJson;
 
-    private String exampleRequestJson;
 
-    private String exampleResponseJson;
 
     private String openapiFragmentJson;
 

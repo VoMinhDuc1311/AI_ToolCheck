@@ -12,9 +12,12 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.UUID;
+import org.springframework.transaction.annotation.Transactional;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ApiEndpointServiceImpl implements ApiEndpointService {
 
     private final ApiEndpointRepository apiEndpointRepository;
@@ -38,6 +41,24 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
                 .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
 
         return mapToDetailResponse(apiEndpoint);
+    }
+
+    @Override
+    @Transactional
+    public void enrichEndpointData(UUID id, String summary, String description, String reqJson, String resJson) {
+        log.info("[ApiEndpoint] Cập nhật dữ liệu do AI làm giàu cho Endpoint ID: {}", id);
+        
+        ApiEndpoint endpoint = apiEndpointRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
+                
+        endpoint.setSummary(summary);
+        endpoint.setDescription(description);
+        endpoint.setExampleRequestJson(reqJson);
+        endpoint.setExampleResponseJson(resJson);
+        endpoint.setAiEnrichedFlag(true);
+        
+        apiEndpointRepository.save(endpoint);
+        log.debug("[ApiEndpoint] Cập nhật thành công cho Endpoint ID: {}", id);
     }
 
     private ApiEndpointResponse mapToResponse(ApiEndpoint apiEndpoint) {

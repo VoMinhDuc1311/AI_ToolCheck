@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  # ---------------------------------------------------------
+  # OLLAMA SERVER
+  # ---------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    # Nếu máy có GPU NVIDIA, bạn có thể bỏ comment đoạn dưới đây để chạy nhanh hơn:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1
+    #           capabilities: [gpu]
+
+  # ---------------------------------------------------------
+  # OLLAMA MODEL PULLER (Tự động tải model)
+  # ---------------------------------------------------------
+  ollama-pull-models:
+    image: curlimages/curl:latest
+    container_name: ollama-pull-models
+    depends_on:
+      - ollama
+    restart: "no" # Chỉ chạy 1 lần khi khởi động
+    command: >
+      sh -c "
+        echo 'Đang chờ Ollama khởi động...'
+        while ! curl -s http://ollama:11434/api/tags > /dev/null; do 
+          sleep 3; 
+        done;
+        
+        echo 'Ollama đã sẵn sàng! Đang tải model qwen2.5-coder:7b...'
+        curl -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen2.5-coder:7b\"}'
+        
+        echo '\nĐang tải model mxbai-embed-large...'
+        curl -X POST http://ollama:11434/api/pull -d '{\"name\":\"mxbai-embed-large\"}'
+        
+        echo '\n✅ Tải model hoàn tất! Bạn có thể bắt đầu sử dụng.'
+      "
+
+volumes:
+  ollama_data:
+    name: ollama_data_volume

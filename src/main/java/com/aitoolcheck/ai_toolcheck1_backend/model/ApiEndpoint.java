@@ -56,7 +56,24 @@ public class ApiEndpoint {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Column(name = "summary")
+    private String summary;
 
+    @Column(name = "example_request_json", columnDefinition = "TEXT")
+    private String exampleRequestJson;
+
+    @Column(name = "example_response_json", columnDefinition = "TEXT")
+    private String exampleResponseJson;
+
+    @Column(name = "ai_enriched_flag")
+    private Boolean aiEnrichedFlag;
+    
+    @PrePersist
+    public void prePersist() {
+        if (this.aiEnrichedFlag == null) {
+            this.aiEnrichedFlag = false;
+        }
+    }
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)

@@ -3,6 +3,11 @@ spring:
     name: ai_toolcheck1_backend
   profiles:
     active: dev
+  rabbitmq:
+    listener:
+      simple:
+        prefetch: 1
+        concurrency: 1
 
 server:
   port: ${SERVER_PORT:8080}
