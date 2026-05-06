@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -40,7 +41,11 @@ public class TestResult {
     @Column(name = "blocked_reason")
     private String blockedReason;
 
+    @Column(name = "created_at")
+    private LocalDateTime createdAt;
 
+    @Column(name = "updated_at")
+    private LocalDateTime updatedAt;
 
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "test_run_item_id", referencedColumnName = "id", unique = true, nullable = false)
@@ -48,4 +53,16 @@ public class TestResult {
 
     @OneToMany(mappedBy = "testResult", fetch = FetchType.LAZY)
     private List<AiJobLog> aiJobLogs;
+
+    @PrePersist
+    public void prePersist() {
+        LocalDateTime now = LocalDateTime.now();
+        createdAt = now;
+        updatedAt = now;
+    }
+
+    @PreUpdate
+    public void preUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
 }
