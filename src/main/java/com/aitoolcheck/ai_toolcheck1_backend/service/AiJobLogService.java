@@ -16,7 +16,9 @@ public interface AiJobLogService {
      * quá trình xử lý AI thực tế sẽ được worker lấy từ queue ra và thực thi ngầm.
      */
     AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
-            UUID projectId, UUID sourceFileId);
+            UUID projectId, UUID sourceFileId, UUID apiEndpointId);
+
+    int triggerEnrichmentForProject(UUID projectId);
 
     AiJobLogResponse createPendingJob(CreateAiJobLogRequest request);
 

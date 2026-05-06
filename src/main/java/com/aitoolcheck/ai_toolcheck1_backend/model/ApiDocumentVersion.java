@@ -30,11 +30,7 @@ public class ApiDocumentVersion {
     @Column(name = "description")
     private String description;
 
-    @Column(name = "example_request_json", columnDefinition = "TEXT")
-    private String exampleRequestJson;
 
-    @Column(name = "example_response_json", columnDefinition = "TEXT")
-    private String exampleResponseJson;
 
     @Column(name = "openapi_fragment_json", columnDefinition = "TEXT")
     private String openapiFragmentJson;

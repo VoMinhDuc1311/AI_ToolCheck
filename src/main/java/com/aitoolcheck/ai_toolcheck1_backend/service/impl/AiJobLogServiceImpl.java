@@ -23,8 +23,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiSkillRepository;
 
 @Slf4j
@@ -37,11 +39,12 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     private final SourceProjectRepository sourceProjectRepository;
     private final EntityManager entityManager;
     private final AiSkillRepository aiSkillRepository;
+    private final ApiEndpointRepository apiEndpointRepository;
 
     @Override
     @Transactional
     public AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
-                                                  UUID projectId, UUID sourceFileId) {
+                                                  UUID projectId, UUID sourceFileId, UUID apiEndpointId) {
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
         AiSkill aiSkill = aiSkillRepository.findBySkillCode(skillCode)
@@ -73,6 +76,10 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .sourceProject(projectRef)
                 .aiSkill(aiSkill)
                 .build();
+                
+        if (apiEndpointId != null) {
+            jobLog.setApiEndpoint(entityManager.getReference(ApiEndpoint.class, apiEndpointId));
+        }
 
         AiJobLog savedJob = aiJobLogRepository.save(jobLog);
         log.info("Đã tạo AiJobLog ID: [{}] trạng thái PENDING cho Project: [{}]",
@@ -84,6 +91,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .skillCode(skillCode)
                 .projectId(projectId.toString())
                 .sourceFileId(sourceFileId != null ? sourceFileId.toString() : null)
+                .apiEndpointId(apiEndpointId != null ? apiEndpointId.toString() : null)
                 .build();
 
         org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
@@ -97,6 +105,31 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         );
 
         return mapToResponse(savedJob);
+    }
+
+    @Override
+    @Transactional
+    public int triggerEnrichmentForProject(UUID projectId) {
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectId(projectId);
+        if (endpoints.isEmpty()) {
+            return 0;
+        }
+
+        int count = 0;
+        for (ApiEndpoint endpoint : endpoints) {
+            String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+            String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name().toLowerCase() : "get";
+            String opId = endpoint.getOperationId() != null ? endpoint.getOperationId() : (endpoint.getMethodName() != null ? endpoint.getMethodName() : "operation");
+            String summary = endpoint.getMethodName() != null ? endpoint.getMethodName() : opId;
+
+            String promptText = String.format("{\n  \"%s\" : {\n    \"%s\" : {\n      \"operationId\" : \"%s\",\n      \"summary\" : \"%s\"\n    }\n  }\n}",
+                    path, method, opId, summary);
+
+            createPendingJobAndTriggerAi(promptText, "enrich_api_doc", projectId, null, endpoint.getId());
+            count++;
+        }
+
+        return count;
     }
 
     @Override
@@ -142,7 +175,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
 
         if (jobLog.getExecutionStatus() != ExecutionStatus.PENDING) {
-            throw new BadRequestException("Job is not in PENDING state");
+            log.warn("Job is not in PENDING state (Current: {}). Transitioning to RUNNING anyway due to retry.", jobLog.getExecutionStatus());
         }
 
         jobLog.setExecutionStatus(ExecutionStatus.RUNNING);
