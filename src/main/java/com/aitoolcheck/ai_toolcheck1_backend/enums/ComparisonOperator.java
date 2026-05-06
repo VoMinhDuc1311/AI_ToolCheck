@@ -10,5 +10,8 @@ public enum ComparisonOperator {
     CONTAINS,
     NOT_CONTAINS,
     IS_NULL,
-    IS_NOT_NULL
+    IS_NOT_NULL,
+    EXISTS,
+    NOT_EXISTS,
+    MATCHES_REGEX
 }

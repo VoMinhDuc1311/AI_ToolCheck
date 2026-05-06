@@ -8,6 +8,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 @Getter
 @Setter
@@ -17,9 +18,13 @@ import java.util.UUID;
 
 public class TestCaseAssertionResponse {
     private UUID id;
-    private UUID testcaseId;
+    private UUID testCaseId;
     private AssertionType assertionType;
     private String targetPath;
     private ComparisonOperator operator;
     private String expectedValue;
+    private Boolean enabledFlag;
+    private Integer sortOrder;
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
 }

@@ -8,6 +8,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 @Getter
 @Setter
@@ -22,4 +23,8 @@ public class TestCaseAssertionDetailResponse {
     private String targetPath;
     private ComparisonOperator operator;
     private String expectedValue;
+    private Boolean enabledFlag;
+    private Integer sortOrder;
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
 }
