@@ -9,6 +9,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 
 @Getter
@@ -19,10 +20,19 @@ import java.util.UUID;
 public class TestCaseResponse {
 
     private UUID id;
+    private UUID projectId;
+    private UUID apiEndpointId;
+    private UUID apiDocumentVersionId;
     private String caseCode;
     private String caseName;
+    private String description;
     private CaseType caseType;
     private PriorityLevel priorityLevel;
     private GeneratedBy generatedBy;
     private Boolean activeFlag;
+    private Boolean deletedFlag;
+    private Boolean requiresWrite;
+    private Boolean cleanupRequired;
+    private LocalDateTime createdAt;
+    private LocalDateTime updatedAt;
 }
