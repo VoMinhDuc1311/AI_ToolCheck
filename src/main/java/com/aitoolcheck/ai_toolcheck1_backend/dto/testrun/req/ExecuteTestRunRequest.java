@@ -1,13 +1,12 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req;
 
-import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentType;
-import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
+import jakarta.validation.constraints.NotNull;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-import java.util.List;
+
 import java.util.UUID;
 
 @Getter
@@ -17,10 +16,9 @@ import java.util.UUID;
 @Builder
 public class ExecuteTestRunRequest {
 
-    private UUID projectId;
-    private String runCode;
-    private EnvironmentType environmentName;
-    private ExecutionMode executionMode;
-    private String baseUrl;
-    private List<UUID> testCaseIds;
+    @NotNull(message = "testRunId is required")
+    private UUID testRunId;
+
+    /** When true, prepare and validate the request but do not send it. */
+    private Boolean dryRun;
 }
