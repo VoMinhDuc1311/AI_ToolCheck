@@ -56,18 +56,30 @@ public class ApiEndpoint {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
-    @Column(name = "summary")
-    private String summary;
+    @Column(name = "ai_summary", columnDefinition = "TEXT")
+    private String aiSummary;
 
-    @Column(name = "example_request_json", columnDefinition = "TEXT")
+    @Column(name = "ai_description", columnDefinition = "TEXT")
+    private String aiDescription;
+
+    @Column(name = "example_request_json", columnDefinition = "LONGTEXT")
     private String exampleRequestJson;
 
-    @Column(name = "example_response_json", columnDefinition = "TEXT")
+    @Column(name = "example_response_json", columnDefinition = "LONGTEXT")
     private String exampleResponseJson;
+
+    @Column(name = "openapi_fragment_json", columnDefinition = "LONGTEXT")
+    private String openapiFragmentJson;
+
+    @Column(name = "ai_enriched_at")
+    private LocalDateTime aiEnrichedAt;
+
+    @Column(name = "last_ai_job_log_id")
+    private UUID lastAiJobLogId;
 
     @Column(name = "ai_enriched_flag")
     private Boolean aiEnrichedFlag;
-    
+
     @PrePersist
     public void prePersist() {
         if (this.aiEnrichedFlag == null) {
@@ -85,9 +97,6 @@ public class ApiEndpoint {
 
     @OneToMany(mappedBy = "apiEndpoint", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private List<ApiParameter> apiParameters;
-
-
-
 
     @OneToMany(mappedBy = "apiEndpoint", fetch = FetchType.LAZY)
     private List<TestCase> testCases;

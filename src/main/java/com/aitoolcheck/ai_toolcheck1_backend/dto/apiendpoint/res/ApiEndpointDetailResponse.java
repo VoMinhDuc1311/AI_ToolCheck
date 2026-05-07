@@ -1,4 +1,5 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.apiendpoint.res;
+
 import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -27,4 +28,12 @@ public class ApiEndpointDetailResponse {
     private Boolean deprecatedFlag;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
+    private Boolean aiEnrichedFlag;
+    private String aiSummary;
+    private String aiDescription;
+    private String exampleRequestJson;
+    private String exampleResponseJson;
+    private String openapiFragmentJson;
+    private LocalDateTime aiEnrichedAt;
+    private UUID lastAiJobLogId;
 }

@@ -23,4 +23,7 @@ public class ApiEndpointResponse {
     private String tagName;
     private Boolean authRequired;
     private Boolean deprecatedFlag;
+    private Boolean aiEnrichedFlag;
+    private String aiSummary;
+    private java.time.LocalDateTime aiEnrichedAt;
 }

@@ -12,5 +12,5 @@ public interface ApiEndpointService {
 
     ApiEndpointDetailResponse getById(UUID id);
 
-    void enrichEndpointData(UUID id, String summary, String description, String reqJson, String resJson);
+    void enrichEndpointData(UUID id, String summary, String description, String reqJson, String resJson, String openapiFragmentJson, UUID jobId);
 }
