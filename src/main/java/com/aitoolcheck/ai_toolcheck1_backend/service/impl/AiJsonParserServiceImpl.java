@@ -182,10 +182,14 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
 
         // 3. Ép kiểu (Object Mapping) & Bẫy lỗi sinh tử
         try {
-            // ObjectMapper sẽ đọc cleanJson và ép sang targetType.
-            // Các DTO như AiDocumentEnrichmentResponseDto đã có @JsonIgnoreProperties(ignoreUnknown = true)
-            // nên không sợ lỗi UnrecognizedPropertyException.
-            T dto = objectMapper.readValue(cleanJson, targetType);
+            // Cấu hình Jackson cực kỳ "khoan dung" (lenient) để tự phục hồi lỗi từ AI (Ollama/Llama)
+            ObjectMapper lenientMapper = objectMapper.copy()
+                    .enable(com.fasterxml.jackson.core.JsonParser.Feature.ALLOW_UNQUOTED_FIELD_NAMES)
+                    .enable(com.fasterxml.jackson.core.JsonParser.Feature.ALLOW_SINGLE_QUOTES)
+                    .enable(com.fasterxml.jackson.core.JsonParser.Feature.ALLOW_COMMENTS)
+                    .disable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+            T dto = lenientMapper.readValue(cleanJson, targetType);
             
             // Validate DTO (Layer 5) để chặn rác (null) đi tiếp vào Database
             validateDto(dto);
