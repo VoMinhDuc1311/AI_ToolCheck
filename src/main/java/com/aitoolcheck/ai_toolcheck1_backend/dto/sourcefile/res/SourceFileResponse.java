@@ -22,4 +22,6 @@ public class SourceFileResponse {
     private FileType fileType;
     private Boolean parsedFlag;
     private String parseError;
+    private Boolean activeFlag;
+    private Boolean deletedFlag;
 }

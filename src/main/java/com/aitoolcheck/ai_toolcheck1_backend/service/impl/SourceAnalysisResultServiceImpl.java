@@ -11,6 +11,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceAnalysisResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.AnalysisSignals;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.JavaSourceAnalyzer;
@@ -31,6 +32,7 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
     private final SourceAnalysisResultRepository sourceAnalysisResultRepository;
     private final SourceFileRepository sourceFileRepository;
     private final SourceProjectRepository sourceProjectRepository;
+    private final SourceUploadVersionRepository sourceUploadVersionRepository;
     private final JavaSourceAnalyzer javaSourceAnalyzer;
     private final SourceAnalysisScoringService scoringService;
     private final SourceAnalysisDecisionService decisionService;
@@ -42,7 +44,10 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         SourceProject sourceProject = sourceProjectRepository.findById(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + projectId));
 
-        List<SourceFile> sourceFiles = sourceFileRepository.findBySourceProjectId(projectId);
+        sourceProject.setStatus(ProjectStatus.ANALYZING);
+        sourceProjectRepository.save(sourceProject);
+
+        List<SourceFile> sourceFiles = sourceFileRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
 
         if (sourceFiles.isEmpty()) {
             throw new BadRequestException("No source files found for project id: " + projectId);
@@ -91,6 +96,9 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         analysisResult.setParsedFailedFiles(signals.parsedFailedFiles());
         analysisResult.setParseSuccessRate(parseSuccessRate);
         analysisResult.setSummary(summary);
+        analysisResult.setCurrentFlag(Boolean.TRUE);
+        sourceUploadVersionRepository.findTopBySourceProjectIdOrderByVersionNoDesc(projectId)
+                .ifPresent(analysisResult::setSourceUploadVersion);
 
         SourceAnalysisResult savedResult = sourceAnalysisResultRepository.save(analysisResult);
 
@@ -127,6 +135,8 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
                 .parsedFailedFiles(result.getParsedFailedFiles())
                 .parseSuccessRate(result.getParseSuccessRate())
                 .summary(result.getSummary())
+                .currentFlag(result.getCurrentFlag())
+                .sourceUploadVersionId(result.getSourceUploadVersion() == null ? null : result.getSourceUploadVersion().getId())
                 .build();
     }
 }

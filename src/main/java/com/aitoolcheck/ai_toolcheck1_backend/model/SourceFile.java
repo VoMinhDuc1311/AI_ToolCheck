@@ -51,6 +51,12 @@ public class SourceFile {
     @Column(name = "parse_error", length = 1000)
     private String parseError;
 
+    @Column(name = "active_flag", nullable = false)
+    private Boolean activeFlag;
+
+    @Column(name = "deleted_flag", nullable = false)
+    private Boolean deletedFlag;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -63,6 +69,14 @@ public class SourceFile {
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)
     private SourceProject sourceProject;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "upload_version_id", referencedColumnName = "id")
+    private SourceUploadVersion uploadVersion;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "last_seen_upload_version_id", referencedColumnName = "id")
+    private SourceUploadVersion lastSeenUploadVersion;
+
     @OneToMany(mappedBy = "sourceFile", fetch = FetchType.LAZY)
     private List<ApiEndpoint> apiEndpoints;
 
@@ -74,6 +88,12 @@ public class SourceFile {
         LocalDateTime now = LocalDateTime.now();
         this.createdAt = now;
         this.updatedAt = now;
+        if (this.activeFlag == null) {
+            this.activeFlag = true;
+        }
+        if (this.deletedFlag == null) {
+            this.deletedFlag = false;
+        }
     }
 
     @PreUpdate

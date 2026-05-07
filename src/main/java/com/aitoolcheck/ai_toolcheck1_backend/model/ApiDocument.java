@@ -35,6 +35,9 @@ public class ApiDocument {
     @Column(name = "published_flag")
     private Boolean publishedFlag;
 
+    @Column(name = "stale_flag", nullable = false)
+    private Boolean staleFlag;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -61,6 +64,9 @@ public class ApiDocument {
         }
         if (this.documentType == null) {
             this.documentType = DocumentType.OPENAPI_3;
+        }
+        if (this.staleFlag == null) {
+            this.staleFlag = false;
         }
     }
 

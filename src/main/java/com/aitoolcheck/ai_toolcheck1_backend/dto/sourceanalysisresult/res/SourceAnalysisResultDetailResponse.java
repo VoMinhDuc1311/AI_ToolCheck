@@ -30,4 +30,6 @@ public class SourceAnalysisResultDetailResponse {
     private Integer parsedFailedFiles;
     private Double parseSuccessRate;
     private String summary;
+    private Boolean currentFlag;
+    private UUID sourceUploadVersionId;
 }

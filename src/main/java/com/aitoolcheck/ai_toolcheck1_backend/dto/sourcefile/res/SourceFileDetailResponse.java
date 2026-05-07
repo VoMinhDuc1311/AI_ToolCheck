@@ -21,6 +21,10 @@ public class SourceFileDetailResponse {
     private String checksumSha256;
     private Boolean parsedFlag;
     private String parseError;
+    private Boolean activeFlag;
+    private Boolean deletedFlag;
+    private UUID uploadVersionId;
+    private UUID lastSeenUploadVersionId;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

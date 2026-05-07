@@ -18,14 +18,18 @@ public class ApiEndpointDetailResponse {
     private UUID id;
     private UUID projectId;
     private UUID sourceFileId;
+    private UUID sourceUploadVersionId;
     private String controllerName;
     private String methodName;
     private HttpMethod httpMethod;
     private String endpointPath;
+    private String stableKey;
     private String operationId;
     private String tagName;
     private Boolean authRequired;
     private Boolean deprecatedFlag;
+    private Boolean activeFlag;
+    private Boolean staleFlag;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private Boolean aiEnrichedFlag;

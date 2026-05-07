@@ -12,5 +12,7 @@ public interface EndpointSchemaMapRepository extends JpaRepository<EndpointSchem
 
     List<EndpointSchemaMap> findByApiEndpointId(UUID apiEndpointId);
 
+    void deleteByApiEndpointId(UUID apiEndpointId);
+
     void deleteByApiEndpoint_SourceProject_Id(UUID projectId);
 }

@@ -19,10 +19,13 @@ public class ApiEndpointResponse {
     private UUID projectId;
     private HttpMethod httpMethod;
     private String endpointPath;
+    private String stableKey;
     private String operationId;
     private String tagName;
     private Boolean authRequired;
     private Boolean deprecatedFlag;
+    private Boolean activeFlag;
+    private Boolean staleFlag;
     private Boolean aiEnrichedFlag;
     private String aiSummary;
     private java.time.LocalDateTime aiEnrichedAt;

@@ -110,7 +110,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     @Override
     @Transactional
     public int triggerEnrichmentForProject(UUID projectId) {
-        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectId(projectId);
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
         if (endpoints.isEmpty()) {
             return 0;
         }

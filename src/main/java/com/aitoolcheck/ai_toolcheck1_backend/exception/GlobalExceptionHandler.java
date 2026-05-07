@@ -4,6 +4,7 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.ConstraintViolationException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.validation.FieldError;
 import org.springframework.web.HttpMediaTypeNotAcceptableException;
@@ -172,6 +173,15 @@ public class GlobalExceptionHandler {
 
         return build(HttpStatus.NOT_ACCEPTABLE, "Not Acceptable",
                 ex.getMessage(), null, request);
+    }
+
+    @ExceptionHandler(DataIntegrityViolationException.class)
+    public ResponseEntity<ApiErrorResponse> handleDataIntegrityViolation(
+            DataIntegrityViolationException ex, HttpServletRequest request) {
+
+        return build(HttpStatus.CONFLICT, "Conflict",
+                "Re-upload failed because existing generated data depends on previous source metadata. Please retry after metadata cleanup is completed.",
+                null, request);
     }
 
 
