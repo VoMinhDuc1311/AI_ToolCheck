@@ -41,10 +41,10 @@ public class TestResult {
     @Column(name = "blocked_reason")
     private String blockedReason;
 
-    @Column(name = "created_at")
+    @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 
-    @Column(name = "updated_at")
+    @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 
     @OneToOne(fetch = FetchType.LAZY)
