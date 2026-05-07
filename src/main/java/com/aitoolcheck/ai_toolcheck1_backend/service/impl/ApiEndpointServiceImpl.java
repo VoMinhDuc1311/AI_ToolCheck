@@ -12,6 +12,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.UUID;
+import java.time.LocalDateTime;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.extern.slf4j.Slf4j;
 
@@ -45,18 +46,21 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
 
     @Override
     @Transactional
-    public void enrichEndpointData(UUID id, String summary, String description, String reqJson, String resJson) {
+    public void enrichEndpointData(UUID id, String summary, String description, String reqJson, String resJson, String openapiFragmentJson, UUID jobId) {
         log.info("[ApiEndpoint] Cập nhật dữ liệu do AI làm giàu cho Endpoint ID: {}", id);
-        
+
         ApiEndpoint endpoint = apiEndpointRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
-                
-        endpoint.setSummary(summary);
-        endpoint.setDescription(description);
+
+        endpoint.setAiSummary(summary);
+        endpoint.setAiDescription(description);
         endpoint.setExampleRequestJson(reqJson);
         endpoint.setExampleResponseJson(resJson);
+        endpoint.setOpenapiFragmentJson(openapiFragmentJson);
+        endpoint.setAiEnrichedAt(LocalDateTime.now());
+        endpoint.setLastAiJobLogId(jobId);
         endpoint.setAiEnrichedFlag(true);
-        
+
         apiEndpointRepository.save(endpoint);
         log.debug("[ApiEndpoint] Cập nhật thành công cho Endpoint ID: {}", id);
     }
@@ -71,6 +75,9 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
                 .tagName(apiEndpoint.getTagName())
                 .authRequired(apiEndpoint.getAuthRequired())
                 .deprecatedFlag(apiEndpoint.getDeprecatedFlag())
+                .aiEnrichedFlag(apiEndpoint.getAiEnrichedFlag())
+                .aiSummary(apiEndpoint.getAiSummary())
+                .aiEnrichedAt(apiEndpoint.getAiEnrichedAt())
                 .build();
     }
 
@@ -89,6 +96,14 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
                 .deprecatedFlag(apiEndpoint.getDeprecatedFlag())
                 .createdAt(apiEndpoint.getCreatedAt())
                 .updatedAt(apiEndpoint.getUpdatedAt())
+                .aiEnrichedFlag(apiEndpoint.getAiEnrichedFlag())
+                .aiSummary(apiEndpoint.getAiSummary())
+                .aiDescription(apiEndpoint.getAiDescription())
+                .exampleRequestJson(apiEndpoint.getExampleRequestJson())
+                .exampleResponseJson(apiEndpoint.getExampleResponseJson())
+                .openapiFragmentJson(apiEndpoint.getOpenapiFragmentJson())
+                .aiEnrichedAt(apiEndpoint.getAiEnrichedAt())
+                .lastAiJobLogId(apiEndpoint.getLastAiJobLogId())
                 .build();
     }
 }

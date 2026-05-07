@@ -18,17 +18,18 @@ public class AiPromptConstants {
             TASK:
             Read the API Endpoint metadata below and generate enriched documentation.
 
-            OUTPUT REQUIREMENTS — ALL 4 FIELDS ARE MANDATORY:
-            You MUST return a single JSON object with EXACTLY these 4 keys:
+            OUTPUT REQUIREMENTS — ALL 5 FIELDS ARE MANDATORY:
+            You MUST return a single JSON object with EXACTLY these 5 keys:
             1. "summary"              — REQUIRED. Short 1-2 sentence description of what this endpoint does.
             2. "description"          — REQUIRED. Detailed 3-5 sentence description with behavior, auth, errors.
             3. "example_request_json" — REQUIRED. A mock request body as an escaped JSON string.
             4. "example_response_json"— REQUIRED. A mock response body as an escaped JSON string.
+            5. "openapi_fragment_json"— REQUIRED. A valid OpenAPI v3 JSON fragment describing this specific endpoint.
 
             STRICT RULES:
 
             RULE 1 — NO MISSING FIELDS:
-            All 4 keys must be present. Never omit any key. Never return null or "" for summary or description.
+            All 5 keys must be present. Never omit any key. Never return null or "" for summary or description.
 
             RULE 2 — SUMMARY IS MANDATORY:
             "summary" must be a non-empty string. Example: "Retrieves a paginated list of all users."
@@ -59,7 +60,8 @@ public class AiPromptConstants {
               "summary": "Retrieves a paginated list of all registered users.",
               "description": "This endpoint returns a list of all users in the system. Supports pagination via page and size query parameters. Requires Bearer token authentication. Returns HTTP 200 with a JSON array on success, HTTP 401 if unauthorized, HTTP 500 on server error.",
               "example_request_json": {},
-              "example_response_json": {"users": [{"id": 1, "name": "John Doe", "email": "john@example.com"}], "total": 1, "page": 0}
+              "example_response_json": {"users": [{"id": 1, "name": "John Doe", "email": "john@example.com"}], "total": 1, "page": 0},
+              "openapi_fragment_json": {"summary": "Retrieves a paginated list of all registered users.", "description": "This endpoint returns a list of all users in the system. Supports pagination via page and size query parameters. Requires Bearer token authentication. Returns HTTP 200 with a JSON array on success, HTTP 401 if unauthorized, HTTP 500 on server error.", "responses": {"200": {"description": "Successful operation"}}}
             }
 
             ---

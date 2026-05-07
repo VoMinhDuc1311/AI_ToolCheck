@@ -54,4 +54,7 @@ public class AiDocumentEnrichmentResponseDto implements Serializable {
     // Đổi sang JsonNode để chứa object JSON trực tiếp nếu AI quên escape chuỗi
     @JsonProperty("example_response_json")
     private JsonNode exampleResponseJson;
+
+    @JsonProperty("openapi_fragment_json")
+    private JsonNode openapiFragmentJson;
 }

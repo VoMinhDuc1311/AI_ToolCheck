@@ -171,17 +171,22 @@ public class AiTaskConsumer {
     /**
      * Thực thi AI Skill 1 (Enrich Document) với kiến trúc Multi-Model + RAG.
      *
-     * <p><b>Luồng mới (v2):</b>
+     * <p>
+     * <b>Luồng mới (v2):</b>
      * <ol>
-     *   <li>Lấy {@code openApiFragment} từ Message.</li>
-     *   <li>Delegate toàn bộ sang {@code documentEnrichmentService.enrichDocumentation()}.
-     *       Service này nội bộ: RAG Retrieval → Build Prompt → Router (Ollama/Gemini) → Parse JSON.</li>
-     *   <li>Lưu kết quả vào DB qua {@code apiEndpointService}.</li>
-     *   <li>Đánh dấu Job là SUCCESS.</li>
+     * <li>Lấy {@code openApiFragment} từ Message.</li>
+     * <li>Delegate toàn bộ sang
+     * {@code documentEnrichmentService.enrichDocumentation()}.
+     * Service này nội bộ: RAG Retrieval → Build Prompt → Router (Ollama/Gemini) →
+     * Parse JSON.</li>
+     * <li>Lưu kết quả vào DB qua {@code apiEndpointService}.</li>
+     * <li>Đánh dấu Job là SUCCESS.</li>
      * </ol>
      *
-     * <p><b>Không còn Thread.sleep cứng nhắc ở đây.</b>
-     * Sleep 15s chỉ được áp dụng bên trong {@code AiModelRouterService} nếu và chỉ nếu
+     * <p>
+     * <b>Không còn Thread.sleep cứng nhắc ở đây.</b>
+     * Sleep 15s chỉ được áp dụng bên trong {@code AiModelRouterService} nếu và chỉ
+     * nếu
      * hệ thống buộc phải fallback sang Gemini Cloud (Tier 3).
      * Các luồng Ollama Local (Tier 1, Tier 2) chạy với tốc độ tối đa.
      */
@@ -192,13 +197,16 @@ public class AiTaskConsumer {
         // Bước 1: Lấy OpenAPI Fragment từ Message
         String openApiFragment = message.getPromptText();
 
-        // Bước 2: Delegate sang DocumentEnrichmentService (RAG + Multi-Model Router bên trong)
+        // Bước 2: Delegate sang DocumentEnrichmentService (RAG + Multi-Model Router bên
+        // trong)
         // - Không Thread.sleep ở đây! Sleep chỉ xảy ra trong Router nếu dùng Gemini.
         String endpointId = message.getApiEndpointId();
-        AiDocumentEnrichmentResponseDto resultDto = documentEnrichmentService.enrichDocumentation(endpointId, openApiFragment);
+        AiDocumentEnrichmentResponseDto resultDto = documentEnrichmentService.enrichDocumentation(endpointId,
+                openApiFragment);
 
         // Bước 3: Token tracking — Ollama không cung cấp token counts, đặt = 0
-        // (Trong tương lai có thể thêm ThreadLocal/RequestContext để truyền thông tin này)
+        // (Trong tương lai có thể thêm ThreadLocal/RequestContext để truyền thông tin
+        // này)
         int tokenInput = 0;
         int tokenOutput = 0;
         aiJobLogService.updateTokens(jobLog.getId(), tokenInput, tokenOutput);
@@ -208,16 +216,23 @@ public class AiTaskConsumer {
         if (apiEndpointId != null) {
             String reqJson = null;
             if (resultDto.getExampleRequestJson() != null) {
-                reqJson = resultDto.getExampleRequestJson().isTextual() 
-                        ? resultDto.getExampleRequestJson().asText() 
+                reqJson = resultDto.getExampleRequestJson().isTextual()
+                        ? resultDto.getExampleRequestJson().asText()
                         : resultDto.getExampleRequestJson().toString();
             }
-            
+
             String resJson = null;
             if (resultDto.getExampleResponseJson() != null) {
-                resJson = resultDto.getExampleResponseJson().isTextual() 
-                        ? resultDto.getExampleResponseJson().asText() 
+                resJson = resultDto.getExampleResponseJson().isTextual()
+                        ? resultDto.getExampleResponseJson().asText()
                         : resultDto.getExampleResponseJson().toString();
+            }
+
+            String openapiFragJson = null;
+            if (resultDto.getOpenapiFragmentJson() != null) {
+                openapiFragJson = resultDto.getOpenapiFragmentJson().isTextual()
+                        ? resultDto.getOpenapiFragmentJson().asText()
+                        : resultDto.getOpenapiFragmentJson().toString();
             }
 
             apiEndpointService.enrichEndpointData(
@@ -225,7 +240,9 @@ public class AiTaskConsumer {
                     resultDto.getSummary(),
                     resultDto.getDescription(),
                     reqJson,
-                    resJson);
+                    resJson,
+                    openapiFragJson,
+                    jobLog.getId());
         } else {
             log.warn("[RabbitMQ][DocumentEnrichment] Không có ApiEndpoint ID trong message — bỏ qua lưu DB.");
         }
@@ -243,8 +260,6 @@ public class AiTaskConsumer {
         // Trả về summary để Consumer có thể log trong trường hợp lỗi downstream
         return resultDto.getSummary() != null ? resultDto.getSummary() : "";
     }
-
-
 
     // =========================================================================
     // Audit Log FAILED
