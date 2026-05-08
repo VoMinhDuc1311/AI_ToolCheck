@@ -143,6 +143,12 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Jayway JsonPath: Used for Rule Engine JSON body assertions -->
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+        </dependency>
+
     </dependencies>
 
     <build>

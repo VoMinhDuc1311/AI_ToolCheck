@@ -1,7 +1,10 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.RuleEngineResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.res.TestResultResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.CreateTestRunRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.ExecuteTestRunRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.HttpActualResponseDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.PreparedHttpRequestResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunResponse;
@@ -12,6 +15,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseAssertion;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestResult;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRun;
@@ -20,9 +24,13 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.runner.TestRequestBuilder;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.context.annotation.Lazy;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
@@ -43,6 +51,7 @@ import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class TestRunServiceImpl implements TestRunService {
 
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
@@ -54,6 +63,14 @@ public class TestRunServiceImpl implements TestRunService {
     private final SourceProjectRepository sourceProjectRepository;
     private final TestRequestBuilder testRequestBuilder;
     private final JsonMapper jsonMapper;
+    private final TestResultService testResultService;
+    private TestRunService self;
+
+    @org.springframework.beans.factory.annotation.Autowired
+    @Lazy
+    public void setSelf(TestRunService self) {
+        this.self = self;
+    }
 
 
     @Override
@@ -100,6 +117,173 @@ public class TestRunServiceImpl implements TestRunService {
                 .findByTestRun_IdOrderBySortOrderAsc(saved.getId());
 
         return toDetailResponse(saved, sortedItems, Map.of());
+    }
+
+
+    @Override
+    @Transactional
+    public TestRunDetailResponse createTestRun(ExecuteTestRunRequest request) {
+        log.info("Initializing test run with projectId={}, baseUrl={}", 
+                request.getProjectId(), request.getBaseUrl());
+
+        if (request == null) {
+            throw new BadRequestException("ExecuteTestRunRequest is required");
+        }
+
+        if (request.getProjectId() == null) {
+            throw new BadRequestException("projectId is required");
+        }
+
+        // Verify SourceProject exists
+        SourceProject sourceProject = sourceProjectRepository.findById(request.getProjectId())
+                .orElseThrow(() -> new ResourceNotFoundException(
+                        "SourceProject not found with id: " + request.getProjectId()
+                ));
+
+        log.debug("Found SourceProject: id={}, name={}", sourceProject.getId(), sourceProject.getProjectName());
+
+        // Normalize and validate baseUrl
+        String baseUrl = normalizeBaseUrl(request.getBaseUrl());
+
+        // Resolve and validate test cases
+        List<UUID> testCaseIds = request.getTestCaseIds();
+        if (testCaseIds == null || testCaseIds.isEmpty()) {
+            throw new BadRequestException("testCaseIds must not be empty");
+        }
+
+        // Reject null entries
+        if (testCaseIds.contains(null)) {
+            throw new BadRequestException("testCaseIds must not contain null values");
+        }
+
+        // Deduplicate while preserving request order
+        List<UUID> deduplicatedIds = new ArrayList<>(new LinkedHashSet<>(testCaseIds));
+
+        // Fetch test cases from database
+        List<TestCase> testCases = testCaseRepository
+                .findByIdInAndSourceProject_IdAndActiveFlagTrueAndDeletedFlagFalse(
+                        deduplicatedIds, sourceProject.getId()
+                );
+
+        if (testCases.isEmpty()) {
+            throw new BadRequestException("No active test cases found for the specified IDs and project");
+        }
+
+        if (testCases.size() != deduplicatedIds.size()) {
+            throw new BadRequestException(
+                    "Some selected test cases are missing, inactive, deleted, or not in this project"
+            );
+        }
+
+        log.debug("Resolved {} test cases", testCases.size());
+
+        // Reorder test cases to match request order
+        Map<UUID, TestCase> testCaseById = new HashMap<>();
+        testCases.forEach(tc -> testCaseById.put(tc.getId(), tc));
+
+        List<TestCase> orderedTestCases = new ArrayList<>(deduplicatedIds.size());
+        for (UUID caseId : deduplicatedIds) {
+            orderedTestCases.add(testCaseById.get(caseId));
+        }
+
+        // Build TestRunItems from test cases
+        List<TestRunItem> testRunItems = buildTestRunItems(orderedTestCases);
+
+        // Determine runCode: use provided value or generate
+        String runCode = request.getRunCode();
+        if (!hasText(runCode)) {
+            runCode = generateRunCode();
+        }
+
+        log.debug("Generated/assigned runCode={}", runCode);
+
+        // Create TestRun entity
+        TestRun testRun = TestRun.builder()
+                .sourceProject(sourceProject)
+                .runCode(runCode)
+                .runName(runCode)  // Use runCode as runName since ExecuteTestRunRequest doesn't have runName
+                .baseUrl(baseUrl)
+                .environmentName(request.getEnvironmentName())
+                .runStatus(RunStatus.RUNNING)  // Set to RUNNING as per requirement
+                .testRunItems(testRunItems)
+                .build();
+
+        // Wire each item back to the run for cascade persistence
+        testRunItems.forEach(item -> item.setTestRun(testRun));
+
+        // Save TestRun (items saved via CascadeType.ALL)
+        TestRun savedTestRun = testRunRepository.save(testRun);
+        log.info("Test run created successfully: id={}, runCode={}, totalItems={}", 
+                savedTestRun.getId(), savedTestRun.getRunCode(), testRunItems.size());
+
+        // Trigger Async Execution
+        self.executeTestRunAsync(savedTestRun.getId());
+
+        // Load sorted test run items for deterministic response
+        List<TestRunItem> sortedItems = testRunItemRepository
+                .findByTestRun_IdOrderBySortOrderAsc(savedTestRun.getId());
+
+        return toDetailResponse(savedTestRun, sortedItems, Map.of());
+    }
+
+
+    @Override
+    @Async
+    @Transactional
+    public void executeTestRunAsync(UUID id) {
+        log.info("Starting async execution for TestRun id: {}", id);
+
+        TestRun testRun = testRunRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
+
+        testRun.setRunStatus(RunStatus.RUNNING);
+        testRunRepository.save(testRun);
+
+        List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
+
+        for (TestRunItem item : items) {
+            try {
+                item.setItemStatus(ExecutionStatus.RUNNING);
+                testRunItemRepository.save(item);
+
+                TestCase testCase = item.getTestCase();
+                TestCaseInput input = testCase.getTestCaseInput();
+
+                if (input == null) {
+                    log.warn("TestCaseInput missing for item id: {}", item.getId());
+                    item.setItemStatus(ExecutionStatus.FAILED);
+                    testRunItemRepository.save(item);
+                    continue;
+                }
+
+                // 1. Gọi TestRequestBuilder.executeRequest(...) để lấy HttpActualResponseDto
+                HttpActualResponseDto actualResponse = testRequestBuilder.executeRequest(
+                        testRun.getBaseUrl(),
+                        input.getRequestPath(),
+                        input.getHttpMethod().name(),
+                        input.getRequestBodyJson()
+                );
+
+                // 2. Gọi TestResultService.evaluateAssertions(...) để chấm điểm
+                List<TestCaseAssertion> assertions = testCase.getTestCaseAssertions();
+                RuleEngineResultDto ruleResult = testResultService.evaluateAssertions(actualResponse, assertions);
+
+                // 3. Gọi TestResultService.saveTestResult(...) để lưu DB
+                testResultService.saveTestResult(item, actualResponse, ruleResult);
+
+                item.setItemStatus(ExecutionStatus.SUCCESS);
+                testRunItemRepository.save(item);
+
+            } catch (Exception e) {
+                log.error("Error executing TestRunItem id: {}", item.getId(), e);
+                item.setItemStatus(ExecutionStatus.FAILED);
+                testRunItemRepository.save(item);
+            }
+        }
+
+        testRun.setRunStatus(RunStatus.COMPLETED);
+        testRunRepository.save(testRun);
+        log.info("Finished async execution for TestRun id: {}", id);
     }
 
 
