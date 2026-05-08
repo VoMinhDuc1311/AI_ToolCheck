@@ -5,7 +5,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.UserStatus;
 import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
-import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Size;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -27,15 +27,11 @@ public class CreateUserRequest {
     private String fullName;
 
     @NotBlank(message = "password is required")
-    @Pattern(
-            regexp = "^(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[^A-Za-z0-9]).{8,72}$",
-            message = "password must be 8-72 characters and include uppercase, lowercase, number, and special character"
-    )
+    @Size(min = 8, max = 72, message = "password must be 8-72 characters")
     private String password;
 
     @NotNull(message = "role is required")
     private UserRole role;
 
-    @NotNull(message = "status is required")
     private UserStatus status;
 }

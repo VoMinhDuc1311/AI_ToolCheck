@@ -6,6 +6,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.ForbiddenException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiSkill;
@@ -14,7 +15,9 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestResult;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
@@ -40,11 +43,14 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     private final EntityManager entityManager;
     private final AiSkillRepository aiSkillRepository;
     private final ApiEndpointRepository apiEndpointRepository;
+    private final ProjectAccessService projectAccessService;
+    private final CurrentUserService currentUserService;
 
     @Override
     @Transactional
     public AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
                                                   UUID projectId, UUID sourceFileId, UUID apiEndpointId) {
+        projectAccessService.requireCanTriggerAiJob(projectId);
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
         AiSkill aiSkill = aiSkillRepository.findBySkillCode(skillCode)
@@ -110,6 +116,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     @Override
     @Transactional
     public int triggerEnrichmentForProject(UUID projectId) {
+        projectAccessService.requireCanTriggerAiJob(projectId);
         List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
         if (endpoints.isEmpty()) {
             return 0;
@@ -147,6 +154,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .build();
 
         if (request.getProjectId() != null) {
+            projectAccessService.requireCanTriggerAiJob(request.getProjectId());
             jobLog.setSourceProject(entityManager.getReference(SourceProject.class, request.getProjectId()));
         } else {
             throw new BadRequestException("ProjectId is required to create an AiJobLog");
@@ -231,12 +239,20 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     public AiJobLogResponse getJobById(UUID id) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
+        if (jobLog.getSourceProject() != null) {
+            projectAccessService.requireCanViewProject(jobLog.getSourceProject().getId());
+        } else if (!currentUserService.isAdmin()) {
+            throw new ForbiddenException("You do not have permission to perform this action");
+        }
         return mapToResponse(jobLog);
     }
 
     @Override
     @Transactional(readOnly = true)
     public com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse getJobStatistics() {
+        if (!currentUserService.isAdmin()) {
+            throw new ForbiddenException("You do not have permission to perform this action");
+        }
         long totalJobs = aiJobLogRepository.count();
         long totalSuccessfulJobs = aiJobLogRepository.countByExecutionStatus(ExecutionStatus.SUCCESS);
         long totalFailedJobs = aiJobLogRepository.countByExecutionStatus(ExecutionStatus.FAILED);

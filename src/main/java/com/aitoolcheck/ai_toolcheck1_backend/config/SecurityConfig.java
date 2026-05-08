@@ -51,6 +51,7 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/swagger-ui.html").permitAll()
                         .requestMatchers(HttpMethod.GET, "/webjars/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
+                        .requestMatchers(HttpMethod.GET, "/v1/users/me").authenticated()
                         .requestMatchers("/v1/users/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/v1/api-documents/*/publish").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/v1/api-documents/*/unpublish").hasRole("ADMIN")

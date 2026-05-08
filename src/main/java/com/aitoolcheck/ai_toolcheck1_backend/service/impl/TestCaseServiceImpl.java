@@ -26,6 +26,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -46,14 +47,12 @@ public class TestCaseServiceImpl implements TestCaseService {
     private final ApiEndpointRepository apiEndpointRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
     private final JsonMapper jsonMapper;
+    private final ProjectAccessService projectAccessService;
 
     @Override
     @Transactional
     public TestCaseDetailResponse create(CreateTestCaseRequest request) {
-        SourceProject sourceProject = sourceProjectRepository.findById(request.getProjectId())
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "SourceProject not found with id: " + request.getProjectId()
-                ));
+        SourceProject sourceProject = projectAccessService.requireCanCreateTestCase(request.getProjectId());
 
         String caseName = normalizeRequiredText(request.getCaseName(), "caseName");
 
@@ -102,9 +101,7 @@ public class TestCaseServiceImpl implements TestCaseService {
     @Override
     @Transactional(readOnly = true)
     public List<TestCaseResponse> getByProjectId(UUID projectId) {
-        if (!sourceProjectRepository.existsById(projectId)) {
-            throw new ResourceNotFoundException("SourceProject not found with id: " + projectId);
-        }
+        projectAccessService.requireCanViewProject(projectId);
 
         return testCaseRepository
                 .findBySourceProject_IdAndDeletedFlagFalseOrderByUpdatedAtDesc(projectId)
@@ -117,6 +114,7 @@ public class TestCaseServiceImpl implements TestCaseService {
     @Transactional(readOnly = true)
     public TestCaseDetailResponse getById(UUID id) {
         TestCase testCase = findActiveTestCaseOrThrow(id);
+        projectAccessService.requireCanViewProject(testCase.getSourceProject().getId());
         return toDetailResponse(testCase);
     }
 
@@ -125,6 +123,7 @@ public class TestCaseServiceImpl implements TestCaseService {
     public TestCaseDetailResponse update(UUID id, UpdateTestCaseRequest request) {
         TestCase testCase = findActiveTestCaseOrThrow(id);
         UUID projectId = testCase.getSourceProject().getId();
+        projectAccessService.requireCanCreateTestCase(projectId);
 
         String caseName = normalizeRequiredText(request.getCaseName(), "caseName");
 
@@ -175,6 +174,7 @@ public class TestCaseServiceImpl implements TestCaseService {
     @Transactional
     public void delete(UUID id) {
         TestCase testCase = findActiveTestCaseOrThrow(id);
+        projectAccessService.requireCanDeleteTestCase(testCase.getSourceProject().getId());
         testCase.softDelete();
         testCaseRepository.save(testCase);
     }

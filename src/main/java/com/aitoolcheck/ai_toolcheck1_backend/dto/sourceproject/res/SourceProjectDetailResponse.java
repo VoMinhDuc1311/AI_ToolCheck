@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.BackendType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 
 import lombok.AllArgsConstructor;
@@ -21,11 +22,14 @@ public class SourceProjectDetailResponse {
 
     private UUID id;
     private String name;
+    private UUID ownerUserId;
+    private String ownerEmail;
     private String projectKey;
     private String projectName;
     private String description;
     private BackendType backendType;
     private ProjectStatus status;
+    private ProjectVisibility visibility;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }
