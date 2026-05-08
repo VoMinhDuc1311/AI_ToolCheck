@@ -515,10 +515,15 @@ public class SourceFileServiceImpl implements SourceFileService {
                 .fileName(sourceFile.getFileName())
                 .filePath(sourceFile.getFilePath())
                 .fileType(sourceFile.getFileType())
+                .checksumSha256(sourceFile.getChecksumSha256())
                 .parsedFlag(sourceFile.getParsedFlag())
                 .parseError(sourceFile.getParseError())
                 .activeFlag(sourceFile.getActiveFlag())
                 .deletedFlag(sourceFile.getDeletedFlag())
+                .uploadVersionId(sourceFile.getUploadVersion() == null ? null : sourceFile.getUploadVersion().getId())
+                .lastSeenUploadVersionId(sourceFile.getLastSeenUploadVersion() == null ? null : sourceFile.getLastSeenUploadVersion().getId())
+                .createdAt(sourceFile.getCreatedAt())
+                .updatedAt(sourceFile.getUpdatedAt())
                 .build();
     }
 

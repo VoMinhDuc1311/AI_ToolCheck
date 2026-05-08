@@ -20,6 +20,7 @@ import java.util.UUID;
 public class SourceProjectResponse {
 
     private UUID id;
+    private String name;
     private String projectKey;
     private String projectName;
     private BackendType backendType;

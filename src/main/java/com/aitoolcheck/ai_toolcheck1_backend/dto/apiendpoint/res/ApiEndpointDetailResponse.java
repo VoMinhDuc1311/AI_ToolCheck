@@ -24,6 +24,7 @@ public class ApiEndpointDetailResponse {
     private HttpMethod httpMethod;
     private String endpointPath;
     private String stableKey;
+    private String description;
     private String operationId;
     private String tagName;
     private Boolean authRequired;
