@@ -34,10 +34,10 @@ public class UserServiceImpl implements UserService {
     private final PasswordEncoder passwordEncoder;
 
     @Override
-    public UserResponse createUser(CreateUserRequest request) {
+    public UserResponse create(CreateUserRequest request) {
         String email = normalizeEmail(request.getEmail());
 
-        if (appUserRepository.existsByEmail(email)) {
+        if (appUserRepository.existsByEmailIgnoreCase(email)) {
             throw new BadRequestException("Email already exists: " + email);
         }
 
@@ -46,7 +46,7 @@ public class UserServiceImpl implements UserService {
                 .fullName(normalizeNullableText(request.getFullName()))
                 .passwordHash(passwordEncoder.encode(request.getPassword()))
                 .role(request.getRole())
-                .status(request.getStatus())
+                .status(request.getStatus() == null ? UserStatus.ACTIVE : request.getStatus())
                 .build();
 
         AppUser saved = appUserRepository.save(user);

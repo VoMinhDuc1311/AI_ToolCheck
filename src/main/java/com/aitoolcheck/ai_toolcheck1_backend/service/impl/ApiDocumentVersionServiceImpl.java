@@ -6,6 +6,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocumentVersion;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiDocumentVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiDocumentVersionService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -19,11 +20,13 @@ import java.util.UUID;
 public class ApiDocumentVersionServiceImpl implements ApiDocumentVersionService {
 
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
+    private final ProjectAccessService projectAccessService;
 
     @Override
     @Transactional(readOnly = true)
     public ApiDocumentVersionDetailResponse getById(UUID versionId) {
         ApiDocumentVersion version = findVersionOrThrow(versionId);
+        projectAccessService.requireCanViewProject(version.getApiDocument().getSourceProject().getId());
         return toDetailResponse(version);
     }
 
@@ -31,6 +34,7 @@ public class ApiDocumentVersionServiceImpl implements ApiDocumentVersionService 
     @Transactional
     public ApiDocumentVersionDetailResponse update(UUID versionId, UpdateApiDocumentVersionRequest request) {
         ApiDocumentVersion version = findVersionOrThrow(versionId);
+        projectAccessService.requireCanGenerateDocs(version.getApiDocument().getSourceProject().getId());
 
         if (request.getSummary() != null) {
             version.setSummary(request.getSummary().trim());
@@ -55,6 +59,7 @@ public class ApiDocumentVersionServiceImpl implements ApiDocumentVersionService 
         // 1. Tìm bản ghi trong bảng (Tái sử dụng hàm findVersionOrThrow để code chuẩn
         // DRY)
         ApiDocumentVersion docVersion = findVersionOrThrow(id);
+        projectAccessService.requireCanTriggerAiJob(docVersion.getApiDocument().getSourceProject().getId());
 
         // 2. Cập nhật 2 trường AI trả về (summary, description)
         docVersion.setSummary(summary);

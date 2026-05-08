@@ -7,6 +7,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiEndpointService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
@@ -23,12 +24,12 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
 
     private final ApiEndpointRepository apiEndpointRepository;
     private final SourceProjectRepository sourceProjectRepository;
+    private final ProjectAccessService projectAccessService;
 
     @Override
+    @Transactional(readOnly = true)
     public List<ApiEndpointResponse> getByProjectId(UUID projectId) {
-        if (!sourceProjectRepository.existsById(projectId)) {
-            throw new ResourceNotFoundException("Source project not found with id: " + projectId);
-        }
+        projectAccessService.requireCanViewProject(projectId);
 
         return apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId)
                 .stream()
@@ -37,9 +38,11 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public ApiEndpointDetailResponse getById(UUID id) {
         ApiEndpoint apiEndpoint = apiEndpointRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
+        projectAccessService.requireCanViewProject(apiEndpoint.getSourceProject().getId());
 
         return mapToDetailResponse(apiEndpoint);
     }
@@ -51,6 +54,7 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
 
         ApiEndpoint endpoint = apiEndpointRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
+        projectAccessService.requireCanTriggerAiJob(endpoint.getSourceProject().getId());
 
         endpoint.setAiSummary(summary);
         endpoint.setAiDescription(description);

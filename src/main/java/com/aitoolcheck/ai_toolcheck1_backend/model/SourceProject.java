@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.BackendType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 import jakarta.persistence.*;
 import lombok.*;
@@ -40,6 +41,14 @@ public class SourceProject {
     @Enumerated(EnumType.STRING)
     private ProjectStatus status;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "owner_user_id")
+    private AppUser ownerUser;
+
+    @Column(name = "visibility", nullable = false, length = 50)
+    @Enumerated(EnumType.STRING)
+    private ProjectVisibility visibility;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -78,6 +87,9 @@ public class SourceProject {
         LocalDateTime now = LocalDateTime.now();
         this.createdAt = now;
         this.updatedAt = now;
+        if (this.visibility == null) {
+            this.visibility = ProjectVisibility.PRIVATE;
+        }
     }
 
     @PreUpdate

@@ -1,6 +1,8 @@
 package com.aitoolcheck.ai_toolcheck1_backend.controller;
 
+import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.CreateSourceProjectRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateProjectVisibilityRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateSourceProjectRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectResponse;
@@ -13,6 +15,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -57,6 +60,28 @@ public class SourceProjectController {
         return ResponseEntity.ok(response);
     }
 
+    @GetMapping("/my")
+    @Operation(
+            summary = "Get my source projects",
+            description = "Get source projects owned by or shared with the current user.",
+            operationId = "getMySourceProjects"
+    )
+    public ResponseEntity<List<SourceProjectResponse>> getMine() {
+        List<SourceProjectResponse> response = sourceProjectService.getMine();
+        return ResponseEntity.ok(response);
+    }
+
+    @GetMapping("/public")
+    @Operation(
+            summary = "Get public source projects",
+            description = "Get source projects published as public read-only.",
+            operationId = "getPublicSourceProjects"
+    )
+    public ResponseEntity<List<SourceProjectResponse>> getPublic() {
+        List<SourceProjectResponse> response = sourceProjectService.getPublic();
+        return ResponseEntity.ok(response);
+    }
+
     @PutMapping("/{id}")
     @Operation(
             summary = "Update source project",
@@ -69,6 +94,25 @@ public class SourceProjectController {
     ) {
         SourceProjectDetailResponse response = sourceProjectService.update(id, request);
         return ResponseEntity.ok(response);
+    }
+
+    @PatchMapping("/{id}/visibility")
+    @Operation(
+            summary = "Update source project visibility",
+            description = "Update project visibility. Owner or ADMIN only.",
+            operationId = "updateSourceProjectVisibility"
+    )
+    public ResponseEntity<ApiResponse<SourceProjectDetailResponse>> updateVisibility(
+            @PathVariable UUID id,
+            @Valid @RequestBody UpdateProjectVisibilityRequest request
+    ) {
+        SourceProjectDetailResponse response = sourceProjectService.updateVisibility(id, request);
+        return ResponseEntity.ok(ApiResponse.<SourceProjectDetailResponse>builder()
+                .code("SUCCESS")
+                .message("Project visibility updated successfully.")
+                .data(response)
+                .timestamp(LocalDateTime.now())
+                .build());
     }
 
     @DeleteMapping("/{id}")

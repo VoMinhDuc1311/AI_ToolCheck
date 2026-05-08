@@ -7,7 +7,6 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.ParamIn;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.SchemaType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.UsageType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
-import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiParameter;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiSchema;
@@ -23,6 +22,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.EndpointSchemaMapReposit
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataParserService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -64,12 +64,12 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
     private final ApiSchemaRepository apiSchemaRepository;
     private final ApiSchemaFieldRepository apiSchemaFieldRepository;
     private final EndpointSchemaMapRepository endpointSchemaMapRepository;
+    private final ProjectAccessService projectAccessService;
 
     @Override
     @Transactional
     public ApiMetadataParseResultResponse parseProject(UUID projectId) {
-        SourceProject sourceProject = sourceProjectRepository.findById(projectId)
-                .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + projectId));
+        SourceProject sourceProject = projectAccessService.requireCanGenerateDocs(projectId);
 
         List<SourceFile> sourceFiles = sourceFileRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
         List<SourceFile> controllerFiles = sourceFiles.stream()

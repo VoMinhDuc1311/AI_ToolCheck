@@ -19,6 +19,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Service;
@@ -52,12 +53,12 @@ public class SourceFileServiceImpl implements SourceFileService {
     private final ApiEndpointRepository apiEndpointRepository;
     private final SourceAnalysisResultRepository sourceAnalysisResultRepository;
     private final ApiDocumentRepository apiDocumentRepository;
+    private final ProjectAccessService projectAccessService;
 
     @Override
     @Transactional
     public SourceFileUploadResponse uploadZip(UUID projectId, MultipartFile file) {
-        SourceProject sourceProject = sourceProjectRepository.findById(projectId)
-                .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + projectId));
+        SourceProject sourceProject = projectAccessService.requireCanUploadSource(projectId);
 
         validateZipFile(file);
 
@@ -201,10 +202,9 @@ public class SourceFileServiceImpl implements SourceFileService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public List<SourceFileResponse> getByProjectId(UUID projectId) {
-        if (!sourceProjectRepository.existsById(projectId)) {
-            throw new ResourceNotFoundException("Source project not found with id: " + projectId);
-        }
+        projectAccessService.requireCanViewProject(projectId);
 
         return sourceFileRepository.findBySourceProjectIdAndActiveFlagTrue(projectId)
                 .stream()
@@ -213,9 +213,11 @@ public class SourceFileServiceImpl implements SourceFileService {
     }
 
     @Override
+    @Transactional(readOnly = true)
     public SourceFileDetailResponse getById(UUID id) {
         SourceFile sourceFile = sourceFileRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Source file not found with id: " + id));
+        projectAccessService.requireCanViewSourceFileContent(sourceFile.getSourceProject().getId());
 
         return mapToDetailResponse(sourceFile);
     }

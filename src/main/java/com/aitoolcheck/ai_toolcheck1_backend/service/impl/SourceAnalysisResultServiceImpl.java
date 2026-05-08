@@ -14,6 +14,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.AnalysisSignals;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.JavaSourceAnalyzer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.SourceAnalysisDecisionService;
@@ -38,12 +39,12 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
     private final SourceAnalysisScoringService scoringService;
     private final SourceAnalysisDecisionService decisionService;
     private final SourceAnalysisSummaryBuilder summaryBuilder;
+    private final ProjectAccessService projectAccessService;
 
     @Override
     @Transactional
     public SourceAnalysisResultDetailResponse analyzeProject(UUID projectId) {
-        SourceProject sourceProject = sourceProjectRepository.findById(projectId)
-                .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + projectId));
+        SourceProject sourceProject = projectAccessService.requireCanTriggerAiJob(projectId);
 
         sourceProject.setStatus(ProjectStatus.ANALYZING);
         sourceProjectRepository.save(sourceProject);
@@ -112,9 +113,7 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
     @Override
     @Transactional(readOnly = true)
     public SourceAnalysisResultDetailResponse getByProjectId(UUID projectId) {
-        if (!sourceProjectRepository.existsById(projectId)) {
-            throw new ResourceNotFoundException("Source project not found with id: " + projectId);
-        }
+        projectAccessService.requireCanViewProject(projectId);
 
         SourceAnalysisResult result = findLatestAnalysisResult(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source analysis result not found for project id: " + projectId));

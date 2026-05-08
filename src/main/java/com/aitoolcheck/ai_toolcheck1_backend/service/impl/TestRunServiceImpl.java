@@ -21,6 +21,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.runner.TestRequestBuilder;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -54,6 +55,7 @@ public class TestRunServiceImpl implements TestRunService {
     private final SourceProjectRepository sourceProjectRepository;
     private final TestRequestBuilder testRequestBuilder;
     private final JsonMapper jsonMapper;
+    private final ProjectAccessService projectAccessService;
 
 
     @Override
@@ -67,8 +69,7 @@ public class TestRunServiceImpl implements TestRunService {
             throw new BadRequestException("projectId is required");
         }
 
-        SourceProject sourceProject = sourceProjectRepository.findById(request.getProjectId())
-                .orElseThrow(() -> new ResourceNotFoundException("SourceProject not found with id: " + request.getProjectId()));
+        SourceProject sourceProject = projectAccessService.requireCanCreateTestRun(request.getProjectId());
 
         String runName = normalizeRequiredText(request.getRunName(), "runName");
         String description = normalizeOptionalText(request.getDescription());
@@ -114,6 +115,7 @@ public class TestRunServiceImpl implements TestRunService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "TestRun not found with id: " + id
                 ));
+        projectAccessService.requireCanViewProject(testRun.getSourceProject().getId());
 
         List<TestRunItem> items = testRunItemRepository
                 .findByTestRun_IdOrderBySortOrderAsc(id);
@@ -129,11 +131,7 @@ public class TestRunServiceImpl implements TestRunService {
             throw new BadRequestException("projectId is required");
         }
 
-        if (!sourceProjectRepository.existsById(projectId)) {
-            throw new ResourceNotFoundException(
-                    "SourceProject not found with id: " + projectId
-            );
-        }
+        projectAccessService.requireCanViewProject(projectId);
 
         List<TestRun> runs = testRunRepository
                 .findBySourceProject_IdOrderByCreatedAtDesc(projectId);
@@ -158,6 +156,7 @@ public class TestRunServiceImpl implements TestRunService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "TestRun not found with id: " + id
                 ));
+        projectAccessService.requireCanPrepareTestRun(testRun.getSourceProject().getId());
 
         List<TestRunItem> items = testRunItemRepository
                 .findByTestRun_IdOrderBySortOrderAsc(id);

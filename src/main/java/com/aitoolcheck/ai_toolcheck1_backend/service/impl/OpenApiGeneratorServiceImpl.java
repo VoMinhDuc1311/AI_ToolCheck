@@ -9,6 +9,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException
 import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiGeneratorService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -31,6 +32,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     private final EndpointSchemaMapRepository endpointSchemaMapRepository;
     private final ApiDocumentRepository apiDocumentRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
+    private final ProjectAccessService projectAccessService;
 
     // -------------------------------------------------------------------------
     // Public methods
@@ -40,6 +42,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     @Transactional(readOnly = true)
     public Map<String, Object> generateOpenApiJson(UUID projectId) {
         log.info("Generating OpenAPI JSON for projectId={}", projectId);
+        projectAccessService.requireCanViewProject(projectId);
 
         SourceProject project = sourceProjectRepository.findById(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -59,6 +62,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     @Transactional
     public OpenApiGenerateResponse generateAndSaveOpenApi(UUID projectId) {
         log.info("Generating and saving OpenAPI JSON for projectId={}", projectId);
+        projectAccessService.requireCanGenerateDocs(projectId);
 
         Map<String, Object> openApiMap = generateOpenApiJson(projectId);
 
