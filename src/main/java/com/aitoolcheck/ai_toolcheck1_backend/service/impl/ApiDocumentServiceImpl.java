@@ -58,6 +58,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
                 .documentType(documentType)
                 .currentVersionNo(0)
                 .publishedFlag(false)
+                .staleFlag(false)
                 .build();
 
         ApiDocument saved = apiDocumentRepository.save(apiDocument);
@@ -170,6 +171,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
                 .documentType(apiDocument.getDocumentType())
                 .currentVersionNo(apiDocument.getCurrentVersionNo())
                 .publishedFlag(apiDocument.getPublishedFlag())
+                .staleFlag(apiDocument.getStaleFlag())
                 .createdAt(apiDocument.getCreatedAt())
                 .updatedAt(apiDocument.getUpdatedAt())
                 .build();

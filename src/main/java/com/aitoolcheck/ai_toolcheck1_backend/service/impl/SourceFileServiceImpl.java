@@ -5,12 +5,19 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileRespon
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileUploadResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.FileType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.SourceUploadStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
+import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
+import com.aitoolcheck.ai_toolcheck1_backend.model.SourceUploadVersion;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiDocumentRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceAnalysisResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
@@ -26,7 +33,10 @@ import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Stream;
 import java.util.zip.ZipEntry;
@@ -38,20 +48,24 @@ public class SourceFileServiceImpl implements SourceFileService {
 
     private final SourceFileRepository sourceFileRepository;
     private final SourceProjectRepository sourceProjectRepository;
+    private final SourceUploadVersionRepository sourceUploadVersionRepository;
+    private final ApiEndpointRepository apiEndpointRepository;
+    private final SourceAnalysisResultRepository sourceAnalysisResultRepository;
+    private final ApiDocumentRepository apiDocumentRepository;
 
     @Override
     @Transactional
     public SourceFileUploadResponse uploadZip(UUID projectId, MultipartFile file) {
-        validateZipFile(file);
-
         SourceProject sourceProject = sourceProjectRepository.findById(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + projectId));
+
+        validateZipFile(file);
 
         try {
             final Path workingDir = createWorkingDirectory(projectId);
 
             try {
-                final String originalFilename = file.getOriginalFilename();
+                final String originalFilename = sanitizeOriginalFilename(file.getOriginalFilename());
                 final Path zipPath = workingDir.resolve(originalFilename);
                 final Path extractDir = workingDir.resolve("extracted");
 
@@ -75,22 +89,106 @@ public class SourceFileServiceImpl implements SourceFileService {
 
                 int ignoredFiles = countIgnoredFiles(extractDir);
 
-                List<SourceFile> sourceFiles = javaFiles.stream()
-                        .map(path -> mapToSourceFile(path, extractDir, sourceProject))
-                        .toList();
+                int nextVersionNo = sourceUploadVersionRepository.findMaxVersionNoByProjectId(projectId) + 1;
+                SourceUploadVersion uploadVersion = sourceUploadVersionRepository.save(SourceUploadVersion.builder()
+                        .sourceProject(sourceProject)
+                        .versionNo(nextVersionNo)
+                        .originalFileName(originalFilename)
+                        .status(SourceUploadStatus.PROCESSING)
+                        .build());
 
-                sourceFileRepository.deleteBySourceProjectId(projectId);
-                List<SourceFile> savedFiles = sourceFileRepository.saveAll(sourceFiles);
+                Map<String, UploadedJavaFile> uploadedByPath = new HashMap<>();
+                for (Path javaFile : javaFiles) {
+                    UploadedJavaFile uploaded = toUploadedJavaFile(javaFile, extractDir);
+                    if (uploadedByPath.put(uploaded.filePath(), uploaded) != null) {
+                        throw new BadRequestException("Duplicate Java file path in uploaded zip: " + uploaded.filePath());
+                    }
+                }
+
+                List<SourceFile> existingFiles = sourceFileRepository.findBySourceProjectId(projectId);
+                Map<String, SourceFile> existingByPath = new HashMap<>();
+                for (SourceFile existingFile : existingFiles) {
+                    existingByPath.put(normalizeRelativePath(existingFile.getFilePath()), existingFile);
+                }
+
+                int addedFiles = 0;
+                int updatedFiles = 0;
+                int unchangedFiles = 0;
+                int deletedFiles = 0;
+
+                for (UploadedJavaFile uploaded : uploadedByPath.values()) {
+                    SourceFile existing = existingByPath.get(uploaded.filePath());
+                    if (existing == null) {
+                        SourceFile newFile = buildNewSourceFile(uploaded, sourceProject, uploadVersion);
+                        sourceFileRepository.save(newFile);
+                        addedFiles++;
+                        continue;
+                    }
+
+                    existing.setLastSeenUploadVersion(uploadVersion);
+                    existing.setActiveFlag(true);
+                    existing.setDeletedFlag(false);
+
+                    if (uploaded.checksumSha256().equals(existing.getChecksumSha256())) {
+                        sourceFileRepository.save(existing);
+                        unchangedFiles++;
+                    } else {
+                        applyUploadedContent(existing, uploaded, uploadVersion);
+                        sourceFileRepository.save(existing);
+                        markEndpointsStaleForSourceFile(existing);
+                        updatedFiles++;
+                    }
+                }
+
+                Set<String> uploadedPaths = uploadedByPath.keySet();
+                for (SourceFile existing : existingFiles) {
+                    String existingPath = normalizeRelativePath(existing.getFilePath());
+                    if (Boolean.TRUE.equals(existing.getActiveFlag()) && !uploadedPaths.contains(existingPath)) {
+                        existing.setActiveFlag(false);
+                        existing.setDeletedFlag(true);
+                        existing.setLastSeenUploadVersion(uploadVersion);
+                        sourceFileRepository.save(existing);
+                        markEndpointsStaleForSourceFile(existing);
+                        deletedFiles++;
+                    }
+                }
 
                 sourceProject.setStatus(ProjectStatus.UPLOADED);
                 sourceProjectRepository.save(sourceProject);
+                markAnalysisStale(projectId);
+                markDocumentStale(projectId);
+
+                int savedFiles = addedFiles + updatedFiles + unchangedFiles;
+                String summary = "Upload version " + nextVersionNo + " synchronized. Added: " + addedFiles
+                        + ", updated: " + updatedFiles
+                        + ", unchanged: " + unchangedFiles
+                        + ", deleted: " + deletedFiles + ".";
+
+                uploadVersion.setTotalJavaFilesFound(javaFiles.size());
+                uploadVersion.setSavedFiles(savedFiles);
+                uploadVersion.setIgnoredFiles(ignoredFiles);
+                uploadVersion.setAddedFiles(addedFiles);
+                uploadVersion.setUpdatedFiles(updatedFiles);
+                uploadVersion.setUnchangedFiles(unchangedFiles);
+                uploadVersion.setDeletedFiles(deletedFiles);
+                uploadVersion.setStatus(SourceUploadStatus.COMPLETED);
+                uploadVersion.setCompletedAt(java.time.LocalDateTime.now());
+                sourceUploadVersionRepository.save(uploadVersion);
 
                 return SourceFileUploadResponse.builder()
                         .projectId(sourceProject.getId())
                         .projectName(sourceProject.getProjectName())
+                        .uploadVersionId(uploadVersion.getId())
+                        .versionNo(uploadVersion.getVersionNo())
                         .totalJavaFilesFound(javaFiles.size())
-                        .savedFiles(savedFiles.size())
+                        .savedFiles(savedFiles)
                         .ignoredFiles(ignoredFiles)
+                        .addedFiles(addedFiles)
+                        .updatedFiles(updatedFiles)
+                        .unchangedFiles(unchangedFiles)
+                        .deletedFiles(deletedFiles)
+                        .status(ProjectStatus.UPLOADED.name())
+                        .summary("Source snapshot synchronized successfully. " + summary)
                         .build();
 
             } finally {
@@ -108,7 +206,7 @@ public class SourceFileServiceImpl implements SourceFileService {
             throw new ResourceNotFoundException("Source project not found with id: " + projectId);
         }
 
-        return sourceFileRepository.findBySourceProjectId(projectId)
+        return sourceFileRepository.findBySourceProjectIdAndActiveFlagTrue(projectId)
                 .stream()
                 .map(this::mapToResponse)
                 .toList();
@@ -135,6 +233,14 @@ public class SourceFileServiceImpl implements SourceFileService {
         if (originalFilename == null || !originalFilename.toLowerCase().endsWith(".zip")) {
             throw new BadRequestException("Only .zip files are supported");
         }
+    }
+
+    private String sanitizeOriginalFilename(String originalFilename) {
+        String sanitized = Path.of(originalFilename == null ? "source.zip" : originalFilename).getFileName().toString();
+        if (sanitized.isBlank()) {
+            return "source.zip";
+        }
+        return sanitized;
     }
 
     private Path createWorkingDirectory(UUID projectId) throws IOException {
@@ -181,7 +287,11 @@ public class SourceFileServiceImpl implements SourceFileService {
                 || normalized.contains("/dist/")
                 || normalized.startsWith("dist/")
                 || normalized.contains("/build/")
-                || normalized.startsWith("build/");
+                || normalized.startsWith("build/")
+                || normalized.contains("/.gradle/")
+                || normalized.startsWith(".gradle/")
+                || normalized.contains("/out/")
+                || normalized.startsWith("out/");
     }
 
     private boolean isJavaFile(Path path) {
@@ -205,22 +315,92 @@ public class SourceFileServiceImpl implements SourceFileService {
         }
     }
 
-    private SourceFile mapToSourceFile(Path javaFile, Path extractDir, SourceProject sourceProject) {
+    private UploadedJavaFile toUploadedJavaFile(Path javaFile, Path extractDir) {
         Path relativePath = extractDir.relativize(javaFile);
         String fileName = javaFile.getFileName().toString();
 
+        return new UploadedJavaFile(
+                normalizeRelativePath(relativePath.toString()),
+                fileName,
+                extractPackageName(javaFile),
+                extractClassName(fileName),
+                detectFileType(relativePath, fileName),
+                calculateSha256(javaFile),
+                readSourceContent(javaFile)
+        );
+    }
+
+    private SourceFile buildNewSourceFile(UploadedJavaFile uploaded, SourceProject sourceProject, SourceUploadVersion uploadVersion) {
         return SourceFile.builder()
-                .filePath(relativePath.toString().replace("\\", "/"))
-                .fileName(fileName)
-                .packageName(extractPackageName(javaFile))
-                .className(extractClassName(fileName))
-                .fileType(detectFileType(relativePath, fileName))
-                .checksumSha256(calculateSha256(javaFile))
-                .sourceContent(readSourceContent(javaFile))
+                .filePath(uploaded.filePath())
+                .fileName(uploaded.fileName())
+                .packageName(uploaded.packageName())
+                .className(uploaded.className())
+                .fileType(uploaded.fileType())
+                .checksumSha256(uploaded.checksumSha256())
+                .sourceContent(uploaded.sourceContent())
                 .parsedFlag(Boolean.FALSE)
                 .parseError(null)
+                .activeFlag(Boolean.TRUE)
+                .deletedFlag(Boolean.FALSE)
                 .sourceProject(sourceProject)
+                .uploadVersion(uploadVersion)
+                .lastSeenUploadVersion(uploadVersion)
                 .build();
+    }
+
+    private void applyUploadedContent(SourceFile sourceFile, UploadedJavaFile uploaded, SourceUploadVersion uploadVersion) {
+        sourceFile.setFilePath(uploaded.filePath());
+        sourceFile.setFileName(uploaded.fileName());
+        sourceFile.setPackageName(uploaded.packageName());
+        sourceFile.setClassName(uploaded.className());
+        sourceFile.setFileType(uploaded.fileType());
+        sourceFile.setChecksumSha256(uploaded.checksumSha256());
+        sourceFile.setSourceContent(uploaded.sourceContent());
+        sourceFile.setParsedFlag(Boolean.FALSE);
+        sourceFile.setParseError(null);
+        sourceFile.setActiveFlag(Boolean.TRUE);
+        sourceFile.setDeletedFlag(Boolean.FALSE);
+        sourceFile.setUploadVersion(uploadVersion);
+        sourceFile.setLastSeenUploadVersion(uploadVersion);
+    }
+
+    private void markEndpointsStaleForSourceFile(SourceFile sourceFile) {
+        if (sourceFile.getId() == null) {
+            return;
+        }
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findByProjectIdAndSourceFileIdIn(
+                sourceFile.getSourceProject().getId(),
+                List.of(sourceFile.getId())
+        );
+        for (ApiEndpoint endpoint : endpoints) {
+            endpoint.setActiveFlag(Boolean.FALSE);
+            endpoint.setStaleFlag(Boolean.TRUE);
+        }
+        apiEndpointRepository.saveAll(endpoints);
+    }
+
+    private void markAnalysisStale(UUID projectId) {
+        sourceAnalysisResultRepository.findBySourceProjectId(projectId)
+                .ifPresent(result -> {
+                    result.setCurrentFlag(Boolean.FALSE);
+                    sourceAnalysisResultRepository.save(result);
+                });
+    }
+
+    private void markDocumentStale(UUID projectId) {
+        apiDocumentRepository.findBySourceProjectId(projectId)
+                .ifPresent(document -> {
+                    document.setStaleFlag(Boolean.TRUE);
+                    apiDocumentRepository.save(document);
+                });
+    }
+
+    private String normalizeRelativePath(String path) {
+        if (path == null) {
+            return "";
+        }
+        return path.replace("\\", "/").replaceAll("/+", "/");
     }
 
     private String extractPackageName(Path javaFile) {
@@ -335,8 +515,15 @@ public class SourceFileServiceImpl implements SourceFileService {
                 .fileName(sourceFile.getFileName())
                 .filePath(sourceFile.getFilePath())
                 .fileType(sourceFile.getFileType())
+                .checksumSha256(sourceFile.getChecksumSha256())
                 .parsedFlag(sourceFile.getParsedFlag())
                 .parseError(sourceFile.getParseError())
+                .activeFlag(sourceFile.getActiveFlag())
+                .deletedFlag(sourceFile.getDeletedFlag())
+                .uploadVersionId(sourceFile.getUploadVersion() == null ? null : sourceFile.getUploadVersion().getId())
+                .lastSeenUploadVersionId(sourceFile.getLastSeenUploadVersion() == null ? null : sourceFile.getLastSeenUploadVersion().getId())
+                .createdAt(sourceFile.getCreatedAt())
+                .updatedAt(sourceFile.getUpdatedAt())
                 .build();
     }
 
@@ -352,6 +539,10 @@ public class SourceFileServiceImpl implements SourceFileService {
                 .checksumSha256(sourceFile.getChecksumSha256())
                 .parsedFlag(sourceFile.getParsedFlag())
                 .parseError(sourceFile.getParseError())
+                .activeFlag(sourceFile.getActiveFlag())
+                .deletedFlag(sourceFile.getDeletedFlag())
+                .uploadVersionId(sourceFile.getUploadVersion() == null ? null : sourceFile.getUploadVersion().getId())
+                .lastSeenUploadVersionId(sourceFile.getLastSeenUploadVersion() == null ? null : sourceFile.getLastSeenUploadVersion().getId())
                 .createdAt(sourceFile.getCreatedAt())
                 .updatedAt(sourceFile.getUpdatedAt())
                 .build();
@@ -372,5 +563,16 @@ public class SourceFileServiceImpl implements SourceFileService {
                     });
         } catch (IOException ignored) {
         }
+    }
+
+    private record UploadedJavaFile(
+            String filePath,
+            String fileName,
+            String packageName,
+            String className,
+            FileType fileType,
+            String checksumSha256,
+            String sourceContent
+    ) {
     }
 }

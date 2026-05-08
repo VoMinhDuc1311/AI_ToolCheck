@@ -16,7 +16,15 @@ import java.util.UUID;
 public class SourceFileUploadResponse {
     private UUID projectId;
     private String projectName;
+    private UUID uploadVersionId;
+    private Integer versionNo;
     private int totalJavaFilesFound;
     private int savedFiles;
     private int ignoredFiles;
+    private int addedFiles;
+    private int updatedFiles;
+    private int unchangedFiles;
+    private int deletedFiles;
+    private String status;
+    private String summary;
 }
