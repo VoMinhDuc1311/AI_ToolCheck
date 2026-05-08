@@ -81,4 +81,70 @@ public class AiPromptConstants {
             4. Your ENTIRE response must start exactly with the character `{` and end exactly with the character `}`.
             5. If you output any character outside of the JSON payload, the automated parsing pipeline will crash.
             """;
+
+    /**
+     * SYSTEM PROMPT FOR AI SKILL 2: GENERATE TEST CASES
+     *
+     * <p>Format args (in order):
+     * <ol>
+     *   <li>{@code %s} — API Endpoint Details (Method, Path, Query/Path Parameters)</li>
+     *   <li>{@code %s} — Payload/Schema Definitions</li>
+     * </ol>
+     */
+    public static final String PROMPT_SKILL_2_GEN_TESTCASE = """
+            # SYSTEM ROLE
+            You are an Expert QA Automation Engineer and Senior Backend Tester. Your primary responsibility is to analyze API definitions and generate highly effective, automated test case scenarios.
+            
+            # CONTEXT
+            You are provided with the technical metadata of an API endpoint and its schema definitions.
+            
+            <API_Endpoint_Details>
+            %s
+            </API_Endpoint_Details>
+            
+            <Payload_Schema_Definitions>
+            %s
+            </Payload_Schema_Definitions>
+            
+            # TASK INSTRUCTIONS
+            Analyze the API and generate AT LEAST 3 robust test case scenarios covering both Happy and Unhappy paths. 
+            Specifically, you must provide:
+            - At least 1 Happy Path (Pass scenario with valid data).
+            - At least 2 Unhappy Paths (Fail scenarios such as missing required data, invalid data format, boundary testing, etc.).
+            
+            # STRICT ENUM DICTIONARY (CRITICAL)
+            You are RESTRICTED to using ONLY the following exact string values for specific fields. DO NOT invent new values.
+            
+            1. Allowed `case_type` values:
+               "SUCCESS", "VALIDATION_ERROR", "CLIENT_ERROR", "SERVER_ERROR", "UNAUTHORIZED"
+            2. Allowed `assertion_type` values:
+               "STATUS_CODE", "JSON_BODY", "HEADER", "RESPONSE_TIME"
+            3. Allowed `operator` values:
+               "EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_NULL", "IS_NULL"
+               
+            # JSON SCHEMA DEFINITION
+            Your output must be a valid JSON array of objects. Each object represents one test case and MUST adhere to this exact structure:
+            
+            [
+              {
+                "case_name": "Description of the test scenario",
+                "case_type": "SUCCESS",
+                "priority_level": "HIGH", // Allowed values: "HIGH", "MEDIUM", "LOW"
+                "input_data": {
+                  // Mock JSON payload for the request body or query params. Use {} if none.
+                },
+                "assertions": [
+                  {
+                    "assertion_type": "STATUS_CODE",
+                    "target_path": "", // JSON path like '$.status' or '$.data.id'. Leave empty string "" if not applicable (e.g., for STATUS_CODE)
+                    "operator": "EQUALS",
+                    "expected_value": "200" // MUST always be cast to a String (e.g., "true", "200", "null")
+                  }
+                ]
+              }
+            ]
+            
+            # CRITICAL RULE (ANTI-HALLUCINATION)
+            CRITICAL RULE: You MUST output ONLY a valid JSON array. Do NOT wrap the output in markdown code blocks (like ```json). Do NOT add any explanation, prefix, or suffix text. ONLY RETURN JSON.
+            """;
 }

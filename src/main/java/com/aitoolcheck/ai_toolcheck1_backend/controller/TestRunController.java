@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.controller;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.CreateTestRunRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.ExecuteTestRunRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
@@ -43,6 +44,21 @@ public class TestRunController {
 
         return ResponseEntity.status(HttpStatus.CREATED)
                 .body(success("Test run created successfully.", data));
+    }
+
+    @PostMapping("/execute")
+    @Operation(
+            summary = "Execute test run",
+            description = "Initialize and execute a test run with selected test cases. This prepares the framework data before sending actual HTTP requests.",
+            operationId = "executeTestRun"
+    )
+    public ResponseEntity<ApiResponse<TestRunDetailResponse>> execute(
+            @Valid @RequestBody ExecuteTestRunRequest request
+    ) {
+        TestRunDetailResponse data = testRunService.createTestRun(request);
+
+        return ResponseEntity.status(HttpStatus.CREATED)
+                .body(success("Test run initialized successfully.", data));
     }
 
     @GetMapping("/project/{projectId}")

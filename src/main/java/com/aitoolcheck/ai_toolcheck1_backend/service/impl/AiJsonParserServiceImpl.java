@@ -15,9 +15,11 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.util.Set;
+import java.util.List;
 import java.util.stream.Collectors;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
 
 /**
  * Production-ready implementation of the full AI response Parsing Pipeline.
@@ -387,6 +389,76 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
             throw new AiJsonParseException(
                     ErrorType.INVALID_JSON_SYNTAX,
                     "Clean JSON input must not be null or blank.");
+        }
+    }
+
+    /**
+     * Self-Healing parser dành riêng cho AI Skill 2 (Sinh Test Case).
+     *
+     * <p>Pipeline:
+     * <ol>
+     *   <li>Guard: kiểm tra input không rỗng.</li>
+     *   <li>Tìm ranh giới mảng JSON bằng {@code indexOf('[') / lastIndexOf(']')}.</li>
+     *   <li>Validate JSON Array bằng Jackson.</li>
+     *   <li>Parse sang {@code List<AiTestCaseDto>} dùng {@link TypeReference} (tránh lỗi casting runtime).</li>
+     * </ol>
+     *
+     * @param rawJson Chuỗi thô từ AI (có thể bọc markdown, câu chào hỏi).
+     * @return Danh sách {@link com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto} đã parse.
+     * @throws AiJsonParseException nếu không tìm thấy mảng JSON hoặc parse thất bại.
+     */
+    @Override
+    public List<com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto> cleanAndParseTestCaseJson(String rawJson) {
+        guardAgainstBlankInput(rawJson);
+
+        // Layer 1: Tìm ranh giới '[' đầu và ']' cuối
+        int startIndex = rawJson.indexOf(JSON_ARRAY_OPEN);
+        int endIndex = rawJson.lastIndexOf(JSON_ARRAY_CLOSE);
+
+        if (startIndex == -1 || endIndex == -1 || endIndex <= startIndex) {
+            log.error("[AiJsonParser][TestCase] Không tìm thấy mảng JSON hợp lệ. startIndex={}, endIndex={}", startIndex, endIndex);
+            throw new AiJsonParseException(
+                    ErrorType.INVALID_JSON_SYNTAX,
+                    "Invalid JSON array structure from AI: cannot find '[' or ']' delimiters.");
+        }
+
+        String cleanJson = rawJson.substring(startIndex, endIndex + 1).trim();
+        if (cleanJson.isBlank()) {
+            throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "Cleaned JSON array is empty.");
+        }
+
+        log.debug("[AiJsonParser][TestCase] Extracted JSON array - length: {} chars", cleanJson.length());
+
+        // Layer 2: Validate JSON syntax bằng cách đọc thành JsonNode trước
+        try {
+            JsonNode arrayNode = objectMapper.readTree(cleanJson);
+            if (!arrayNode.isArray()) {
+                throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "AI response is not a JSON array.");
+            }
+            log.debug("[AiJsonParser][TestCase] JSON validation passed - {} elements", arrayNode.size());
+        } catch (Exception e) {
+            if (e instanceof AiJsonParseException) throw (AiJsonParseException) e;
+            log.error("[AiJsonParser][TestCase] JSON syntax invalid. Clean JSON: {}", cleanJson);
+            throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "Malformed JSON array: " + e.getMessage(), e);
+        }
+
+        // Layer 3: Parse sang List<AiTestCaseDto> dùng TypeReference (bắt buộc để tránh lỗi runtime casting)
+        try {
+            ObjectMapper lenientMapper = objectMapper.copy()
+                    .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+            List<com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto> result =
+                    lenientMapper.readValue(cleanJson,
+                            new TypeReference<List<com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto>>() {});
+
+            log.info("[AiJsonParser][TestCase] Parse thành công - {} test case(s) được trích xuất.", result.size());
+            return result;
+
+        } catch (JsonProcessingException e) {
+            log.error("[AiJsonParser][TestCase] Parse thất bại. Clean JSON (debug):\n{}", cleanJson);
+            throw new AiJsonParseException(
+                    ErrorType.DTO_MAPPING_ERROR,
+                    "Cannot parse JSON array to AiTestCaseDto list. Reason: " + e.getMessage(), e);
         }
     }
 }

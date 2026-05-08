@@ -1,6 +1,8 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.CreateTestCaseRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.GenerateTestCaseRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.UpdateTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res.TestCaseDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res.TestCaseResponse;
@@ -10,23 +12,34 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseassertion.res.TestCaseA
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.req.CreateTestCaseInputRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.req.UpdateTestCaseInputRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.res.TestCaseInputResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.AssertionType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.PriorityLevel;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
+import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocumentVersion;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseAssertion;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiDocumentVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants;
+import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
+import java.time.LocalDateTime;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import tools.jackson.core.JacksonException;
@@ -37,6 +50,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class TestCaseServiceImpl implements TestCaseService {
@@ -45,6 +59,10 @@ public class TestCaseServiceImpl implements TestCaseService {
     private final SourceProjectRepository sourceProjectRepository;
     private final ApiEndpointRepository apiEndpointRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
+    private final AiJobLogRepository aiJobLogRepository;
+    private final AiTaskProducer aiTaskProducer;
+    private final AiModelRouterService aiModelRouterService;
+    private final AiJsonParserService aiJsonParserService;
     private final JsonMapper jsonMapper;
 
     @Override
@@ -463,5 +481,240 @@ public class TestCaseServiceImpl implements TestCaseService {
 
     private boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    @Override
+    @Transactional
+    public UUID generateTestCaseAsync(GenerateTestCaseRequest request) {
+        SourceProject sourceProject = sourceProjectRepository.findById(request.getProjectId())
+                .orElseThrow(() -> new ResourceNotFoundException("SourceProject not found with id: " + request.getProjectId()));
+                
+        ApiEndpoint apiEndpoint = resolveApiEndpointOrNull(request.getApiEndpointId(), sourceProject.getId());
+        if (apiEndpoint == null) {
+            throw new BadRequestException("ApiEndpoint is required for generating test cases");
+        }
+
+        AiJobLog jobLog = AiJobLog.builder()
+                .jobType(JobType.TEST_CASE_GENERATION)
+                .executionStatus(ExecutionStatus.PENDING)
+                .sourceProject(sourceProject)
+                .apiEndpoint(apiEndpoint)
+                .startedAt(LocalDateTime.now())
+                .build();
+                
+        AiJobLog savedJob = aiJobLogRepository.save(jobLog);
+
+        AiTaskMessage message = AiTaskMessage.builder()
+                .jobId(savedJob.getId().toString())
+                .projectId(sourceProject.getId().toString())
+                .apiEndpointId(apiEndpoint.getId().toString())
+                .skillCode("GENERATE_TEST_CASE")
+                .build();
+
+        aiTaskProducer.sendAiTask(message);
+
+        return savedJob.getId();
+    }
+
+    @Override
+    @Transactional
+    public String generateTestCaseProcessing(String endpointId, UUID jobId) {
+        if (endpointId == null || endpointId.trim().isEmpty()) {
+            throw new BadRequestException("ApiEndpoint ID is required for generating test cases.");
+        }
+        
+        ApiEndpoint endpoint = apiEndpointRepository.findById(UUID.fromString(endpointId))
+                .orElseThrow(() -> new ResourceNotFoundException("ApiEndpoint not found: " + endpointId));
+
+        // 1. Tổng hợp thông tin API (Method, Path, Parameters)
+        String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name() : "GET";
+        String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+        
+        StringBuilder apiDetails = new StringBuilder();
+        apiDetails.append("Method: ").append(method).append("\n");
+        apiDetails.append("Path: ").append(path).append("\n");
+        
+        if (endpoint.getApiParameters() != null && !endpoint.getApiParameters().isEmpty()) {
+            apiDetails.append("Parameters:\n");
+            endpoint.getApiParameters().forEach(p -> 
+                apiDetails.append("- ").append(p.getParamName())
+                        .append(" (").append(p.getParamIn()).append("): ")
+                        .append(p.getDataType()).append("\n")
+            );
+        }
+
+        // 2. Lấy Schema Definitions
+        StringBuilder schemas = new StringBuilder();
+        if (endpoint.getEndpointSchemaMaps() != null) {
+            endpoint.getEndpointSchemaMaps().forEach(map -> {
+                if (map.getApiSchema() != null) {
+                    schemas.append("Schema [").append(map.getUsageType()).append("]: ")
+                           .append(map.getApiSchema().getSchemaName()).append("\n");
+                }
+            });
+        }
+
+        // 3. Inject Context vào Prompt
+        String prompt = String.format(
+                AiPromptConstants.PROMPT_SKILL_2_GEN_TESTCASE, 
+                apiDetails.toString(), 
+                schemas.toString()
+        );
+
+        // 4. Định tuyến AI và thực thi
+        String rawResult = aiModelRouterService.routeAndExecute(prompt, jobId);
+
+        // 5. Sau khi nhận kết quả, persist ngay vào DB
+        try {
+            persistTestCasesFromAi(rawResult, UUID.fromString(endpointId));
+        } catch (Exception e) {
+            log.warn("[TestCaseService] Persist test case thất bại nhưng vẫn trả về rawJson để Consumer không crash: {}", e.getMessage());
+        }
+
+        return rawResult;
+    }
+
+    @Override
+    @Transactional
+    public void persistTestCasesFromAi(String rawJson, UUID endpointId) {
+        // 1. Self-Healing: parse JSON thô từ AI thành List<AiTestCaseDto>
+        List<com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto> dtos =
+                aiJsonParserService.cleanAndParseTestCaseJson(rawJson);
+
+        if (dtos.isEmpty()) {
+            log.warn("[TestCaseService] AI không sinh được test case nào. Bỏ qua lưu DB.");
+            return;
+        }
+
+        // Lấy tham chiếu ApiEndpoint
+        ApiEndpoint apiEndpoint = apiEndpointRepository.findById(endpointId)
+                .orElseThrow(() -> new ResourceNotFoundException("ApiEndpoint not found: " + endpointId));
+
+        // Lấy tham chiếu SourceProject từ endpoint
+        SourceProject sourceProject = apiEndpoint.getSourceProject();
+
+        log.info("[TestCaseService] Bắt đầu persist {} test case(s) cho endpoint: {}", dtos.size(), endpointId);
+
+        // 2. Xây dựng danh sách TestCase entity
+        List<TestCase> testCasesToSave = new java.util.ArrayList<>();
+
+        for (com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto dto : dtos) {
+
+            // Fallback case_name nếu AI không sinh tên
+            String caseName = (dto.getCaseName() != null && !dto.getCaseName().isBlank())
+                    ? dto.getCaseName().trim()
+                    : "AI_GENERATED_" + System.currentTimeMillis();
+
+            // Normalize và map CaseType (phòng thủ: fallback về POSITIVE nếu sai)
+            CaseType caseType = CaseType.POSITIVE;
+            if (dto.getCaseType() != null) {
+                try {
+                    String normalized = dto.getCaseType().trim().toUpperCase();
+                    // Map từ giá trị AI sang Enum dự án
+                    caseType = switch (normalized) {
+                        case "SUCCESS" -> CaseType.POSITIVE;
+                        case "VALIDATION_ERROR", "CLIENT_ERROR" -> CaseType.VALIDATION;
+                        case "UNAUTHORIZED" -> CaseType.AUTHORIZATION;
+                        case "SERVER_ERROR" -> CaseType.NEGATIVE;
+                        default -> CaseType.valueOf(normalized); // thử parse trực tiếp
+                    };
+                } catch (IllegalArgumentException e) {
+                    log.warn("[TestCaseService] CaseType không hợp lệ '{}' — fallback về POSITIVE.", dto.getCaseType());
+                }
+            }
+
+            // Normalize và map PriorityLevel
+            com.aitoolcheck.ai_toolcheck1_backend.enums.PriorityLevel priorityLevel =
+                    com.aitoolcheck.ai_toolcheck1_backend.enums.PriorityLevel.MEDIUM;
+            if (dto.getPriorityLevel() != null) {
+                try {
+                    priorityLevel = com.aitoolcheck.ai_toolcheck1_backend.enums.PriorityLevel
+                            .valueOf(dto.getPriorityLevel().trim().toUpperCase());
+                } catch (IllegalArgumentException e) {
+                    log.warn("[TestCaseService] PriorityLevel không hợp lệ '{}' — fallback về MEDIUM.", dto.getPriorityLevel());
+                }
+            }
+
+            // Xây dựng TestCaseInput từ inputData của AI
+            String inputDataJson = null;
+            if (dto.getInputData() != null && !dto.getInputData().isNull()) {
+                try {
+                    inputDataJson = jsonMapper.writeValueAsString(dto.getInputData());
+                } catch (Exception e) {
+                    log.warn("[TestCaseService] Không thể serialize inputData — bỏ qua.");
+                }
+            }
+
+            TestCaseInput input = TestCaseInput.builder()
+                    .httpMethod(apiEndpoint.getHttpMethod())
+                    .requestPath(apiEndpoint.getEndpointPath() != null ? apiEndpoint.getEndpointPath() : "/")
+                    .inputData(inputDataJson)
+                    .build();
+
+            // Xây dựng danh sách TestCaseAssertion
+            List<TestCaseAssertion> assertions = new java.util.ArrayList<>();
+            int sortOrder = 1;
+            for (com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiAssertionDto aDto : dto.getAssertions()) {
+
+                // Normalize AssertionType
+                AssertionType assertionType = AssertionType.STATUS_CODE;
+                if (aDto.getAssertionType() != null) {
+                    try {
+                        String norm = aDto.getAssertionType().trim().toUpperCase();
+                        assertionType = switch (norm) {
+                            case "JSON_BODY" -> AssertionType.JSON_PATH;
+                            default -> AssertionType.valueOf(norm);
+                        };
+                    } catch (IllegalArgumentException e) {
+                        log.warn("[TestCaseService] AssertionType không hợp lệ '{}' — fallback về STATUS_CODE.", aDto.getAssertionType());
+                    }
+                }
+
+                // Normalize ComparisonOperator
+                com.aitoolcheck.ai_toolcheck1_backend.enums.ComparisonOperator operator =
+                        com.aitoolcheck.ai_toolcheck1_backend.enums.ComparisonOperator.EQUALS;
+                if (aDto.getOperator() != null) {
+                    try {
+                        String norm = aDto.getOperator().trim().toUpperCase();
+                        operator = switch (norm) {
+                            case "NOT_NULL" -> com.aitoolcheck.ai_toolcheck1_backend.enums.ComparisonOperator.IS_NOT_NULL;
+                            default -> com.aitoolcheck.ai_toolcheck1_backend.enums.ComparisonOperator.valueOf(norm);
+                        };
+                    } catch (IllegalArgumentException e) {
+                        log.warn("[TestCaseService] Operator không hợp lệ '{}' — fallback về EQUALS.", aDto.getOperator());
+                    }
+                }
+
+                assertions.add(TestCaseAssertion.builder()
+                        .assertionType(assertionType)
+                        .targetPath(aDto.getTargetPath())
+                        .operator(operator)
+                        .expectedValue(aDto.getExpectedValue())
+                        .sortOrder(sortOrder++)
+                        .build());
+            }
+
+            // Xây dựng TestCase entity và assign quan hệ
+            TestCase testCase = TestCase.builder()
+                    .caseName(caseName)
+                    .caseType(caseType)
+                    .priorityLevel(priorityLevel)
+                    .generatedBy(com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy.AI)
+                    .activeFlag(true)
+                    .deletedFlag(false)
+                    .requiresWrite(false)
+                    .cleanupRequired(false)
+                    .sourceProject(sourceProject)
+                    .apiEndpoint(apiEndpoint)
+                    .build();
+
+            testCase.assignInput(input);
+            testCase.replaceAssertions(assertions);
+            testCasesToSave.add(testCase);
+        }
+
+        // 3. Batch save — tối ưu DB round-trip
+        testCaseRepository.saveAll(testCasesToSave);
+        log.info("[TestCaseService] Đã lưu thành công {} test case(s) cho endpoint: {}", testCasesToSave.size(), endpointId);
     }
 }

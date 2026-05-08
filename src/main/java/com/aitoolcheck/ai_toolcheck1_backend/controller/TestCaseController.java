@@ -3,6 +3,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.controller;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.MessageResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.CreateTestCaseRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.GenerateTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.UpdateTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res.TestCaseDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res.TestCaseResponse;
@@ -107,6 +108,24 @@ public class TestCaseController {
                 "Test case deleted successfully.",
                 MessageResponse.builder().message("Test case deleted successfully.").build()
         ));
+    }
+
+    @PostMapping("/generate")
+    @Operation(
+            summary = "Generate test cases via AI",
+            description = "Triggers an asynchronous job to generate test cases for a specific API endpoint via RabbitMQ.",
+            operationId = "generateTestCasesAsync"
+    )
+    public ResponseEntity<ApiResponse<MessageResponse>> generateTestCaseAsync(
+            @Valid @RequestBody GenerateTestCaseRequest request
+    ) {
+        UUID jobId = testCaseService.generateTestCaseAsync(request);
+
+        return ResponseEntity.status(HttpStatus.ACCEPTED)
+                .body(success(
+                        "Yêu cầu sinh Test Case bằng AI đã được tiếp nhận và đang xử lý ngầm.",
+                        MessageResponse.builder().message(jobId.toString()).build()
+                ));
     }
 
     private <T> ApiResponse<T> success(String message, T data) {
