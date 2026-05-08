@@ -83,3 +83,4 @@ build/
 .vscode/
 *.code-workspace
 .m2/
+echo "*.txt" >> .gitignore
