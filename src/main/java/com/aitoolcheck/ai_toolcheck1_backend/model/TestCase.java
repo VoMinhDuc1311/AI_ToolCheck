@@ -94,7 +94,6 @@ public class TestCase {
     )
     private TestCaseInput testCaseInput;
 
-    @Builder.Default
     @OrderBy("sortOrder ASC")
     @OneToMany(
             mappedBy = "testCase",
@@ -156,6 +155,9 @@ public class TestCase {
     }
 
     public void replaceAssertions(List<TestCaseAssertion> assertions) {
+        if (this.testCaseAssertions == null) {
+            this.testCaseAssertions = new ArrayList<>();
+        }
         this.testCaseAssertions.clear();
 
         if (assertions == null) {
