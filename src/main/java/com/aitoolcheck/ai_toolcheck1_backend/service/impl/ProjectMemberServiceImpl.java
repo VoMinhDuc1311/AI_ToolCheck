@@ -5,6 +5,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.projectmember.req.UpdateProject
 import com.aitoolcheck.ai_toolcheck1_backend.dto.projectmember.res.ProjectMemberResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectMemberRole;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.UserStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
 
 @Service
@@ -47,9 +49,36 @@ public class ProjectMemberServiceImpl implements ProjectMemberService {
         SourceProject sourceProject = projectAccessService.requireCanAdminProject(projectId);
         rejectOwnerRole(request.getRole());
 
-        AppUser user = appUserRepository.findById(request.getUserId())
-                .orElseThrow(() -> new ResourceNotFoundException("AppUser not found with id: " + request.getUserId()));
+        // --- Step A: Validate identity input ---
+        boolean hasUserId = request.getUserId() != null;
+        boolean hasUserEmail = request.getUserEmail() != null && !request.getUserEmail().isBlank();
 
+        if (hasUserId && hasUserEmail) {
+            throw new BadRequestException("Provide either userId or userEmail, not both");
+        }
+        if (!hasUserId && !hasUserEmail) {
+            throw new BadRequestException("Either userId or userEmail is required");
+        }
+
+        // --- Step B: Resolve target user ---
+        AppUser user;
+        if (hasUserId) {
+            user = appUserRepository.findById(request.getUserId())
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "AppUser not found with id: " + request.getUserId()));
+        } else {
+            String normalizedEmail = request.getUserEmail().trim().toLowerCase(Locale.ROOT);
+            user = appUserRepository.findByEmailIgnoreCase(normalizedEmail)
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "AppUser not found with email: " + normalizedEmail));
+        }
+
+        // --- Step C: Reject non-ACTIVE users ---
+        if (user.getStatus() != UserStatus.ACTIVE) {
+            throw new BadRequestException("Only active users can be added as project members");
+        }
+
+        // --- Step D: Existing business checks ---
         if (sourceProject.getOwnerUser() != null && sourceProject.getOwnerUser().getId().equals(user.getId())) {
             throw new BadRequestException("Project owner cannot be added as a project member");
         }

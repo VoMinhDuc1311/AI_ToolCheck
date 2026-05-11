@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.access;
 
+import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.ProjectPermissionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectMemberRole;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
@@ -179,6 +180,82 @@ public class ProjectAccessService {
         }
         return project.getId() != null
                 && projectMemberRepository.existsBySourceProject_IdAndUser_Id(project.getId(), user.getId());
+    }
+
+
+    @Transactional(readOnly = true)
+    public ProjectMemberRole getCurrentUserProjectRole(SourceProject project, AppUser user) {
+        if (project == null || user == null || project.getId() == null || user.getId() == null) {
+            return null;
+        }
+        // ADMIN and OWNER are not stored as member rows
+        if (isAdmin(user) || isOwner(project, user)) {
+            return null;
+        }
+        return projectMemberRepository
+                .findBySourceProject_IdAndUser_Id(project.getId(), user.getId())
+                .map(member -> member.getRole())
+                .orElse(null);
+    }
+
+
+    @Transactional(readOnly = true)
+    public ProjectPermissionResponse buildPermissions(SourceProject project, AppUser user) {
+        if (project == null || user == null) {
+            return allDenied();
+        }
+
+        boolean admin        = isAdmin(user);
+        boolean owner        = isOwner(project, user);
+        boolean publicRead   = isPublicRead(project);
+        UUID    projectId    = project.getId();
+        UUID    userId       = user.getId();
+
+        // Derive member-role booleans from existing set constants
+        boolean isMaintainer = projectId != null && hasMemberRole(projectId, userId, MAINTAINER_ONLY);
+        boolean isEditor     = projectId != null && hasMemberRole(projectId, userId, Set.of(ProjectMemberRole.EDITOR));
+        boolean isViewer     = projectId != null && hasMemberRole(projectId, userId, Set.of(ProjectMemberRole.VIEWER));
+        boolean isAnyMember  = isMaintainer || isEditor || isViewer;
+
+        // canViewProject: admin | owner | publicRead | anyMember
+        boolean canView = admin || owner || publicRead || isAnyMember;
+
+        // canViewSourceFileContent: must be direct member / owner / admin (NOT via publicRead alone)
+        boolean canViewSourceContent = admin || owner || isAnyMember;
+
+        // canManageProject: admin | owner | MANAGE_ROLES (MAINTAINER | EDITOR)
+        boolean canManage = admin || owner || isMaintainer || isEditor;
+
+        // canManageMembers / canUpdateVisibility: owner or admin only
+        boolean canAdmin = admin || owner;
+
+        // canUploadSource / canGenerateDocs / canTriggerAiJob: MAINTAINER_ONLY
+        boolean canMaintainerOp = admin || owner || isMaintainer;
+
+        // canCreateTestCase / canCreateTestRun: MANAGE_ROLES (MAINTAINER | EDITOR)
+        boolean canCreateTestOp = admin || owner || isMaintainer || isEditor;
+
+        // canPrepareTestRun: all members + public read + owner + admin
+        boolean canPrepare = admin || owner || publicRead || isAnyMember;
+
+        return ProjectPermissionResponse.builder()
+                .canViewProject(canView)
+                .canViewSourceFileContent(canViewSourceContent)
+                .canManageProject(canManage)
+                .canManageMembers(canAdmin)
+                .canUpdateVisibility(canAdmin)
+                .canUploadSource(canMaintainerOp)
+                .canGenerateDocs(canMaintainerOp)
+                .canTriggerAiJob(canMaintainerOp)
+                .canCreateTestCase(canCreateTestOp)
+                .canCreateTestRun(canCreateTestOp)
+                .canPrepareTestRun(canPrepare)
+                .build();
+    }
+
+    /** Returns a fully-denied permissions object for unauthenticated / null contexts. */
+    private ProjectPermissionResponse allDenied() {
+        return ProjectPermissionResponse.builder().build(); // all booleans default to false
     }
 
     private SourceProject requireMemberRoleOrOwnerAdmin(UUID projectId, Collection<ProjectMemberRole> roles) {
