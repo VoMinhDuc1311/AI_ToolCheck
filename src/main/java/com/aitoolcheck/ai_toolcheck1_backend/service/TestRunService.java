@@ -21,4 +21,6 @@ public interface TestRunService {
     TestRunDetailResponse prepare(UUID id);
 
     void executeTestRunAsync(UUID id);
+
+    TestRunDetailResponse execute(UUID id);
 }

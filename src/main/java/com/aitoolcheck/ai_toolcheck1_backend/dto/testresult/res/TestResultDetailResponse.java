@@ -23,7 +23,7 @@ public class TestResultDetailResponse {
     private Integer actualStatus;
     private ResultStatus resultStatus;
     private Integer responseTimeMs;
-    private JsonNode actualResponseJson;
+    private String actualResponseJson;
     private String errorMessage;
     private String blockedReason;
     private LocalDateTime createdAt;

@@ -10,6 +10,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunDetailRespon
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrunitem.res.TestRunItemResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
@@ -27,6 +28,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.runner.ExecutedHttpResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.service.runner.TestHttpExecutor;
 import com.aitoolcheck.ai_toolcheck1_backend.service.runner.TestRequestBuilder;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -63,6 +66,7 @@ public class TestRunServiceImpl implements TestRunService {
     private final TestCaseRepository testCaseRepository;
     private final SourceProjectRepository sourceProjectRepository;
     private final TestRequestBuilder testRequestBuilder;
+    private final TestHttpExecutor testHttpExecutor;
     private final ObjectMapper objectMapper;
     private final TestResultService testResultService;
     private final ProjectAccessService projectAccessService;
@@ -255,19 +259,19 @@ public class TestRunServiceImpl implements TestRunService {
                     continue;
                 }
 
-                // 1. Gọi TestRequestBuilder.executeRequest(...) để lấy HttpActualResponseDto
-                HttpActualResponseDto actualResponse = testRequestBuilder.executeRequest(
-                        testRun.getBaseUrl(),
-                        item.getTestCase().getTestCaseInput().getRequestPath(),
-                        item.getTestCase().getTestCaseInput().getHttpMethod().name(),
-                        item.getTestCase().getTestCaseInput().getRequestBodyJson(),
-                        item.getTestCase().getTestCaseInput().getQueryParamsJson());
+                // 1. Build prepared request (pure frame — no HTTP execution)
+                PreparedHttpRequestResponse prepared = testRequestBuilder.build(
+                        testRun.getBaseUrl(), input);
 
-                // 2. Gọi TestResultService.evaluateAssertions(...) để chấm điểm
+                // 2. Execute real HTTP via dedicated executor
+                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
+                HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
+
+                // 3. Evaluate assertions
                 List<TestCaseAssertion> assertions = testCase.getTestCaseAssertions();
                 RuleEngineResultDto ruleResult = testResultService.evaluateAssertions(actualResponse, assertions);
 
-                // 3. Gọi TestResultService.saveTestResult(...) để lưu DB
+                // 4. Persist result
                 testResultService.saveTestResult(item, actualResponse, ruleResult);
 
                 item.setItemStatus(ExecutionStatus.SUCCESS);
@@ -283,6 +287,151 @@ public class TestRunServiceImpl implements TestRunService {
         testRun.setRunStatus(RunStatus.COMPLETED);
         testRunRepository.save(testRun);
         log.info("Finished async execution for TestRun id: {}", id);
+    }
+
+    @Override
+    @Transactional
+    public TestRunDetailResponse execute(UUID id) {
+        if (id == null) {
+            throw new BadRequestException("id is required");
+        }
+
+        // Load and validate TestRun
+        TestRun testRun = testRunRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
+
+        // Guard: reject if already in progress (prevents concurrent double-execution)
+        if (testRun.getRunStatus() == RunStatus.RUNNING) {
+            throw new BadRequestException(
+                    "TestRun is already in RUNNING state. Wait for it to complete before re-executing.");
+        }
+
+        // Permission: mode-aware — SAFE_WRITE/FULL_WRITE require MAINTAINER
+        projectAccessService.requireCanExecuteTestRun(
+                testRun.getSourceProject().getId(),
+                testRun.getExecutionMode());
+
+        // Load items in deterministic order
+        List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
+        if (items.isEmpty()) {
+            throw new BadRequestException("TestRun has no items to execute");
+        }
+
+        // Mark run as RUNNING
+        testRun.setRunStatus(RunStatus.RUNNING);
+        testRunRepository.save(testRun);
+
+        boolean anyFailed = false;
+
+        for (TestRunItem item : items) {
+            try {
+                item.setItemStatus(ExecutionStatus.RUNNING);
+                testRunItemRepository.save(item);
+
+                TestCase testCase = item.getTestCase();
+                TestCaseInput input = testCase.getTestCaseInput();
+
+                if (input == null) {
+                    log.warn("[execute] No TestCaseInput for item id={}, testCase id={}", item.getId(), testCase.getId());
+                    item.setItemStatus(ExecutionStatus.FAILED);
+                    testRunItemRepository.save(item);
+                    saveErrorResult(item, null, "TestCaseInput is missing for this test case");
+                    anyFailed = true;
+                    continue;
+                }
+
+                // Build prepared request (pure frame — no HTTP)
+                PreparedHttpRequestResponse prepared = testRequestBuilder.build(
+                        testRun.getBaseUrl(), input);
+
+                // Execute real HTTP via dedicated executor
+                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
+                HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
+
+                // Evaluate assertions using existing TestResultService
+                List<TestCaseAssertion> assertions = testCase.getTestCaseAssertions();
+                RuleEngineResultDto ruleResult = testResultService.evaluateAssertions(actualResponse, assertions);
+
+                // Persist result
+                testResultService.saveTestResult(item, actualResponse, ruleResult);
+
+                // Map ResultStatus -> ExecutionStatus for item
+                ExecutionStatus itemStatus = resolveItemStatus(ruleResult.getFinalStatus());
+                item.setItemStatus(itemStatus);
+                testRunItemRepository.save(item);
+
+                if (itemStatus == ExecutionStatus.FAILED) {
+                    anyFailed = true;
+                }
+
+            } catch (Exception e) {
+                log.error("[execute] Unexpected error for TestRunItem id={}: {}", item.getId(), e.getMessage());
+                item.setItemStatus(ExecutionStatus.FAILED);
+                testRunItemRepository.save(item);
+                saveErrorResult(item, null, "Unexpected execution error: " + truncateSafe(e.getMessage(), 500));
+                anyFailed = true;
+            }
+        }
+
+        // Aggregate run status
+        testRun.setRunStatus(anyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
+        TestRun savedRun = testRunRepository.save(testRun);
+
+        // Reload items with results for response
+        List<TestRunItem> finalItems = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(savedRun.getId());
+        return toDetailResponse(savedRun, finalItems, Map.of());
+    }
+
+    /**
+     * Map ResultStatus to ExecutionStatus for TestRunItem.
+     * PASS -> SUCCESS, FAIL -> FAILED, ERROR -> FAILED, SKIPPED -> FAILED (safe fallback).
+     */
+    private ExecutionStatus resolveItemStatus(ResultStatus resultStatus) {
+        if (resultStatus == null) {
+            return ExecutionStatus.FAILED;
+        }
+        return switch (resultStatus) {
+            case PASS -> ExecutionStatus.SUCCESS;
+            case FAIL, ERROR, SKIPPED -> ExecutionStatus.FAILED;
+        };
+    }
+
+    /**
+     * Save an ERROR result for a TestRunItem when execution itself cannot proceed
+     * (e.g. missing input, unexpected exception before HTTP call).
+     */
+    private void saveErrorResult(TestRunItem item, Integer statusCode, String errorMessage) {
+        HttpActualResponseDto errResponse = HttpActualResponseDto.builder()
+                .statusCode(statusCode != null ? statusCode : 0)
+                .responseBody(null)
+                .responseTimeMs(0L)
+                .errorMessage(errorMessage)
+                .build();
+
+        RuleEngineResultDto errResult = RuleEngineResultDto.builder()
+                .finalStatus(ResultStatus.ERROR)
+                .logDetails(errorMessage)
+                .build();
+
+        testResultService.saveTestResult(item, errResponse, errResult);
+    }
+
+    /**
+     * Bridge: converts {@link ExecutedHttpResponse} from {@link TestHttpExecutor}
+     * into the {@link HttpActualResponseDto} expected by {@link com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService}.
+     */
+    private HttpActualResponseDto toHttpActualResponse(ExecutedHttpResponse executed) {
+        return HttpActualResponseDto.builder()
+                .statusCode(executed.statusCode())
+                .responseBody(executed.responseBody())
+                .responseTimeMs(executed.responseTimeMs())
+                .errorMessage(executed.errorMessage())
+                .build();
+    }
+
+    private String truncateSafe(String value, int maxLength) {
+        if (value == null) return null;
+        return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
     }
 
     @Override
@@ -490,15 +639,7 @@ public class TestRunServiceImpl implements TestRunService {
             return null;
         }
 
-        JsonNode actualResponseJson = null;
-        if (hasText(result.getActualResponseJson())) {
-            try {
-                actualResponseJson = objectMapper.readTree(result.getActualResponseJson());
-            } catch (JsonProcessingException ex) {
-                // Stored value is corrupt — return null rather than crashing the whole response
-                actualResponseJson = null;
-            }
-        }
+        String actualResponseJson = result.getActualResponseJson();
 
         return TestResultResponse.builder()
                 .id(result.getId())

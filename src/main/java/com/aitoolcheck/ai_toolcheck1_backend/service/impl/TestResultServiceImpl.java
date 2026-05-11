@@ -182,6 +182,7 @@ public class TestResultServiceImpl implements TestResultService {
         result.setBlockedReason(ruleResult.getLogDetails());
 
         testResultRepository.save(result);
+        item.setTestResult(result);
         log.info("Saved test result for TestRunItem {}: Status={}", item.getId(), ruleResult.getFinalStatus());
     }
 }
