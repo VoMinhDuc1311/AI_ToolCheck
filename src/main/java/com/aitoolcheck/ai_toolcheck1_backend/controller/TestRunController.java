@@ -78,6 +78,22 @@ public class TestRunController {
                 return ResponseEntity.ok(success("Test run requests prepared successfully.", data));
         }
 
+        @PostMapping("/{id}/execute")
+        @Operation(
+                summary = "Execute test run",
+                description = "Synchronously execute all items in a test run against the target API. "
+                        + "Persists TestResult per item and aggregates run status. "
+                        + "Requires MAINTAINER or EDITOR role for READ_ONLY mode; "
+                        + "MAINTAINER only for SAFE_WRITE or FULL_WRITE mode.",
+                operationId = "executeTestRunById"
+        )
+        public ResponseEntity<ApiResponse<TestRunDetailResponse>> executeById(
+                        @PathVariable UUID id) {
+                TestRunDetailResponse data = testRunService.execute(id);
+
+                return ResponseEntity.ok(success("Test run executed successfully.", data));
+        }
+
         private <T> ApiResponse<T> success(String message, T data) {
                 return ApiResponse.<T>builder()
                                 .code("SUCCESS")
