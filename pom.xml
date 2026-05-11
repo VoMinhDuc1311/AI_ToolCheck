@@ -6,7 +6,8 @@
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
         <version>4.0.5</version>
-        <relativePath/> </parent>
+        <relativePath/> <!-- lookup parent from repository -->
+    </parent>
     <groupId>com.aitoolcheck</groupId>
     <artifactId>ai_toolcheck1_backend</artifactId>
     <version>0.0.1-SNAPSHOT</version>
@@ -58,7 +59,6 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-websocket</artifactId>
         </dependency>
-
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-amqp</artifactId>
@@ -124,6 +124,7 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
+        
         <!-- JWT: API for creating and parsing JWT tokens -->
         <dependency>
             <groupId>io.jsonwebtoken</groupId>
@@ -147,6 +148,12 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Jayway JsonPath: Used for Rule Engine JSON body assertions -->
+        <dependency>
+            <groupId>com.jayway.jsonpath</groupId>
+            <artifactId>json-path</artifactId>
+        </dependency>
+
     </dependencies>
 
     <build>
@@ -157,7 +164,8 @@
                 <configuration>
                     <excludes>
                         <exclude>
-                            <groupId>org.projectlombok</groupId>  <artifactId>lombok</artifactId>
+                            <groupId>org.projectlombok</groupId>
+                            <artifactId>lombok</artifactId>
                         </exclude>
                     </excludes>
                 </configuration>
