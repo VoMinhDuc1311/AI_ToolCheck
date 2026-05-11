@@ -6,7 +6,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDt
 import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.LogStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
-import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType; // ĐÃ FIX: Import ErrorType
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
@@ -16,6 +16,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.DocumentEnrichmentService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiEndpointService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -60,6 +61,7 @@ public class AiTaskConsumer {
     private final com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService aiJobLogService;
     private final DocumentEnrichmentService documentEnrichmentService;
     private final ApiEndpointService apiEndpointService;
+    private final TestCaseService testCaseService;
 
     // =========================================================================
     // ENTRY POINT
@@ -87,6 +89,10 @@ public class AiTaskConsumer {
             else if ("enrich_api_doc".equalsIgnoreCase(message.getSkillCode())
                     || "SKILL_1".equalsIgnoreCase(message.getSkillCode())) {
                 rawAiResponse = executeDocumentEnrichment(message, jobLog);
+            }
+            // Xử lý Task 1.3: Sinh Test Case tự động
+            else if ("GENERATE_TEST_CASE".equalsIgnoreCase(message.getSkillCode())) {
+                rawAiResponse = testCaseService.generateTestCaseProcessing(message.getApiEndpointId(), jobLog.getId());
             } else {
                 log.info("[RabbitMQ] SkillCode '{}' chưa hỗ trợ — bỏ qua.", message.getSkillCode());
                 aiJobLogService.markJobAsFailed(jobLog.getId(), "SkillCode chưa hỗ trợ: " + message.getSkillCode());
@@ -199,14 +205,11 @@ public class AiTaskConsumer {
 
         // Bước 2: Delegate sang DocumentEnrichmentService (RAG + Multi-Model Router bên
         // trong)
-        // - Không Thread.sleep ở đây! Sleep chỉ xảy ra trong Router nếu dùng Gemini.
         String endpointId = message.getApiEndpointId();
         AiDocumentEnrichmentResponseDto resultDto = documentEnrichmentService.enrichDocumentation(endpointId,
                 openApiFragment);
 
         // Bước 3: Token tracking — Ollama không cung cấp token counts, đặt = 0
-        // (Trong tương lai có thể thêm ThreadLocal/RequestContext để truyền thông tin
-        // này)
         int tokenInput = 0;
         int tokenOutput = 0;
         aiJobLogService.updateTokens(jobLog.getId(), tokenInput, tokenOutput);

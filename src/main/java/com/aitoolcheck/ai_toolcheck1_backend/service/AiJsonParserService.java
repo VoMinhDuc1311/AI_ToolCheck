@@ -1,7 +1,10 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
+
+import java.util.List;
 
 /**
  * Contract for the AI response Sanitization + Parsing Pipeline.
@@ -14,7 +17,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
  * <pre>
  * Raw AI Response
  *   └─ extractAndSanitizeJson()  → clean JSON String   (Layer 1–3, Task 1)
- *         └─ parseToDto()        → AiInferenceResultDto (Layer 4–6, Task 2)
+ *        └─ parseToDto()         → AiInferenceResultDto (Layer 4–6, Task 2)
  * </pre>
  */
 public interface AiJsonParserService {
@@ -56,4 +59,15 @@ public interface AiJsonParserService {
      *                              failure.
      */
     AiInferenceResultDto parseToDto(String cleanJson);
+
+    /**
+     * Self-Healing: Làm sạch chuỗi JSON thô trả về từ AI (cắt markdown, tìm ranh
+     * giới mảng)
+     * và parse thành danh sách {@link AiTestCaseDto}.
+     *
+     * @param rawJson Chuỗi thô từ AI (có thể chứa markdown, text rác).
+     * @return Danh sách test case đã được parse.
+     * @throws AiJsonParseException nếu không tìm thấy mảng JSON hợp lệ.
+     */
+    List<AiTestCaseDto> cleanAndParseTestCaseJson(String rawJson);
 }
