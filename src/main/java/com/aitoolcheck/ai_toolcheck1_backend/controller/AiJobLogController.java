@@ -40,7 +40,8 @@ public class AiJobLogController {
                 request.getPromptText(),
                 request.getSkillCode(),
                 request.getProjectId(),
-                request.getSourceFileId()
+                request.getSourceFileId(),
+                request.getApiEndpointId()
         );
         
         log.info("Đã xử lý Trigger AI Job thành công. Job ID: {}", savedJobDto.getId());
@@ -49,6 +50,25 @@ public class AiJobLogController {
                 .code(String.valueOf(HttpStatus.ACCEPTED.value()))
                 .message("Yêu cầu đã được hệ thống tiếp nhận và đang được xử lý ngầm.")
                 .data(savedJobDto)
+                .timestamp(LocalDateTime.now())
+                .build();
+                
+        return ResponseEntity.status(HttpStatus.ACCEPTED).body(response);
+    }
+
+    /**
+     * Endpoint tự động trigger phân tích/làm giàu cho toàn bộ API Endpoints của một dự án.
+     */
+    @PostMapping("/trigger/project/{projectId}/enrich-endpoints")
+    public ResponseEntity<ApiResponse<String>> triggerEnrichmentForProject(@PathVariable UUID projectId) {
+        log.info("Đã nhận yêu cầu tự động làm giàu toàn bộ API Endpoints cho Project ID: {}", projectId);
+        
+        int triggeredCount = aiJobLogService.triggerEnrichmentForProject(projectId);
+        
+        ApiResponse<String> response = ApiResponse.<String>builder()
+                .code(String.valueOf(HttpStatus.ACCEPTED.value()))
+                .message("Đã kích hoạt thành công " + triggeredCount + " jobs làm giàu tài liệu.")
+                .data("Đã đẩy " + triggeredCount + " messages vào RabbitMQ.")
                 .timestamp(LocalDateTime.now())
                 .build();
                 

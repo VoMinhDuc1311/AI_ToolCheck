@@ -54,7 +54,21 @@ public class SourceAnalysisResult {
     @Column(name = "summary", length = 1000)
     private String summary;
 
+    @Column(name = "current_flag", nullable = false)
+    private Boolean currentFlag;
+
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", unique = true, nullable = false)
     private SourceProject sourceProject;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "source_upload_version_id", referencedColumnName = "id")
+    private SourceUploadVersion sourceUploadVersion;
+
+    @PrePersist
+    public void prePersist() {
+        if (currentFlag == null) {
+            currentFlag = true;
+        }
+    }
 }

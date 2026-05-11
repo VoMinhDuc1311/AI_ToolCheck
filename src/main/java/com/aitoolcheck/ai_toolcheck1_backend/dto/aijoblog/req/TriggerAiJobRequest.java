@@ -26,4 +26,7 @@ public class TriggerAiJobRequest {
 
     /** UUID của SourceFile — nullable nếu trigger không gắn với file cụ thể. */
     private UUID sourceFileId;
+
+    /** UUID của ApiEndpoint — dùng để trigger cho một endpoint cụ thể. */
+    private UUID apiEndpointId;
 }

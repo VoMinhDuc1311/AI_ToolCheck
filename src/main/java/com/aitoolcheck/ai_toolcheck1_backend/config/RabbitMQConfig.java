@@ -4,7 +4,7 @@ import org.springframework.amqp.core.Binding;
 import org.springframework.amqp.core.BindingBuilder;
 import org.springframework.amqp.core.DirectExchange;
 import org.springframework.amqp.core.Queue;
-import org.springframework.amqp.support.converter.Jackson2JsonMessageConverter;
+import org.springframework.amqp.support.converter.JacksonJsonMessageConverter;
 import org.springframework.amqp.support.converter.MessageConverter;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -33,11 +33,17 @@ public class RabbitMQConfig {
     }
 
     /**
-     * RẤT QUAN TRỌNG: Cấu hình MessageConverter sử dụng Jackson 
-     * để tự động convert các Java Object sang JSON (khi gửi) và ngược lại (khi nhận).
+     * RẤT QUAN TRỌNG: Cấu hình MessageConverter sử dụng Jackson
+     * để tự động convert các Java Object sang JSON (khi gửi) và ngược lại (khi
+     * nhận).
+     */
+    /**
+//     * RẤT QUAN TRỌNG: Cấu hình MessageConverter sử dụng Jackson
+     * để tự động convert các Java Object sang JSON (khi gửi) và ngược lại (khi
+     * nhận).
      */
     @Bean
     public MessageConverter jsonMessageConverter() {
-        return new Jackson2JsonMessageConverter();
+        return new JacksonJsonMessageConverter();
     }
 }

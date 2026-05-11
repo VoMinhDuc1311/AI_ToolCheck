@@ -7,49 +7,90 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiEndpointService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
 import java.util.UUID;
+import java.time.LocalDateTime;
+import org.springframework.transaction.annotation.Transactional;
+import lombok.extern.slf4j.Slf4j;
 
 @Service
 @RequiredArgsConstructor
+@Slf4j
 public class ApiEndpointServiceImpl implements ApiEndpointService {
 
     private final ApiEndpointRepository apiEndpointRepository;
     private final SourceProjectRepository sourceProjectRepository;
+    private final ProjectAccessService projectAccessService;
 
     @Override
+    @Transactional(readOnly = true)
     public List<ApiEndpointResponse> getByProjectId(UUID projectId) {
-        if (!sourceProjectRepository.existsById(projectId)) {
-            throw new ResourceNotFoundException("Source project not found with id: " + projectId);
-        }
+        projectAccessService.requireCanViewProject(projectId);
 
-        return apiEndpointRepository.findBySourceProjectId(projectId)
+        return apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId)
                 .stream()
                 .map(this::mapToResponse)
                 .toList();
     }
 
     @Override
+    @Transactional(readOnly = true)
     public ApiEndpointDetailResponse getById(UUID id) {
         ApiEndpoint apiEndpoint = apiEndpointRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
+        projectAccessService.requireCanViewProject(apiEndpoint.getSourceProject().getId());
 
         return mapToDetailResponse(apiEndpoint);
+    }
+
+    @Override
+    @Transactional
+    public void enrichEndpointData(UUID id, String summary, String description, String reqJson, String resJson, String openapiFragmentJson, UUID jobId) {
+        log.info("[ApiEndpoint] Cập nhật dữ liệu do AI làm giàu cho Endpoint ID: {}", id);
+
+        ApiEndpoint endpoint = apiEndpointRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
+        projectAccessService.requireCanTriggerAiJob(endpoint.getSourceProject().getId());
+
+        endpoint.setAiSummary(summary);
+        endpoint.setAiDescription(description);
+        endpoint.setExampleRequestJson(reqJson);
+        endpoint.setExampleResponseJson(resJson);
+        endpoint.setOpenapiFragmentJson(openapiFragmentJson);
+        endpoint.setAiEnrichedAt(LocalDateTime.now());
+        endpoint.setLastAiJobLogId(jobId);
+        endpoint.setAiEnrichedFlag(true);
+
+        apiEndpointRepository.save(endpoint);
+        log.debug("[ApiEndpoint] Cập nhật thành công cho Endpoint ID: {}", id);
     }
 
     private ApiEndpointResponse mapToResponse(ApiEndpoint apiEndpoint) {
         return ApiEndpointResponse.builder()
                 .id(apiEndpoint.getId())
                 .projectId(apiEndpoint.getSourceProject().getId())
+                .sourceFileId(apiEndpoint.getSourceFile() == null ? null : apiEndpoint.getSourceFile().getId())
+                .sourceUploadVersionId(apiEndpoint.getSourceUploadVersion() == null ? null : apiEndpoint.getSourceUploadVersion().getId())
+                .controllerName(apiEndpoint.getControllerName())
+                .methodName(apiEndpoint.getMethodName())
                 .httpMethod(apiEndpoint.getHttpMethod())
                 .endpointPath(apiEndpoint.getEndpointPath())
+                .stableKey(apiEndpoint.getStableKey())
+                .description(apiEndpoint.getDescription())
                 .operationId(apiEndpoint.getOperationId())
                 .tagName(apiEndpoint.getTagName())
                 .authRequired(apiEndpoint.getAuthRequired())
                 .deprecatedFlag(apiEndpoint.getDeprecatedFlag())
+                .activeFlag(apiEndpoint.getActiveFlag())
+                .staleFlag(apiEndpoint.getStaleFlag())
+                .aiEnrichedFlag(apiEndpoint.getAiEnrichedFlag())
+                .aiSummary(apiEndpoint.getAiSummary())
+                .aiDescription(apiEndpoint.getAiDescription())
+                .aiEnrichedAt(apiEndpoint.getAiEnrichedAt())
                 .build();
     }
 
@@ -58,16 +99,29 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
                 .id(apiEndpoint.getId())
                 .projectId(apiEndpoint.getSourceProject().getId())
                 .sourceFileId(apiEndpoint.getSourceFile() == null ? null : apiEndpoint.getSourceFile().getId())
+                .sourceUploadVersionId(apiEndpoint.getSourceUploadVersion() == null ? null : apiEndpoint.getSourceUploadVersion().getId())
                 .controllerName(apiEndpoint.getControllerName())
                 .methodName(apiEndpoint.getMethodName())
                 .httpMethod(apiEndpoint.getHttpMethod())
                 .endpointPath(apiEndpoint.getEndpointPath())
+                .stableKey(apiEndpoint.getStableKey())
+                .description(apiEndpoint.getDescription())
                 .operationId(apiEndpoint.getOperationId())
                 .tagName(apiEndpoint.getTagName())
                 .authRequired(apiEndpoint.getAuthRequired())
                 .deprecatedFlag(apiEndpoint.getDeprecatedFlag())
+                .activeFlag(apiEndpoint.getActiveFlag())
+                .staleFlag(apiEndpoint.getStaleFlag())
                 .createdAt(apiEndpoint.getCreatedAt())
                 .updatedAt(apiEndpoint.getUpdatedAt())
+                .aiEnrichedFlag(apiEndpoint.getAiEnrichedFlag())
+                .aiSummary(apiEndpoint.getAiSummary())
+                .aiDescription(apiEndpoint.getAiDescription())
+                .exampleRequestJson(apiEndpoint.getExampleRequestJson())
+                .exampleResponseJson(apiEndpoint.getExampleResponseJson())
+                .openapiFragmentJson(apiEndpoint.getOpenapiFragmentJson())
+                .aiEnrichedAt(apiEndpoint.getAiEnrichedAt())
+                .lastAiJobLogId(apiEndpoint.getLastAiJobLogId())
                 .build();
     }
 }

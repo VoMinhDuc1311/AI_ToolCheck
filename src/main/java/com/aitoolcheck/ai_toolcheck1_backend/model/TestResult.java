@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
@@ -24,7 +25,7 @@ public class TestResult {
     @Column(name = "actual_status")
     private Integer actualStatus;
 
-    @Column(name = "result_status")
+    @Column(name = "result_status", length = 20)
     @Enumerated(EnumType.STRING)
     private ResultStatus resultStatus;
 
@@ -34,13 +35,17 @@ public class TestResult {
     @Column(name = "actual_response_json", columnDefinition = "TEXT")
     private String actualResponseJson;
 
-    @Column(name = "error_message")
+    @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 
-    @Column(name = "blocked_reason")
+    @Column(name = "blocked_reason", columnDefinition = "TEXT")
     private String blockedReason;
 
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
 
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
 
     @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "test_run_item_id", referencedColumnName = "id", unique = true, nullable = false)
@@ -48,4 +53,16 @@ public class TestResult {
 
     @OneToMany(mappedBy = "testResult", fetch = FetchType.LAZY)
     private List<AiJobLog> aiJobLogs;
+
+    @PrePersist
+    public void prePersist() {
+        LocalDateTime now = LocalDateTime.now();
+        createdAt = now;
+        updatedAt = now;
+    }
+
+    @PreUpdate
+    public void preUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
 }

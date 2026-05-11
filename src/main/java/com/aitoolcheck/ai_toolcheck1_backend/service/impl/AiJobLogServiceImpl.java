@@ -6,6 +6,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.ForbiddenException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiSkill;
@@ -14,7 +15,9 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestResult;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
@@ -23,8 +26,10 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiSkillRepository;
 
 @Slf4j
@@ -37,11 +42,15 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     private final SourceProjectRepository sourceProjectRepository;
     private final EntityManager entityManager;
     private final AiSkillRepository aiSkillRepository;
+    private final ApiEndpointRepository apiEndpointRepository;
+    private final ProjectAccessService projectAccessService;
+    private final CurrentUserService currentUserService;
 
     @Override
     @Transactional
     public AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
-                                                  UUID projectId, UUID sourceFileId) {
+                                                  UUID projectId, UUID sourceFileId, UUID apiEndpointId) {
+        projectAccessService.requireCanTriggerAiJob(projectId);
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
         AiSkill aiSkill = aiSkillRepository.findBySkillCode(skillCode)
@@ -73,6 +82,10 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .sourceProject(projectRef)
                 .aiSkill(aiSkill)
                 .build();
+                
+        if (apiEndpointId != null) {
+            jobLog.setApiEndpoint(entityManager.getReference(ApiEndpoint.class, apiEndpointId));
+        }
 
         AiJobLog savedJob = aiJobLogRepository.save(jobLog);
         log.info("Đã tạo AiJobLog ID: [{}] trạng thái PENDING cho Project: [{}]",
@@ -84,6 +97,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .skillCode(skillCode)
                 .projectId(projectId.toString())
                 .sourceFileId(sourceFileId != null ? sourceFileId.toString() : null)
+                .apiEndpointId(apiEndpointId != null ? apiEndpointId.toString() : null)
                 .build();
 
         org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
@@ -101,6 +115,32 @@ public class AiJobLogServiceImpl implements AiJobLogService {
 
     @Override
     @Transactional
+    public int triggerEnrichmentForProject(UUID projectId) {
+        projectAccessService.requireCanTriggerAiJob(projectId);
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
+        if (endpoints.isEmpty()) {
+            return 0;
+        }
+
+        int count = 0;
+        for (ApiEndpoint endpoint : endpoints) {
+            String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+            String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name().toLowerCase() : "get";
+            String opId = endpoint.getOperationId() != null ? endpoint.getOperationId() : (endpoint.getMethodName() != null ? endpoint.getMethodName() : "operation");
+            String summary = endpoint.getMethodName() != null ? endpoint.getMethodName() : opId;
+
+            String promptText = String.format("{\n  \"%s\" : {\n    \"%s\" : {\n      \"operationId\" : \"%s\",\n      \"summary\" : \"%s\"\n    }\n  }\n}",
+                    path, method, opId, summary);
+
+            createPendingJobAndTriggerAi(promptText, "enrich_api_doc", projectId, null, endpoint.getId());
+            count++;
+        }
+
+        return count;
+    }
+
+    @Override
+    @Transactional
     public AiJobLogResponse createPendingJob(CreateAiJobLogRequest request) {
         log.info("Creating pending AiJobLog of type: {}", request.getJobType());
 
@@ -114,6 +154,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .build();
 
         if (request.getProjectId() != null) {
+            projectAccessService.requireCanTriggerAiJob(request.getProjectId());
             jobLog.setSourceProject(entityManager.getReference(SourceProject.class, request.getProjectId()));
         } else {
             throw new BadRequestException("ProjectId is required to create an AiJobLog");
@@ -142,7 +183,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
 
         if (jobLog.getExecutionStatus() != ExecutionStatus.PENDING) {
-            throw new BadRequestException("Job is not in PENDING state");
+            log.warn("Job is not in PENDING state (Current: {}). Transitioning to RUNNING anyway due to retry.", jobLog.getExecutionStatus());
         }
 
         jobLog.setExecutionStatus(ExecutionStatus.RUNNING);
@@ -198,12 +239,20 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     public AiJobLogResponse getJobById(UUID id) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
+        if (jobLog.getSourceProject() != null) {
+            projectAccessService.requireCanViewProject(jobLog.getSourceProject().getId());
+        } else if (!currentUserService.isAdmin()) {
+            throw new ForbiddenException("You do not have permission to perform this action");
+        }
         return mapToResponse(jobLog);
     }
 
     @Override
     @Transactional(readOnly = true)
     public com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse getJobStatistics() {
+        if (!currentUserService.isAdmin()) {
+            throw new ForbiddenException("You do not have permission to perform this action");
+        }
         long totalJobs = aiJobLogRepository.count();
         long totalSuccessfulJobs = aiJobLogRepository.countByExecutionStatus(ExecutionStatus.SUCCESS);
         long totalFailedJobs = aiJobLogRepository.countByExecutionStatus(ExecutionStatus.FAILED);

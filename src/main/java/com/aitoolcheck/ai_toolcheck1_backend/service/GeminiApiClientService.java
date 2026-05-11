@@ -1,9 +1,16 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
+import com.aitoolcheck.ai_toolcheck1_backend.service.LlmClientService;
 import reactor.core.publisher.Mono;
 
-public interface GeminiApiClientService {
+/**
+ * Client service interface for Google Gemini API.
+ *
+ * <p>Extends {@link LlmClientService} so that {@code AiModelRouterService}
+ * can use it as a last-resort fallback via the common contract.
+ */
+public interface GeminiApiClientService extends LlmClientService {
     /**
      * Gửi prompt tới Google Gemini API và nhận về kết quả (dưới dạng Mono non-blocking).
      *

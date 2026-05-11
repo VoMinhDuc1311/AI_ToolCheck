@@ -6,11 +6,18 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
 
 @Entity
-@Table(name = "test_run")
+@Table(
+        name = "test_run",
+        indexes = {
+                @Index(name = "idx_test_run_project_id", columnList = "project_id"),
+                @Index(name = "idx_test_run_run_status", columnList = "run_status")
+        }
+)
 @Getter
 @Setter
 @NoArgsConstructor
@@ -23,31 +30,56 @@ public class TestRun {
     @Column(name = "id", updatable = false, nullable = false)
     private UUID id;
 
-    @Column(name = "run_code")
+    @Column(name = "run_code", length = 100)
     private String runCode;
 
-    @Column(name = "environment_name")
+    @Column(name = "run_name", nullable = false, length = 150)
+    private String runName;
+
+    @Column(name = "description", columnDefinition = "TEXT")
+    private String description;
+
+    @Column(name = "base_url", nullable = false, length = 500)
+    private String baseUrl;
+
+    @Column(name = "environment_name", length = 50)
     @Enumerated(EnumType.STRING)
     private EnvironmentType environmentName;
 
-    @Column(name = "execution_mode")
+    @Column(name = "execution_mode", length = 50)
     @Enumerated(EnumType.STRING)
     private ExecutionMode executionMode;
 
-    @Column(name = "base_url")
-    private String baseUrl;
-
-    @Column(name = "run_status")
+    @Column(name = "run_status", nullable = false, length = 50)
     @Enumerated(EnumType.STRING)
     private RunStatus runStatus;
 
+    @Column(name = "created_at", nullable = false)
+    private LocalDateTime createdAt;
 
+    @Column(name = "updated_at", nullable = false)
+    private LocalDateTime updatedAt;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "project_id", referencedColumnName = "id", nullable = false)
     private SourceProject sourceProject;
 
-    // Join-table side: test_run <-> test_case through test_run_item
-    @OneToMany(mappedBy = "testRun", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
+    @OneToMany(mappedBy = "testRun", fetch = FetchType.LAZY, cascade = CascadeType.ALL, orphanRemoval = true)
     private List<TestRunItem> testRunItems;
+
+    @PrePersist
+    public void prePersist() {
+        LocalDateTime now = LocalDateTime.now();
+        createdAt = now;
+        updatedAt = now;
+
+        if (runStatus == null) {
+            runStatus = RunStatus.PENDING;
+        }
+    }
+
+    @PreUpdate
+    public void preUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
 }

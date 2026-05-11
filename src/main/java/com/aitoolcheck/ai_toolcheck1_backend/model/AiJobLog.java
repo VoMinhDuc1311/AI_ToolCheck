@@ -23,7 +23,7 @@ public class AiJobLog {
     @Column(name = "id", updatable = false, nullable = false)
     private UUID id;
 
-    @Column(name = "job_type")
+    @Column(name = "job_type", length = 50)
     @Enumerated(EnumType.STRING)
     private JobType jobType;
 
@@ -36,7 +36,7 @@ public class AiJobLog {
     @Column(name = "token_output")
     private Integer tokenOutput;
 
-    @Column(name = "execution_status")
+    @Column(name = "execution_status", length = 50)
     @Enumerated(EnumType.STRING)
     private ExecutionStatus executionStatus;
 

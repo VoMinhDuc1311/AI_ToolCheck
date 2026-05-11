@@ -14,6 +14,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiDocumentRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiDocumentVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiDocumentService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -29,14 +30,12 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     private final ApiDocumentRepository apiDocumentRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
     private final SourceProjectRepository sourceProjectRepository;
+    private final ProjectAccessService projectAccessService;
 
     @Override
     @Transactional
     public ApiDocumentDetailResponse create(CreateApiDocumentRequest request) {
-        SourceProject sourceProject = sourceProjectRepository.findById(request.getProjectId())
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "SourceProject not found with id: " + request.getProjectId()
-                ));
+        SourceProject sourceProject = projectAccessService.requireCanGenerateDocs(request.getProjectId());
 
         if (apiDocumentRepository.existsBySourceProjectId(request.getProjectId())) {
             throw new BadRequestException(
@@ -58,6 +57,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
                 .documentType(documentType)
                 .currentVersionNo(0)
                 .publishedFlag(false)
+                .staleFlag(false)
                 .build();
 
         ApiDocument saved = apiDocumentRepository.save(apiDocument);
@@ -67,6 +67,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     @Override
     @Transactional(readOnly = true)
     public ApiDocumentDetailResponse getByProjectId(UUID projectId) {
+        projectAccessService.requireCanViewProject(projectId);
         ApiDocument apiDocument = apiDocumentRepository.findBySourceProjectId(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "ApiDocument not found for project id: " + projectId
@@ -79,6 +80,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     @Transactional(readOnly = true)
     public ApiDocumentDetailResponse getById(UUID id) {
         ApiDocument apiDocument = findDocumentOrThrow(id);
+        projectAccessService.requireCanViewProject(apiDocument.getSourceProject().getId());
         return toDetailResponse(apiDocument);
     }
 
@@ -86,6 +88,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     @Transactional
     public ApiDocumentDetailResponse update(UUID id, UpdateApiDocumentRequest request) {
         ApiDocument apiDocument = findDocumentOrThrow(id);
+        projectAccessService.requireCanGenerateDocs(apiDocument.getSourceProject().getId());
 
         if (hasText(request.getDocumentName())) {
             apiDocument.setDocumentName(request.getDocumentName().trim());
@@ -108,6 +111,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     @Transactional
     public ApiDocumentDetailResponse publish(UUID id) {
         ApiDocument apiDocument = findDocumentOrThrow(id);
+        projectAccessService.requireCanAdminProject(apiDocument.getSourceProject().getId());
 
         if (apiDocument.getCurrentVersionNo() == null || apiDocument.getCurrentVersionNo() <= 0) {
             throw new BadRequestException("Cannot publish ApiDocument without a generated version.");
@@ -125,6 +129,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     @Transactional
     public ApiDocumentDetailResponse unpublish(UUID id) {
         ApiDocument apiDocument = findDocumentOrThrow(id);
+        projectAccessService.requireCanAdminProject(apiDocument.getSourceProject().getId());
 
         apiDocument.setPublishedFlag(false);
 
@@ -135,7 +140,8 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     @Override
     @Transactional(readOnly = true)
     public List<ApiDocumentVersionResponse> getVersions(UUID apiDocumentId) {
-        findDocumentOrThrow(apiDocumentId);
+        ApiDocument apiDocument = findDocumentOrThrow(apiDocumentId);
+        projectAccessService.requireCanViewProject(apiDocument.getSourceProject().getId());
 
         return apiDocumentVersionRepository
                 .findByApiDocumentIdOrderByVersionNoDesc(apiDocumentId)
@@ -170,6 +176,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
                 .documentType(apiDocument.getDocumentType())
                 .currentVersionNo(apiDocument.getCurrentVersionNo())
                 .publishedFlag(apiDocument.getPublishedFlag())
+                .staleFlag(apiDocument.getStaleFlag())
                 .createdAt(apiDocument.getCreatedAt())
                 .updatedAt(apiDocument.getUpdatedAt())
                 .build();

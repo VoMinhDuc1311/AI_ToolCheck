@@ -8,10 +8,13 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceAnalysisResult;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
+import com.aitoolcheck.ai_toolcheck1_backend.model.SourceUploadVersion;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceAnalysisResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.AnalysisSignals;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.JavaSourceAnalyzer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.SourceAnalysisDecisionService;
@@ -31,18 +34,22 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
     private final SourceAnalysisResultRepository sourceAnalysisResultRepository;
     private final SourceFileRepository sourceFileRepository;
     private final SourceProjectRepository sourceProjectRepository;
+    private final SourceUploadVersionRepository sourceUploadVersionRepository;
     private final JavaSourceAnalyzer javaSourceAnalyzer;
     private final SourceAnalysisScoringService scoringService;
     private final SourceAnalysisDecisionService decisionService;
     private final SourceAnalysisSummaryBuilder summaryBuilder;
+    private final ProjectAccessService projectAccessService;
 
     @Override
     @Transactional
     public SourceAnalysisResultDetailResponse analyzeProject(UUID projectId) {
-        SourceProject sourceProject = sourceProjectRepository.findById(projectId)
-                .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + projectId));
+        SourceProject sourceProject = projectAccessService.requireCanTriggerAiJob(projectId);
 
-        List<SourceFile> sourceFiles = sourceFileRepository.findBySourceProjectId(projectId);
+        sourceProject.setStatus(ProjectStatus.ANALYZING);
+        sourceProjectRepository.save(sourceProject);
+
+        List<SourceFile> sourceFiles = sourceFileRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
 
         if (sourceFiles.isEmpty()) {
             throw new BadRequestException("No source files found for project id: " + projectId);
@@ -75,7 +82,7 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         );
         String summary = summaryBuilder.buildSummary(sourceStyle, parserRecommended, aiRecommended);
 
-        SourceAnalysisResult analysisResult = sourceAnalysisResultRepository.findBySourceProjectId(projectId)
+        SourceAnalysisResult analysisResult = findLatestAnalysisResult(projectId)
                 .orElse(SourceAnalysisResult.builder()
                         .sourceProject(sourceProject)
                         .build());
@@ -91,6 +98,9 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         analysisResult.setParsedFailedFiles(signals.parsedFailedFiles());
         analysisResult.setParseSuccessRate(parseSuccessRate);
         analysisResult.setSummary(summary);
+        analysisResult.setCurrentFlag(Boolean.TRUE);
+        sourceUploadVersionRepository.findTopBySourceProjectIdOrderByVersionNoDesc(projectId)
+                .ifPresent(analysisResult::setSourceUploadVersion);
 
         SourceAnalysisResult savedResult = sourceAnalysisResultRepository.save(analysisResult);
 
@@ -101,18 +111,25 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
     }
 
     @Override
+    @Transactional(readOnly = true)
     public SourceAnalysisResultDetailResponse getByProjectId(UUID projectId) {
-        if (!sourceProjectRepository.existsById(projectId)) {
-            throw new ResourceNotFoundException("Source project not found with id: " + projectId);
-        }
+        projectAccessService.requireCanViewProject(projectId);
 
-        SourceAnalysisResult result = sourceAnalysisResultRepository.findBySourceProjectId(projectId)
+        SourceAnalysisResult result = findLatestAnalysisResult(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException("Source analysis result not found for project id: " + projectId));
 
         return mapToDetailResponse(result);
     }
 
+    private java.util.Optional<SourceAnalysisResult> findLatestAnalysisResult(UUID projectId) {
+        return sourceAnalysisResultRepository.findLatestCandidatesByProjectId(projectId)
+                .stream()
+                .findFirst();
+    }
+
     private SourceAnalysisResultDetailResponse mapToDetailResponse(SourceAnalysisResult result) {
+        SourceUploadVersion uploadVersion = result.getSourceUploadVersion();
+
         return SourceAnalysisResultDetailResponse.builder()
                 .id(result.getId())
                 .projectId(result.getSourceProject().getId())
@@ -125,8 +142,24 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
                 .analyzableFiles(result.getAnalyzableFiles())
                 .parsedSuccessFiles(result.getParsedSuccessFiles())
                 .parsedFailedFiles(result.getParsedFailedFiles())
+                .parsedFailed(result.getParsedFailedFiles())
                 .parseSuccessRate(result.getParseSuccessRate())
                 .summary(result.getSummary())
+                .currentFlag(result.getCurrentFlag())
+                .sourceUploadVersionId(uploadVersion == null ? null : uploadVersion.getId())
+                .latestUploadVersionId(uploadVersion == null ? null : uploadVersion.getId())
+                .versionNo(uploadVersion == null ? null : uploadVersion.getVersionNo())
+                .originalFileName(uploadVersion == null ? null : uploadVersion.getOriginalFileName())
+                .totalJavaFilesFound(uploadVersion == null ? null : uploadVersion.getTotalJavaFilesFound())
+                .savedFiles(uploadVersion == null ? null : uploadVersion.getSavedFiles())
+                .ignoredFiles(uploadVersion == null ? null : uploadVersion.getIgnoredFiles())
+                .addedFiles(uploadVersion == null ? null : uploadVersion.getAddedFiles())
+                .updatedFiles(uploadVersion == null ? null : uploadVersion.getUpdatedFiles())
+                .unchangedFiles(uploadVersion == null ? null : uploadVersion.getUnchangedFiles())
+                .deletedFiles(uploadVersion == null ? null : uploadVersion.getDeletedFiles())
+                .uploadStatus(uploadVersion == null || uploadVersion.getStatus() == null ? null : uploadVersion.getStatus().name())
+                .uploadCreatedAt(uploadVersion == null ? null : uploadVersion.getCreatedAt())
+                .completedAt(uploadVersion == null ? null : uploadVersion.getCompletedAt())
                 .build();
     }
 }

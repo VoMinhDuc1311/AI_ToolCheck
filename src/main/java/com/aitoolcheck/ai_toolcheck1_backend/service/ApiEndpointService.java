@@ -11,4 +11,6 @@ public interface ApiEndpointService {
     List<ApiEndpointResponse> getByProjectId(UUID projectId);
 
     ApiEndpointDetailResponse getById(UUID id);
+
+    void enrichEndpointData(UUID id, String summary, String description, String reqJson, String resJson, String openapiFragmentJson, UUID jobId);
 }

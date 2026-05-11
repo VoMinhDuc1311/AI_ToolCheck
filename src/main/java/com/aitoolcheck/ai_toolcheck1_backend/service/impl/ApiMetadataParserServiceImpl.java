@@ -7,7 +7,6 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.ParamIn;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.SchemaType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.UsageType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
-import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiParameter;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiSchema;
@@ -23,6 +22,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.EndpointSchemaMapReposit
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataParserService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
@@ -34,6 +34,7 @@ import com.github.javaparser.ast.expr.ArrayInitializerExpr;
 import com.github.javaparser.ast.expr.Expression;
 import com.github.javaparser.ast.expr.MemberValuePair;
 import com.github.javaparser.ast.expr.NormalAnnotationExpr;
+import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.nodeTypes.NodeWithAnnotations;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -63,34 +64,35 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
     private final ApiSchemaRepository apiSchemaRepository;
     private final ApiSchemaFieldRepository apiSchemaFieldRepository;
     private final EndpointSchemaMapRepository endpointSchemaMapRepository;
+    private final ProjectAccessService projectAccessService;
 
     @Override
     @Transactional
     public ApiMetadataParseResultResponse parseProject(UUID projectId) {
-        SourceProject sourceProject = sourceProjectRepository.findById(projectId)
-                .orElseThrow(() -> new ResourceNotFoundException("Source project not found with id: " + projectId));
+        SourceProject sourceProject = projectAccessService.requireCanGenerateDocs(projectId);
 
-        List<SourceFile> sourceFiles = sourceFileRepository.findBySourceProjectId(projectId);
+        List<SourceFile> sourceFiles = sourceFileRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
         List<SourceFile> controllerFiles = sourceFiles.stream()
                 .filter(file -> file.getFileType() == FileType.CONTROLLER)
                 .filter(file -> file.getSourceContent() != null && !file.getSourceContent().isBlank())
                 .toList();
 
-        if (controllerFiles.isEmpty()) {
-            throw new BadRequestException("No controller source files found for project id: " + projectId);
-        }
-
-        deleteExistingMetadata(projectId);
+        deleteDerivedMetadata(projectId);
 
         ParseCounters counters = new ParseCounters();
         Map<String, ApiSchema> schemaCache = new HashMap<>();
         Set<String> schemaFieldsCreated = new HashSet<>();
+        Set<UUID> parsedEndpointIds = new HashSet<>();
 
-        for (SourceFile controllerFile : controllerFiles) {
+        List<SourceFile> springCandidateFiles = controllerFiles.isEmpty() ? sourceFiles : controllerFiles;
+        for (SourceFile controllerFile : springCandidateFiles) {
             try {
                 CompilationUnit compilationUnit = StaticJavaParser.parse(controllerFile.getSourceContent());
-                parseControllerFile(sourceProject, controllerFile, sourceFiles, compilationUnit, schemaCache, schemaFieldsCreated, counters);
-                counters.parsedControllerFiles++;
+                parseControllerFile(sourceProject, controllerFile, sourceFiles, compilationUnit, schemaCache, schemaFieldsCreated, parsedEndpointIds, counters);
+                if (counters.lastFileEndpointCount > 0) {
+                    counters.parsedControllerFiles++;
+                }
+                counters.lastFileEndpointCount = 0;
             } catch (Exception e) {
                 log.warn(
                         "Failed to parse controller metadata. projectId={}, sourceFileId={}, fileName={}, reason={}",
@@ -103,17 +105,24 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
         }
 
         if (counters.parsedControllerFiles == 0) {
-            throw new BadRequestException("Failed to parse all controller source files for project id: " + projectId);
+            parseLegacyEntrypoints(sourceProject, sourceFiles, parsedEndpointIds, counters);
         }
+
+        if (parsedEndpointIds.isEmpty()) {
+            throw new BadRequestException(
+                    "No API entrypoints detected. This project may use legacy routing or an unsupported framework. AI-assisted parsing is recommended."
+            );
+        }
+
+        markMissingEndpointsStale(projectId, parsedEndpointIds);
 
         return buildResponse(projectId, controllerFiles.size(), counters);
     }
 
-    private void deleteExistingMetadata(UUID projectId) {
+    private void deleteDerivedMetadata(UUID projectId) {
         endpointSchemaMapRepository.deleteByApiEndpoint_SourceProject_Id(projectId);
         apiParameterRepository.deleteByApiEndpoint_SourceProject_Id(projectId);
         apiSchemaFieldRepository.deleteByApiSchema_SourceProject_Id(projectId);
-        apiEndpointRepository.deleteBySourceProjectId(projectId);
         apiSchemaRepository.deleteBySourceProjectId(projectId);
     }
 
@@ -124,6 +133,7 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
             CompilationUnit compilationUnit,
             Map<String, ApiSchema> schemaCache,
             Set<String> schemaFieldsCreated,
+            Set<UUID> parsedEndpointIds,
             ParseCounters counters
     ) {
         List<ClassOrInterfaceDeclaration> classes = compilationUnit.findAll(ClassOrInterfaceDeclaration.class);
@@ -138,7 +148,7 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
         }
 
         for (ClassOrInterfaceDeclaration controllerClass : controllerClasses) {
-            parseControllerClass(sourceProject, sourceFile, allFiles, controllerClass, schemaCache, schemaFieldsCreated, counters);
+            parseControllerClass(sourceProject, sourceFile, allFiles, controllerClass, schemaCache, schemaFieldsCreated, parsedEndpointIds, counters);
         }
     }
 
@@ -149,6 +159,7 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
             ClassOrInterfaceDeclaration controllerClass,
             Map<String, ApiSchema> schemaCache,
             Set<String> schemaFieldsCreated,
+            Set<UUID> parsedEndpointIds,
             ParseCounters counters
     ) {
         String controllerName = controllerClass.getNameAsString();
@@ -165,9 +176,11 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
             String endpointPath = combinePaths(basePath, methodPath);
 
             for (HttpMethod httpMethod : httpMethods) {
-                ApiEndpoint endpoint = createEndpoint(sourceProject, sourceFile, controllerClass, method, httpMethod, endpointPath, tagName);
+                ApiEndpoint endpoint = createOrUpdateEndpoint(sourceProject, sourceFile, controllerClass, method, httpMethod, endpointPath, tagName);
                 ApiEndpoint savedEndpoint = apiEndpointRepository.save(endpoint);
+                parsedEndpointIds.add(savedEndpoint.getId());
                 counters.totalEndpoints++;
+                counters.lastFileEndpointCount++;
 
                 parseParameters(savedEndpoint, method, counters);
                 parseRequestSchemas(sourceProject, savedEndpoint, method, allFiles, schemaCache, schemaFieldsCreated, counters);
@@ -176,7 +189,7 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
         }
     }
 
-    private ApiEndpoint createEndpoint(
+    private ApiEndpoint createOrUpdateEndpoint(
             SourceProject sourceProject,
             SourceFile sourceFile,
             ClassOrInterfaceDeclaration controllerClass,
@@ -187,20 +200,235 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
     ) {
         LocalDateTime now = LocalDateTime.now();
 
-        return ApiEndpoint.builder()
-                .controllerName(controllerClass.getNameAsString())
-                .methodName(method.getNameAsString())
-                .httpMethod(httpMethod)
-                .endpointPath(endpointPath)
-                .operationId(method.getNameAsString())
-                .tagName(tagName)
-                .authRequired(isAuthRequired(controllerClass, method))
-                .deprecatedFlag(isDeprecated(controllerClass, method))
-                .createdAt(now)
-                .updatedAt(now)
-                .sourceProject(sourceProject)
-                .sourceFile(sourceFile)
-                .build();
+        ApiEndpoint endpoint = apiEndpointRepository
+                .findByStableKey(sourceProject.getId(), httpMethod, endpointPath)
+                .orElseGet(() -> ApiEndpoint.builder()
+                        .createdAt(now)
+                        .sourceProject(sourceProject)
+                        .build());
+
+        endpoint.setControllerName(controllerClass.getNameAsString());
+        endpoint.setMethodName(method.getNameAsString());
+        endpoint.setHttpMethod(httpMethod);
+        endpoint.setEndpointPath(endpointPath);
+        endpoint.setStableKey(buildStableKey(sourceProject.getId(), httpMethod, endpointPath));
+        endpoint.setOperationId(method.getNameAsString());
+        endpoint.setTagName(tagName);
+        endpoint.setAuthRequired(isAuthRequired(controllerClass, method));
+        endpoint.setDeprecatedFlag(isDeprecated(controllerClass, method));
+        endpoint.setUpdatedAt(now);
+        endpoint.setSourceProject(sourceProject);
+        endpoint.setSourceFile(sourceFile);
+        endpoint.setSourceUploadVersion(sourceFile.getLastSeenUploadVersion());
+        endpoint.setActiveFlag(Boolean.TRUE);
+        endpoint.setStaleFlag(Boolean.FALSE);
+        if (endpoint.getAiEnrichedFlag() == null) {
+            endpoint.setAiEnrichedFlag(Boolean.FALSE);
+        }
+        return endpoint;
+    }
+
+    private ApiEndpoint createOrUpdateLegacyEndpoint(
+            SourceProject sourceProject,
+            SourceFile sourceFile,
+            String controllerName,
+            String methodName,
+            HttpMethod httpMethod,
+            String endpointPath,
+            String tagName
+    ) {
+        LocalDateTime now = LocalDateTime.now();
+        String normalizedPath = normalizePath(endpointPath);
+        ApiEndpoint endpoint = apiEndpointRepository
+                .findByStableKey(sourceProject.getId(), httpMethod, normalizedPath)
+                .orElseGet(() -> ApiEndpoint.builder()
+                        .createdAt(now)
+                        .sourceProject(sourceProject)
+                        .build());
+
+        endpoint.setControllerName(controllerName);
+        endpoint.setMethodName(methodName);
+        endpoint.setHttpMethod(httpMethod);
+        endpoint.setEndpointPath(normalizedPath);
+        endpoint.setStableKey(buildStableKey(sourceProject.getId(), httpMethod, normalizedPath));
+        endpoint.setOperationId(methodName);
+        endpoint.setTagName(tagName);
+        endpoint.setAuthRequired(Boolean.FALSE);
+        endpoint.setDeprecatedFlag(Boolean.FALSE);
+        endpoint.setUpdatedAt(now);
+        endpoint.setSourceProject(sourceProject);
+        endpoint.setSourceFile(sourceFile);
+        endpoint.setSourceUploadVersion(sourceFile.getLastSeenUploadVersion());
+        endpoint.setActiveFlag(Boolean.TRUE);
+        endpoint.setStaleFlag(Boolean.FALSE);
+        if (endpoint.getAiEnrichedFlag() == null) {
+            endpoint.setAiEnrichedFlag(Boolean.FALSE);
+        }
+        return endpoint;
+    }
+
+    private void parseLegacyEntrypoints(
+            SourceProject sourceProject,
+            List<SourceFile> sourceFiles,
+            Set<UUID> parsedEndpointIds,
+            ParseCounters counters
+    ) {
+        for (SourceFile sourceFile : sourceFiles) {
+            if (sourceFile.getSourceContent() == null || sourceFile.getSourceContent().isBlank()) {
+                continue;
+            }
+            try {
+                CompilationUnit compilationUnit = StaticJavaParser.parse(sourceFile.getSourceContent());
+                parseLegacyCompilationUnit(sourceProject, sourceFile, compilationUnit, parsedEndpointIds, counters);
+            } catch (Exception e) {
+                log.warn(
+                        "Failed to parse legacy metadata. projectId={}, sourceFileId={}, fileName={}, reason={}",
+                        sourceProject.getId(),
+                        sourceFile.getId(),
+                        sourceFile.getFileName(),
+                        e.getMessage()
+                );
+            }
+        }
+    }
+
+    private void parseLegacyCompilationUnit(
+            SourceProject sourceProject,
+            SourceFile sourceFile,
+            CompilationUnit compilationUnit,
+            Set<UUID> parsedEndpointIds,
+            ParseCounters counters
+    ) {
+        for (ClassOrInterfaceDeclaration declaration : compilationUnit.findAll(ClassOrInterfaceDeclaration.class)) {
+            parseJaxRsClass(sourceProject, sourceFile, declaration, parsedEndpointIds, counters);
+            parseHttpServletClass(sourceProject, sourceFile, declaration, parsedEndpointIds, counters);
+            parseActionClass(sourceProject, sourceFile, declaration, parsedEndpointIds, counters);
+            parseRouterCandidate(sourceProject, sourceFile, declaration, parsedEndpointIds, counters);
+        }
+    }
+
+    private void parseJaxRsClass(
+            SourceProject sourceProject,
+            SourceFile sourceFile,
+            ClassOrInterfaceDeclaration declaration,
+            Set<UUID> parsedEndpointIds,
+            ParseCounters counters
+    ) {
+        Optional<String> classPath = findAnnotationPath(declaration, "Path");
+        if (classPath.isEmpty()) {
+            return;
+        }
+
+        for (MethodDeclaration method : declaration.getMethods()) {
+            List<HttpMethod> methods = extractJaxRsMethods(method);
+            if (methods.isEmpty()) {
+                continue;
+            }
+            String methodPath = findAnnotationPath(method, "Path").orElse("");
+            for (HttpMethod httpMethod : methods) {
+                saveLegacyEndpoint(sourceProject, sourceFile, declaration.getNameAsString(), method.getNameAsString(), httpMethod,
+                        combinePaths(classPath.get(), methodPath), "JAX-RS", parsedEndpointIds, counters);
+            }
+        }
+    }
+
+    private void parseHttpServletClass(
+            SourceProject sourceProject,
+            SourceFile sourceFile,
+            ClassOrInterfaceDeclaration declaration,
+            Set<UUID> parsedEndpointIds,
+            ParseCounters counters
+    ) {
+        boolean servletCandidate = declaration.getExtendedTypes().stream()
+                .anyMatch(type -> type.getNameAsString().equals("HttpServlet"))
+                || hasAnnotation(declaration, "WebServlet");
+        if (!servletCandidate) {
+            return;
+        }
+
+        String servletPath = findAnnotationPath(declaration, "WebServlet")
+                .orElse("/" + declaration.getNameAsString().replaceAll("Servlet$", ""));
+        for (MethodDeclaration method : declaration.getMethods()) {
+            Optional<HttpMethod> httpMethod = switch (method.getNameAsString()) {
+                case "doGet" -> Optional.of(HttpMethod.GET);
+                case "doPost" -> Optional.of(HttpMethod.POST);
+                case "doPut" -> Optional.of(HttpMethod.PUT);
+                case "doDelete" -> Optional.of(HttpMethod.DELETE);
+                default -> Optional.empty();
+            };
+            httpMethod.ifPresent(value -> saveLegacyEndpoint(sourceProject, sourceFile, declaration.getNameAsString(),
+                    method.getNameAsString(), value, servletPath, "Servlet", parsedEndpointIds, counters));
+        }
+    }
+
+    private void parseActionClass(
+            SourceProject sourceProject,
+            SourceFile sourceFile,
+            ClassOrInterfaceDeclaration declaration,
+            Set<UUID> parsedEndpointIds,
+            ParseCounters counters
+    ) {
+        if (!declaration.getNameAsString().endsWith("Action")) {
+            return;
+        }
+        for (MethodDeclaration method : declaration.getMethods()) {
+            if (method.getNameAsString().equals("execute") || method.getNameAsString().equals("action")) {
+                String actionPath = "/" + declaration.getNameAsString().replaceAll("Action$", "");
+                saveLegacyEndpoint(sourceProject, sourceFile, declaration.getNameAsString(), method.getNameAsString(),
+                        HttpMethod.POST, actionPath, "Struts", parsedEndpointIds, counters);
+            }
+        }
+    }
+
+    private void parseRouterCandidate(
+            SourceProject sourceProject,
+            SourceFile sourceFile,
+            ClassOrInterfaceDeclaration declaration,
+            Set<UUID> parsedEndpointIds,
+            ParseCounters counters
+    ) {
+        String className = declaration.getNameAsString();
+        if (!(className.contains("Router") || className.contains("Dispatcher") || className.contains("Handler"))) {
+            return;
+        }
+        Set<String> paths = new HashSet<>();
+        declaration.findAll(StringLiteralExpr.class).stream()
+                .map(StringLiteralExpr::asString)
+                .filter(this::looksLikeEndpointPath)
+                .map(this::normalizePath)
+                .forEach(paths::add);
+        for (String path : paths) {
+            saveLegacyEndpoint(sourceProject, sourceFile, className, "dispatch", HttpMethod.GET, path,
+                    "Legacy Router", parsedEndpointIds, counters);
+        }
+    }
+
+    private void saveLegacyEndpoint(
+            SourceProject sourceProject,
+            SourceFile sourceFile,
+            String controllerName,
+            String methodName,
+            HttpMethod httpMethod,
+            String endpointPath,
+            String tagName,
+            Set<UUID> parsedEndpointIds,
+            ParseCounters counters
+    ) {
+        ApiEndpoint endpoint = createOrUpdateLegacyEndpoint(sourceProject, sourceFile, controllerName, methodName, httpMethod, endpointPath, tagName);
+        ApiEndpoint saved = apiEndpointRepository.save(endpoint);
+        parsedEndpointIds.add(saved.getId());
+        counters.totalEndpoints++;
+    }
+
+    private void markMissingEndpointsStale(UUID projectId, Set<UUID> parsedEndpointIds) {
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectId(projectId);
+        for (ApiEndpoint endpoint : endpoints) {
+            if (!parsedEndpointIds.contains(endpoint.getId())) {
+                endpoint.setActiveFlag(Boolean.FALSE);
+                endpoint.setStaleFlag(Boolean.TRUE);
+            }
+        }
+        apiEndpointRepository.saveAll(endpoints);
     }
 
     private void parseParameters(ApiEndpoint endpoint, MethodDeclaration method, ParseCounters counters) {
@@ -494,6 +722,46 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
         return methods;
     }
 
+    private List<HttpMethod> extractJaxRsMethods(MethodDeclaration method) {
+        List<HttpMethod> methods = new ArrayList<>();
+        if (hasAnnotation(method, "GET")) {
+            methods.add(HttpMethod.GET);
+        }
+        if (hasAnnotation(method, "POST")) {
+            methods.add(HttpMethod.POST);
+        }
+        if (hasAnnotation(method, "PUT")) {
+            methods.add(HttpMethod.PUT);
+        }
+        if (hasAnnotation(method, "DELETE")) {
+            methods.add(HttpMethod.DELETE);
+        }
+        if (hasAnnotation(method, "PATCH")) {
+            methods.add(HttpMethod.PATCH);
+        }
+        return methods;
+    }
+
+    private Optional<String> findAnnotationPath(NodeWithAnnotations<?> node, String annotationName) {
+        return node.getAnnotations().stream()
+                .filter(annotation -> annotationNameMatches(annotation, annotationName))
+                .findFirst()
+                .flatMap(annotation -> {
+                    Optional<String> direct = extractStringValueFromAnnotation(annotation);
+                    if (direct.isPresent()) {
+                        return direct;
+                    }
+                    if (annotation.isNormalAnnotationExpr()) {
+                        NormalAnnotationExpr normalAnnotation = annotation.asNormalAnnotationExpr();
+                        Optional<String> urlPatterns = extractNamedStringAttribute(normalAnnotation, "urlPatterns");
+                        if (urlPatterns.isPresent()) {
+                            return urlPatterns;
+                        }
+                    }
+                    return Optional.empty();
+                });
+    }
+
     private List<HttpMethod> extractRequestMethods(AnnotationExpr annotation) {
         if (!annotation.isNormalAnnotationExpr()) {
             return List.of();
@@ -632,6 +900,24 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
             normalized = normalized.substring(0, normalized.length() - 1);
         }
         return normalized;
+    }
+
+    private boolean looksLikeEndpointPath(String value) {
+        if (value == null || value.isBlank() || !value.startsWith("/")) {
+            return false;
+        }
+        String lower = value.toLowerCase(Locale.ROOT);
+        return lower.startsWith("/api/")
+                || lower.startsWith("/v1/")
+                || lower.startsWith("/v2/")
+                || lower.startsWith("/invoice/")
+                || lower.startsWith("/order/")
+                || lower.startsWith("/user/")
+                || lower.startsWith("/product/");
+    }
+
+    private String buildStableKey(UUID projectId, HttpMethod httpMethod, String endpointPath) {
+        return projectId + ":" + (httpMethod == null ? "UNKNOWN" : httpMethod.name()) + ":" + normalizePath(endpointPath);
     }
 
     private String buildTagName(String controllerName) {
@@ -773,5 +1059,6 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
         private int totalSchemas;
         private int totalSchemaFields;
         private int totalEndpointSchemaMaps;
+        private int lastFileEndpointCount;
     }
 }

@@ -22,6 +22,7 @@ public class ApiDocumentDetailResponse {
     private DocumentType documentType;
     private Integer currentVersionNo;
     private Boolean publishedFlag;
+    private Boolean staleFlag;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }
