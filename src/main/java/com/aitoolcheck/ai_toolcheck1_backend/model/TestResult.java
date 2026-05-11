@@ -25,7 +25,7 @@ public class TestResult {
     @Column(name = "actual_status")
     private Integer actualStatus;
 
-    @Column(name = "result_status")
+    @Column(name = "result_status", length = 20)
     @Enumerated(EnumType.STRING)
     private ResultStatus resultStatus;
 
@@ -35,10 +35,10 @@ public class TestResult {
     @Column(name = "actual_response_json", columnDefinition = "TEXT")
     private String actualResponseJson;
 
-    @Column(name = "error_message")
+    @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 
-    @Column(name = "blocked_reason")
+    @Column(name = "blocked_reason", columnDefinition = "TEXT")
     private String blockedReason;
 
     @Column(name = "created_at", nullable = false)

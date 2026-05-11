@@ -33,11 +33,11 @@ public class SourceProject {
     @Column(name = "description")
     private String description;
 
-    @Column(name = "backend_type")
+    @Column(name = "backend_type", length = 50)
     @Enumerated(EnumType.STRING)
     private BackendType backendType;
 
-    @Column(name = "status")
+    @Column(name = "status", length = 50)
     @Enumerated(EnumType.STRING)
     private ProjectStatus status;
 

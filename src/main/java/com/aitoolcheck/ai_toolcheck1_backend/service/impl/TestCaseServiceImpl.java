@@ -38,13 +38,13 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
 
 import java.time.LocalDateTime;
 import java.util.Comparator;
@@ -57,7 +57,6 @@ import java.util.UUID;
 public class TestCaseServiceImpl implements TestCaseService {
 
     private final TestCaseRepository testCaseRepository;
-    private final SourceProjectRepository sourceProjectRepository;
     private final ApiEndpointRepository apiEndpointRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
     private final AiJobLogRepository aiJobLogRepository;
@@ -65,7 +64,7 @@ public class TestCaseServiceImpl implements TestCaseService {
     private final AiModelRouterService aiModelRouterService;
     private final AiJsonParserService aiJsonParserService;
     private final ProjectAccessService projectAccessService;
-    private final JsonMapper jsonMapper;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -220,7 +219,14 @@ public class TestCaseServiceImpl implements TestCaseService {
                 .skillCode("GENERATE_TEST_CASE")
                 .build();
 
-        aiTaskProducer.sendAiTask(message);
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        aiTaskProducer.sendAiTask(message);
+                        log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}]", savedJob.getId());
+                    }
+                });
 
         return savedJob.getId();
     }
@@ -343,11 +349,45 @@ public class TestCaseServiceImpl implements TestCaseService {
                 }
             }
 
-            // Xây dựng TestCaseInput từ inputData của AI
+            // Xây dựng TestCaseInput từ dữ liệu AI (Path, Query, Body)
+            String requestPath = apiEndpoint.getEndpointPath() != null ? apiEndpoint.getEndpointPath() : "/";
+            String queryParamsJson = null;
+            String requestBodyJson = null;
+
+            // 1. Thay thế Path Variables nếu có (ví dụ: {id} -> 123)
+            if (dto.getPathParams() != null && dto.getPathParams().isObject()) {
+                java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = dto.getPathParams().fields();
+                while (fields.hasNext()) {
+                    java.util.Map.Entry<String, JsonNode> field = fields.next();
+                    String placeholder = "{" + field.getKey() + "}";
+                    String value = field.getValue().asText();
+                    requestPath = requestPath.replace(placeholder, value);
+                }
+            }
+
+            // 2. Serialize Query Params
+            if (dto.getQueryParams() != null && !dto.getQueryParams().isNull()) {
+                try {
+                    queryParamsJson = objectMapper.writeValueAsString(dto.getQueryParams());
+                } catch (Exception e) {
+                    log.warn("[TestCaseService] Không thể serialize query_params — bỏ qua.");
+                }
+            }
+
+            // 3. Serialize Request Body
+            if (dto.getRequestBody() != null && !dto.getRequestBody().isNull()) {
+                try {
+                    requestBodyJson = objectMapper.writeValueAsString(dto.getRequestBody());
+                } catch (Exception e) {
+                    log.warn("[TestCaseService] Không thể serialize request_body — bỏ qua.");
+                }
+            }
+
+            // Fallback inputData cho Audit
             String inputDataJson = null;
             if (dto.getInputData() != null && !dto.getInputData().isNull()) {
                 try {
-                    inputDataJson = jsonMapper.writeValueAsString(dto.getInputData());
+                    inputDataJson = objectMapper.writeValueAsString(dto.getInputData());
                 } catch (Exception e) {
                     log.warn("[TestCaseService] Không thể serialize inputData — bỏ qua.");
                 }
@@ -355,7 +395,9 @@ public class TestCaseServiceImpl implements TestCaseService {
 
             TestCaseInput input = TestCaseInput.builder()
                     .httpMethod(apiEndpoint.getHttpMethod())
-                    .requestPath(apiEndpoint.getEndpointPath() != null ? apiEndpoint.getEndpointPath() : "/")
+                    .requestPath(requestPath)
+                    .queryParamsJson(queryParamsJson)
+                    .requestBodyJson(requestBodyJson)
                     .inputData(inputDataJson)
                     .build();
 
@@ -404,22 +446,23 @@ public class TestCaseServiceImpl implements TestCaseService {
                         .build());
             }
 
-            // Xây dựng TestCase entity và assign quan hệ
-            TestCase testCase = TestCase.builder()
-                    .caseName(caseName)
-                    .caseType(caseType)
-                    .priorityLevel(priorityLevel)
-                    .generatedBy(com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy.AI)
-                    .activeFlag(true)
-                    .deletedFlag(false)
-                    .requiresWrite(false)
-                    .cleanupRequired(false)
-                    .sourceProject(sourceProject)
-                    .apiEndpoint(apiEndpoint)
-                    .build();
+            // Xây dựng TestCase entity (Dùng constructor/setter thay vì builder để đảm bảo Collections hoạt động chuẩn với JPA)
+            TestCase testCase = new TestCase();
+            testCase.setCaseName(caseName);
+            testCase.setCaseType(caseType);
+            testCase.setPriorityLevel(priorityLevel);
+            testCase.setGeneratedBy(com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy.AI);
+            testCase.setActiveFlag(true);
+            testCase.setDeletedFlag(false);
+            testCase.setRequiresWrite(false);
+            testCase.setCleanupRequired(false);
+            testCase.setSourceProject(sourceProject);
+            testCase.setApiEndpoint(apiEndpoint);
 
+            // Assign các quan hệ Cascade
             testCase.assignInput(input);
             testCase.replaceAssertions(assertions);
+            
             testCasesToSave.add(testCase);
         }
 
@@ -673,8 +716,8 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         try {
-            return jsonMapper.writeValueAsString(jsonNode);
-        } catch (JacksonException ex) {
+            return objectMapper.writeValueAsString(jsonNode);
+        } catch (Exception ex) {
             throw new BadRequestException("Invalid JSON value.");
         }
     }
@@ -685,8 +728,8 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         try {
-            return jsonMapper.readTree(json);
-        } catch (JacksonException ex) {
+            return objectMapper.readTree(json);
+        } catch (Exception ex) {
             throw new BadRequestException("Stored JSON value is invalid.");
         }
     }

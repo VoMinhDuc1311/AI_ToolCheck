@@ -34,9 +34,9 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -63,7 +63,7 @@ public class TestRunServiceImpl implements TestRunService {
     private final TestCaseRepository testCaseRepository;
     private final SourceProjectRepository sourceProjectRepository;
     private final TestRequestBuilder testRequestBuilder;
-    private final JsonMapper jsonMapper;
+    private final ObjectMapper objectMapper;
     private final TestResultService testResultService;
     private final ProjectAccessService projectAccessService;
     private TestRunService self;
@@ -210,8 +210,14 @@ public class TestRunServiceImpl implements TestRunService {
         log.info("Test run created successfully: id={}, runCode={}, totalItems={}",
                 savedTestRun.getId(), savedTestRun.getRunCode(), testRunItems.size());
 
-        // Trigger Async Execution
-        self.executeTestRunAsync(savedTestRun.getId());
+        // Trigger Async Execution only after transaction commit to avoid race condition
+        org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        self.executeTestRunAsync(savedTestRun.getId());
+                    }
+                });
 
         // Load sorted test run items for deterministic response
         List<TestRunItem> sortedItems = testRunItemRepository
@@ -252,9 +258,10 @@ public class TestRunServiceImpl implements TestRunService {
                 // 1. Gọi TestRequestBuilder.executeRequest(...) để lấy HttpActualResponseDto
                 HttpActualResponseDto actualResponse = testRequestBuilder.executeRequest(
                         testRun.getBaseUrl(),
-                        input.getRequestPath(),
-                        input.getHttpMethod().name(),
-                        input.getRequestBodyJson());
+                        item.getTestCase().getTestCaseInput().getRequestPath(),
+                        item.getTestCase().getTestCaseInput().getHttpMethod().name(),
+                        item.getTestCase().getTestCaseInput().getRequestBodyJson(),
+                        item.getTestCase().getTestCaseInput().getQueryParamsJson());
 
                 // 2. Gọi TestResultService.evaluateAssertions(...) để chấm điểm
                 List<TestCaseAssertion> assertions = testCase.getTestCaseAssertions();
@@ -486,8 +493,8 @@ public class TestRunServiceImpl implements TestRunService {
         JsonNode actualResponseJson = null;
         if (hasText(result.getActualResponseJson())) {
             try {
-                actualResponseJson = jsonMapper.readTree(result.getActualResponseJson());
-            } catch (JacksonException ex) {
+                actualResponseJson = objectMapper.readTree(result.getActualResponseJson());
+            } catch (JsonProcessingException ex) {
                 // Stored value is corrupt — return null rather than crashing the whole response
                 actualResponseJson = null;
             }
