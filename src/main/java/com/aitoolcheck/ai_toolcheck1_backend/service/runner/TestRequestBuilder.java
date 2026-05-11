@@ -18,9 +18,9 @@ import org.springframework.web.client.HttpServerErrorException;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
-import tools.jackson.core.JacksonException;
-import tools.jackson.databind.JsonNode;
-import tools.jackson.databind.json.JsonMapper;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -33,7 +33,7 @@ public class TestRequestBuilder {
 
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
 
-    private final JsonMapper jsonMapper;
+    private final ObjectMapper objectMapper;
     private final RestTemplate restTemplate;
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -94,13 +94,26 @@ public class TestRequestBuilder {
             String baseUrl,
             String path,
             String httpMethod,
-            String jsonBody) {
+            String jsonBody,
+            String queryParamsJson) {
 
         try {
             // Step 1: Build and validate final URL
             String normalizedBase = normalizeBaseUrl(baseUrl);
             String normalizedPath = normalizeRequestPath(path);
             String finalUrl = buildFinalUrl(normalizedBase, normalizedPath);
+
+            // Step 2: Append Query Parameters if present
+            org.springframework.web.util.UriComponentsBuilder builder = org.springframework.web.util.UriComponentsBuilder.fromUriString(finalUrl);
+            JsonNode queryNode = parseJsonOrNull(queryParamsJson, "queryParamsJson");
+            if (queryNode != null && queryNode.isObject()) {
+                java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = queryNode.fields();
+                while (fields.hasNext()) {
+                    java.util.Map.Entry<String, JsonNode> field = fields.next();
+                    builder.queryParam(field.getKey(), field.getValue().asText());
+                }
+            }
+            finalUrl = builder.build().toUriString();
 
             log.debug("Executing {} request to {}", httpMethod, finalUrl);
 
@@ -317,8 +330,8 @@ public class TestRequestBuilder {
         }
 
         try {
-            return jsonMapper.readTree(json);
-        } catch (JacksonException ex) {
+            return objectMapper.readTree(json);
+        } catch (JsonProcessingException ex) {
             throw new BadRequestException(fieldName + " is invalid JSON");
         }
     }

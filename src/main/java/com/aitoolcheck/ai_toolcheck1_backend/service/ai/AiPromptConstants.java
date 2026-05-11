@@ -135,8 +135,15 @@ public class AiPromptConstants {
              "case_name": "Description of the test scenario",
              "case_type": "SUCCESS",
              "priority_level": "HIGH", // Allowed values: "HIGH", "MEDIUM", "LOW"
-             "input_data": {
-               // Mock JSON payload for the request body or query params. Use {} if none.
+             "path_params": {
+               // If the path contains placeholders like {id}, you MUST provide a real value here.
+               // Example for path '/users/{userId}': { "userId": "123" }
+             },
+             "query_params": {
+               // Key-value pairs for query parameters. Example: { "status": "active" }
+             },
+             "request_body": {
+               // Mock JSON payload for the request body (POST/PUT/PATCH). Use {} if none.
              },
              "assertions": [
                {
@@ -148,6 +155,9 @@ public class AiPromptConstants {
              ]
            }
          ]
+
+         # CRITICAL RULE (PATH VARIABLES)
+         If the <API_Endpoint_Details> indicates a Path with variables in curly braces (e.g., /api/orders/{orderId}), you MUST provide corresponding keys and mock values in the "path_params" object. The system will use these to reconstruct the final URL. Failure to do so will break the test execution.
 
          # CRITICAL RULE (ANTI-HALLUCINATION)
          CRITICAL RULE: You MUST output ONLY a valid JSON array. Do NOT wrap the output in markdown code blocks (like ```json). Do NOT add any explanation, prefix, or suffix text. ONLY RETURN JSON.

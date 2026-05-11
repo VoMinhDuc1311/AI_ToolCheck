@@ -31,7 +31,25 @@ public class AiTestCaseDto {
     private String priorityLevel;
 
     /**
-     * inputData hứng được cả JSON object, primitive, hoặc null từ AI.
+     * path_params chứa các giá trị thực tế cho biến đường dẫn (ví dụ: {id}).
+     */
+    @JsonProperty("path_params")
+    private JsonNode pathParams;
+
+    /**
+     * query_params chứa các tham số truy vấn (ví dụ: ?status=active).
+     */
+    @JsonProperty("query_params")
+    private JsonNode queryParams;
+
+    /**
+     * request_body chứa payload thực tế cho POST/PUT/PATCH.
+     */
+    @JsonProperty("request_body")
+    private JsonNode requestBody;
+
+    /**
+     * inputData hứng được cả JSON object, primitive, hoặc null từ AI (Legacy fallback).
      */
     @JsonProperty("input_data")
     private JsonNode inputData;

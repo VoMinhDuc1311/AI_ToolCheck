@@ -12,14 +12,14 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-    # Nếu máy có GPU NVIDIA, bạn có thể bỏ comment đoạn dưới đây để chạy nhanh hơn:
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1
-    #           capabilities: [gpu]
+    # Cấu hình sử dụng GPU NVIDIA để chạy nhanh hơn
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [ gpu ]
 
   # ---------------------------------------------------------
   # OLLAMA MODEL PULLER (Tự động tải model)
