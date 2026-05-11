@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.BackendType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectMemberRole;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 
@@ -30,4 +31,10 @@ public class SourceProjectResponse {
     private ProjectStatus status;
     private ProjectVisibility visibility;
     private LocalDateTime createdAt;
+
+    // ── Current-user access context ──────────────────────────────────────────
+    /** The authenticated user's explicit member role, or null for ADMIN / project OWNER. */
+    private ProjectMemberRole currentUserRole;
+    /** Fine-grained capability flags derived from ProjectAccessService rules. */
+    private ProjectPermissionResponse currentUserPermissions;
 }

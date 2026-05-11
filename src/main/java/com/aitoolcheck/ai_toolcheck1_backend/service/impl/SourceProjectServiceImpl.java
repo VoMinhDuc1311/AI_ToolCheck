@@ -7,6 +7,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProject
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.UserRole;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ProjectMember;
@@ -73,16 +74,17 @@ public class SourceProjectServiceImpl implements SourceProjectService {
     @Override
     @Transactional(readOnly = true)
     public List<SourceProjectResponse> getAll() {
-        if (currentUserService.isAdmin()) {
+        AppUser currentUser = currentUserService.getCurrentUser();
+        if (currentUser.getRole() == UserRole.ADMIN) {
             return sourceProjectRepository.findAllByOrderByCreatedAtDesc()
                     .stream()
-                    .map(this::mapToResponse)
+                    .map(p -> mapToResponse(p, currentUser))
                     .toList();
         }
 
-        return accessibleProjects(currentUserService.getCurrentUser())
+        return accessibleProjects(currentUser)
                 .stream()
-                .map(this::mapToResponse)
+                .map(p -> mapToResponse(p, currentUser))
                 .toList();
     }
 
@@ -94,16 +96,17 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .stream()
                 .filter(project -> isOwnedBy(project, currentUser)
                         || projectMemberRepository.existsBySourceProject_IdAndUser_Id(project.getId(), currentUser.getId()))
-                .map(this::mapToResponse)
+                .map(p -> mapToResponse(p, currentUser))
                 .toList();
     }
 
     @Override
     @Transactional(readOnly = true)
     public List<SourceProjectResponse> getPublic() {
+        AppUser currentUser = currentUserService.getCurrentUser();
         return sourceProjectRepository.findByVisibilityOrderByCreatedAtDesc(ProjectVisibility.PUBLIC_READ)
                 .stream()
-                .map(this::mapToResponse)
+                .map(p -> mapToResponse(p, currentUser))
                 .toList();
     }
 
@@ -161,6 +164,10 @@ public class SourceProjectServiceImpl implements SourceProjectService {
     }
 
     private SourceProjectResponse mapToResponse(SourceProject sourceProject) {
+        return mapToResponse(sourceProject, currentUserService.getCurrentUser());
+    }
+
+    private SourceProjectResponse mapToResponse(SourceProject sourceProject, AppUser currentUser) {
         return SourceProjectResponse.builder()
                 .id(sourceProject.getId())
                 .name(sourceProject.getProjectName())
@@ -172,10 +179,16 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .status(sourceProject.getStatus())
                 .visibility(sourceProject.getVisibility())
                 .createdAt(sourceProject.getCreatedAt())
+                .currentUserRole(projectAccessService.getCurrentUserProjectRole(sourceProject, currentUser))
+                .currentUserPermissions(projectAccessService.buildPermissions(sourceProject, currentUser))
                 .build();
     }
 
     private SourceProjectDetailResponse mapToDetailResponse(SourceProject sourceProject) {
+        return mapToDetailResponse(sourceProject, currentUserService.getCurrentUser());
+    }
+
+    private SourceProjectDetailResponse mapToDetailResponse(SourceProject sourceProject, AppUser currentUser) {
         return SourceProjectDetailResponse.builder()
                 .id(sourceProject.getId())
                 .name(sourceProject.getProjectName())
@@ -189,6 +202,8 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .visibility(sourceProject.getVisibility())
                 .createdAt(sourceProject.getCreatedAt())
                 .updatedAt(sourceProject.getUpdatedAt())
+                .currentUserRole(projectAccessService.getCurrentUserProjectRole(sourceProject, currentUser))
+                .currentUserPermissions(projectAccessService.buildPermissions(sourceProject, currentUser))
                 .build();
     }
 

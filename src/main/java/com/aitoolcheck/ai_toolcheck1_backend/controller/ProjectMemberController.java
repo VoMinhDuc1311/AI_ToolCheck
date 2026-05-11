@@ -49,7 +49,7 @@ public class ProjectMemberController {
     @PostMapping
     @Operation(
             summary = "Add project member",
-            description = "Share a project with a selected user. Owner or ADMIN only.",
+            description = "Share a project with a user by userId or userEmail. Owner or ADMIN only.",
             operationId = "addProjectMember"
     )
     public ResponseEntity<ApiResponse<ProjectMemberResponse>> addMember(
