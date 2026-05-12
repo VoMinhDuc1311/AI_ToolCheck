@@ -56,6 +56,32 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
                 .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
         projectAccessService.requireCanTriggerAiJob(endpoint.getSourceProject().getId());
 
+        applyEnrichmentFields(endpoint, summary, description, reqJson, resJson, openapiFragmentJson, jobId);
+        apiEndpointRepository.save(endpoint);
+        log.debug("[ApiEndpoint] Cập nhật thành công (HTTP path) cho Endpoint ID: {}", id);
+    }
+
+    /**
+     * Async-safe internal persistence method for RabbitMQ workers.
+     * Does NOT call CurrentUserService or ProjectAccessService.
+     * Permission was already verified at HTTP trigger time.
+     */
+    @Override
+    @Transactional
+    public void enrichEndpointDataFromAiJob(UUID id, String summary, String description, String reqJson, String resJson, String openapiFragmentJson, UUID jobId) {
+        log.info("[ApiEndpoint][AsyncJob] Cập nhật dữ liệu do AI làm giàu cho Endpoint ID: {}", id);
+
+        ApiEndpoint endpoint = apiEndpointRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("API endpoint not found with id: " + id));
+
+        applyEnrichmentFields(endpoint, summary, description, reqJson, resJson, openapiFragmentJson, jobId);
+        apiEndpointRepository.save(endpoint);
+        log.debug("[ApiEndpoint][AsyncJob] Cập nhật thành công cho Endpoint ID: {}", id);
+    }
+
+    /** Shared field-update logic — no auth, no side effects. */
+    private void applyEnrichmentFields(ApiEndpoint endpoint, String summary, String description,
+            String reqJson, String resJson, String openapiFragmentJson, UUID jobId) {
         endpoint.setAiSummary(summary);
         endpoint.setAiDescription(description);
         endpoint.setExampleRequestJson(reqJson);
@@ -64,9 +90,6 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
         endpoint.setAiEnrichedAt(LocalDateTime.now());
         endpoint.setLastAiJobLogId(jobId);
         endpoint.setAiEnrichedFlag(true);
-
-        apiEndpointRepository.save(endpoint);
-        log.debug("[ApiEndpoint] Cập nhật thành công cho Endpoint ID: {}", id);
     }
 
     private ApiEndpointResponse mapToResponse(ApiEndpoint apiEndpoint) {
