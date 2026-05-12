@@ -16,6 +16,12 @@ HELP.md
 # NGOẠI LỆ QUAN TRỌNG: LUÔN GIỮ LẠI file README.md để làm tài liệu hướng dẫn cho team
 !README.md
 
+# NGOẠI LỆ: giữ tài liệu thiết kế và tài liệu DB của project
+!docs/
+!docs/*.md
+!docs/db/
+!docs/db/**
+
 # ==========================================
 # 3. BẢO MẬT & CẤU HÌNH MÔI TRƯỜNG (CỰC KỲ QUAN TRỌNG)
 # ==========================================
