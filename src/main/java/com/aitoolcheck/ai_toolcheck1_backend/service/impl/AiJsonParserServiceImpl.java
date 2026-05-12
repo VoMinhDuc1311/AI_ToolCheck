@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
@@ -88,6 +89,55 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
 
     /** Micrometer MeterRegistry - records parse success/fail counters. */
     private final MeterRegistry meterRegistry;
+
+    // =========================================================================
+    // TASK 2.1: parseTestCaseRequest (Dành riêng cho Tuần 8 - Phase 2)
+    // =========================================================================
+
+    /**
+     * Pipeline chuyên biệt để parse dữ liệu Test Case sinh ra từ AI.
+     * Ánh xạ (Map) chuỗi thô vào cấu trúc Wrapper DTO đã thống nhất:
+     * AiGeneratedTestCaseRequest.
+     *
+     * @param rawAiResponse Phản hồi thô từ AI (có bọc markdown).
+     * @return DTO chứa danh sách Test Case đã được validate chặt chẽ.
+     */
+    @Override
+    public AiGeneratedTestCaseRequest parseTestCaseRequest(String rawAiResponse) {
+        guardAgainstBlankInput(rawAiResponse);
+
+        log.debug("[AiJsonParser] Bắt đầu parse Test Case Request - độ dài: {} ký tự", rawAiResponse.length());
+
+        try {
+            // Layer 1: Trích xuất lõi JSON (Loại bỏ Markdown, tìm '{')
+            String cleanJson = extractJsonBlock(rawAiResponse);
+
+            // Layer 4: Ánh xạ (Mapping) bằng ObjectMapper (Copy)
+            ObjectMapper localMapper = objectMapper.copy()
+                    .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+
+            AiGeneratedTestCaseRequest dto = localMapper.readValue(cleanJson, AiGeneratedTestCaseRequest.class);
+
+            // Layer 5: Kích hoạt Jakarta Bean Validation
+            validateDto(dto);
+
+            // Layer 6: Ghi nhận Metric thành công
+            recordMetrics(METRIC_PARSE_SUCCESS);
+
+            log.info("[AiJsonParser] Parse Test Case thành công. Số lượng: {}", dto.getTestCases().size());
+            return dto;
+
+        } catch (AiJsonParseException e) {
+            recordMetrics(METRIC_PARSE_FAIL);
+            throw e; // Ném tiếp lỗi đã được bọc
+        } catch (Exception e) {
+            recordMetrics(METRIC_PARSE_FAIL);
+            log.error("[AiJsonParser] Lỗi nghiêm trọng khi parse Test Case. Raw data: \n{}", rawAiResponse, e);
+            throw new AiJsonParseException(
+                    ErrorType.DTO_MAPPING_ERROR,
+                    "Lỗi không mong muốn khi parse Test Case. Lý do: " + e.getMessage(), e);
+        }
+    }
 
     // =========================================================================
     // TASK 1: extractAndSanitizeJson (Layer 1 -> 3)
