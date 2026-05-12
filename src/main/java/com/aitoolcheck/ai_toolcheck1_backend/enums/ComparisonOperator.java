@@ -1,5 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.enums;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+
 public enum ComparisonOperator {
     EQUALS,
     NOT_EQUALS,
@@ -13,5 +15,15 @@ public enum ComparisonOperator {
     IS_NOT_NULL,
     EXISTS,
     NOT_EXISTS,
-    MATCHES_REGEX
+    MATCHES_REGEX;
+
+    @JsonCreator
+    public static ComparisonOperator fromString(String value) {
+        if (value == null) return null;
+        try {
+            return ComparisonOperator.valueOf(value.toUpperCase().trim());
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid value for ComparisonOperator: '" + value + "'");
+        }
+    }
 }

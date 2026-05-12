@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
 
 import java.util.List;
@@ -13,14 +14,26 @@ import java.util.List;
  * </p>
  *
  * <h3>Pipeline overview</h3>
+ * *
  * 
  * <pre>
  * Raw AI Response
- *   └─ extractAndSanitizeJson()  → clean JSON String   (Layer 1–3, Task 1)
- *        └─ parseToDto()         → AiInferenceResultDto (Layer 4–6, Task 2)
+ * └─ extractAndSanitizeJson()  → clean JSON String   (Layer 1–3, Task 1)
+ * └─ parseToDto()         → AiInferenceResultDto (Layer 4–6, Task 2)
  * </pre>
  */
 public interface AiJsonParserService {
+
+    /**
+     * Pipeline chuyên biệt để parse dữ liệu Test Case sinh ra từ AI.
+     * Ánh xạ (Map) chuỗi thô vào cấu trúc Wrapper DTO đã thống nhất:
+     * AiGeneratedTestCaseRequest.
+     *
+     * @param rawAiResponse Phản hồi thô từ AI (có bọc markdown).
+     * @return DTO chứa danh sách Test Case đã được validate chặt chẽ.
+     * @throws AiJsonParseException nếu parse hoặc validate thất bại.
+     */
+    AiGeneratedTestCaseRequest parseTestCaseRequest(String rawAiResponse);
 
     /**
      * Layer 1–3 (Task 1): Extracts and sanitizes a JSON block from a raw LLM
