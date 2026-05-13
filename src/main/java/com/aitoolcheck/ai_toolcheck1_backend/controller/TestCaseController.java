@@ -38,17 +38,17 @@ public class TestCaseController {
         @PostMapping
         @Operation(summary = "Create test case", description = "Create a complete test case with metadata, input and assertions.", operationId = "createTestCase")
         public ResponseEntity<ApiResponse<TestCaseDetailResponse>> create(
-                        @Valid @RequestBody CreateTestCaseRequest request) {
+                @Valid @RequestBody CreateTestCaseRequest request) {
                 TestCaseDetailResponse data = testCaseService.create(request);
 
                 return ResponseEntity.status(HttpStatus.CREATED)
-                                .body(success("Test case created successfully.", data));
+                        .body(success("Test case created successfully.", data));
         }
 
         @GetMapping("/project/{projectId}")
         @Operation(summary = "List test cases by project", description = "List non-deleted test cases for a source project.", operationId = "listTestCasesByProject")
         public ResponseEntity<ApiResponse<List<TestCaseResponse>>> getByProjectId(
-                        @PathVariable UUID projectId) {
+                @PathVariable UUID projectId) {
                 List<TestCaseResponse> data = testCaseService.getByProjectId(projectId);
 
                 return ResponseEntity.ok(success("Test cases fetched successfully.", data));
@@ -57,7 +57,7 @@ public class TestCaseController {
         @GetMapping("/{id}")
         @Operation(summary = "Get test case detail", description = "Get complete test case detail including input and assertions.", operationId = "getTestCaseById")
         public ResponseEntity<ApiResponse<TestCaseDetailResponse>> getById(
-                        @PathVariable UUID id) {
+                @PathVariable UUID id) {
                 TestCaseDetailResponse data = testCaseService.getById(id);
 
                 return ResponseEntity.ok(success("Test case fetched successfully.", data));
@@ -66,8 +66,8 @@ public class TestCaseController {
         @PatchMapping("/{id}")
         @Operation(summary = "Update test case", description = "Update test case metadata, input and assertions.", operationId = "updateTestCase")
         public ResponseEntity<ApiResponse<TestCaseDetailResponse>> update(
-                        @PathVariable UUID id,
-                        @Valid @RequestBody UpdateTestCaseRequest request) {
+                @PathVariable UUID id,
+                @Valid @RequestBody UpdateTestCaseRequest request) {
                 TestCaseDetailResponse data = testCaseService.update(id, request);
 
                 return ResponseEntity.ok(success("Test case updated successfully.", data));
@@ -76,32 +76,35 @@ public class TestCaseController {
         @DeleteMapping("/{id}")
         @Operation(summary = "Delete test case", description = "Soft delete a test case.", operationId = "deleteTestCase")
         public ResponseEntity<ApiResponse<MessageResponse>> delete(
-                        @PathVariable UUID id) {
+                @PathVariable UUID id) {
                 testCaseService.delete(id);
 
                 return ResponseEntity.ok(success(
-                                "Test case deleted successfully.",
-                                MessageResponse.builder().message("Test case deleted successfully.").build()));
+                        "Test case deleted successfully.",
+                        MessageResponse.builder().message("Test case deleted successfully.").build()));
         }
 
-        @PostMapping("/generate")
+        // --- ĐIỂM SỬA CHỮA (FIX) ---
+        // Thêm mảng {"/generate", "/generate-async"} để hỗ trợ cả 2 URL, không làm hỏng code cũ của Dev A
+        @PostMapping({"/generate", "/generate-async"})
         @Operation(summary = "Generate test cases via AI", description = "Triggers an asynchronous job to generate test cases for a specific API endpoint via RabbitMQ.", operationId = "generateTestCasesAsync")
         public ResponseEntity<ApiResponse<MessageResponse>> generateTestCaseAsync(
-                        @Valid @RequestBody GenerateTestCaseRequest request) {
+                @Valid @RequestBody GenerateTestCaseRequest request) {
                 UUID jobId = testCaseService.generateTestCaseAsync(request);
 
+                // Code cũ đang trả về HTTP Status 202 (ACCEPTED) và bọc jobId trong trường "message" của lớp MessageResponse
                 return ResponseEntity.status(HttpStatus.ACCEPTED)
-                                .body(success(
-                                                "Yêu cầu sinh Test Case bằng AI đã được tiếp nhận và đang xử lý ngầm.",
-                                                MessageResponse.builder().message(jobId.toString()).build()));
+                        .body(success(
+                                "Yêu cầu sinh Test Case bằng AI đã được tiếp nhận và đang xử lý ngầm.",
+                                MessageResponse.builder().message(jobId.toString()).build()));
         }
 
         private <T> ApiResponse<T> success(String message, T data) {
                 return ApiResponse.<T>builder()
-                                .code("SUCCESS")
-                                .message(message)
-                                .data(data)
-                                .timestamp(LocalDateTime.now())
-                                .build();
+                        .code("SUCCESS")
+                        .message(message)
+                        .data(data)
+                        .timestamp(LocalDateTime.now())
+                        .build();
         }
 }

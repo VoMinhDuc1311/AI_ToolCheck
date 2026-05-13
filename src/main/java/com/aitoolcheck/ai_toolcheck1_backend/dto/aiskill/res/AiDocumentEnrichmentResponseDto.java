@@ -57,4 +57,8 @@ public class AiDocumentEnrichmentResponseDto implements Serializable {
 
     @JsonProperty("openapi_fragment_json")
     private JsonNode openapiFragmentJson;
+
+    // Phase 4: Dual-AI Architecture — ghi lại model đã dùng (ollama-llama3 hoặc gemini-1.5-pro)
+    @JsonProperty("ai_model_used")
+    private String aiModelUsed;
 }

@@ -205,6 +205,17 @@ public class AiJobLogServiceImpl implements AiJobLogService {
 
     @Override
     @Transactional
+    public void updateAiModelUsed(UUID id, String aiModelUsed) {
+        AiJobLog jobLog = aiJobLogRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
+
+        jobLog.setAiModelUsed(aiModelUsed);
+        aiJobLogRepository.save(jobLog);
+        log.info("Job {} updated with AI Model Used: {}", id, aiModelUsed);
+    }
+
+    @Override
+    @Transactional
     public void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
@@ -219,6 +230,25 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         jobLog.setCompletedAt(LocalDateTime.now());
         aiJobLogRepository.save(jobLog);
         log.info("Job {} transitioned from RUNNING to SUCCESS", id);
+    }
+
+    @Override
+    @Transactional
+    public void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput, String modelName) {
+        AiJobLog jobLog = aiJobLogRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
+
+        if (jobLog.getExecutionStatus() != ExecutionStatus.RUNNING) {
+            throw new BadRequestException("Job must be RUNNING to succeed");
+        }
+
+        jobLog.setExecutionStatus(ExecutionStatus.SUCCESS);
+        jobLog.setTokenInput(tokenInput);
+        jobLog.setTokenOutput(tokenOutput);
+        jobLog.setModelName(modelName);
+        jobLog.setCompletedAt(LocalDateTime.now());
+        aiJobLogRepository.save(jobLog);
+        log.info("Job {} transitioned from RUNNING to SUCCESS with model: {}", id, modelName);
     }
 
     @Override
