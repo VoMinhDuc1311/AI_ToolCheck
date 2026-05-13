@@ -25,6 +25,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.RuleEngineService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
@@ -70,6 +71,7 @@ public class TestRunServiceImpl implements TestRunService {
     private final ObjectMapper objectMapper;
     private final TestResultService testResultService;
     private final ProjectAccessService projectAccessService;
+    private final RuleEngineService ruleEngineService;
     private TestRunService self;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -244,6 +246,8 @@ public class TestRunServiceImpl implements TestRunService {
 
         List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
 
+        boolean anyFailed = false;
+
         for (TestRunItem item : items) {
             try {
                 item.setItemStatus(ExecutionStatus.RUNNING);
@@ -256,6 +260,7 @@ public class TestRunServiceImpl implements TestRunService {
                     log.warn("TestCaseInput missing for item id: {}", item.getId());
                     item.setItemStatus(ExecutionStatus.FAILED);
                     testRunItemRepository.save(item);
+                    anyFailed = true;
                     continue;
                 }
 
@@ -267,24 +272,29 @@ public class TestRunServiceImpl implements TestRunService {
                 ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
                 HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
 
-                // 3. Evaluate assertions
-                List<TestCaseAssertion> assertions = testCase.getTestCaseAssertions();
-                RuleEngineResultDto ruleResult = testResultService.evaluateAssertions(actualResponse, assertions);
+                // 3. Persist raw result (No legacy evaluation)
+                TestResult rawTestResult = testResultService.saveRawTestResult(item, actualResponse);
 
-                // 4. Persist result
-                testResultService.saveTestResult(item, actualResponse, ruleResult);
+                // 4. Evaluate using RuleEngineService (Single Source of Truth)
+                RuleEngineResultDto ruleResult = ruleEngineService.evaluate(rawTestResult.getId());
 
-                item.setItemStatus(ExecutionStatus.SUCCESS);
+                ExecutionStatus itemStatus = resolveItemStatus(ruleResult.getFinalStatus());
+                item.setItemStatus(itemStatus);
                 testRunItemRepository.save(item);
+
+                if (itemStatus == ExecutionStatus.FAILED) {
+                    anyFailed = true;
+                }
 
             } catch (Exception e) {
                 log.error("Error executing TestRunItem id: {}", item.getId(), e);
                 item.setItemStatus(ExecutionStatus.FAILED);
                 testRunItemRepository.save(item);
+                anyFailed = true;
             }
         }
 
-        testRun.setRunStatus(RunStatus.COMPLETED);
+        testRun.setRunStatus(anyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
         testRunRepository.save(testRun);
         log.info("Finished async execution for TestRun id: {}", id);
     }
@@ -348,12 +358,11 @@ public class TestRunServiceImpl implements TestRunService {
                 ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
                 HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
 
-                // Evaluate assertions using existing TestResultService
-                List<TestCaseAssertion> assertions = testCase.getTestCaseAssertions();
-                RuleEngineResultDto ruleResult = testResultService.evaluateAssertions(actualResponse, assertions);
+                // Persist raw result (No legacy evaluation)
+                TestResult rawTestResult = testResultService.saveRawTestResult(item, actualResponse);
 
-                // Persist result
-                testResultService.saveTestResult(item, actualResponse, ruleResult);
+                // Evaluate using RuleEngineService (Single Source of Truth)
+                RuleEngineResultDto ruleResult = ruleEngineService.evaluate(rawTestResult.getId());
 
                 // Map ResultStatus -> ExecutionStatus for item
                 ExecutionStatus itemStatus = resolveItemStatus(ruleResult.getFinalStatus());
@@ -408,12 +417,12 @@ public class TestRunServiceImpl implements TestRunService {
                 .errorMessage(errorMessage)
                 .build();
 
-        RuleEngineResultDto errResult = RuleEngineResultDto.builder()
-                .finalStatus(ResultStatus.ERROR)
-                .logDetails(errorMessage)
-                .build();
-
-        testResultService.saveTestResult(item, errResponse, errResult);
+        // 1. Save raw result with error message
+        TestResult rawTestResult = testResultService.saveRawTestResult(item, errResponse);
+        
+        // 2. We can directly set ERROR to TestResult and item status since it's a pre-HTTP execution error
+        rawTestResult.setResultStatus(ResultStatus.ERROR);
+        // Note: RuleEngineService won't be called here as we don't have enough data
     }
 
     /**
