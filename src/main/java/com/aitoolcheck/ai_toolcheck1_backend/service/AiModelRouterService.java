@@ -151,7 +151,7 @@ public class AiModelRouterService {
                 }
 
                 com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse geminiResponse = geminiApiClientService
-                        .getFullAiResponse(prompt);
+                        .sendFullPrompt(prompt);
 
                 result = geminiResponse.extractText();
 
@@ -170,7 +170,7 @@ public class AiModelRouterService {
 
         // Cập nhật AiJobLog: set SUCCESS và lưu tokens
         try {
-            aiJobLogService.markJobAsSuccess(jobId, tokenInput, tokenOutput);
+            aiJobLogService.markJobAsSuccess(jobId, tokenInput, tokenOutput, modelName);
             log.info("[Router] Đã cập nhật JobLog {} thành SUCCESS", jobId);
         } catch (Exception e) {
             log.warn("[Router] Không thể cập nhật JobLog {}: {}", jobId, e.getMessage());

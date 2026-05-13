@@ -26,7 +26,11 @@ public interface AiJobLogService {
 
     void updateTokens(UUID id, Integer tokenInput, Integer tokenOutput);
 
+    void updateAiModelUsed(UUID id, String aiModelUsed);
+
     void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput);
+
+    void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput, String modelName);
 
     void markJobAsFailed(UUID id, String errorMessage);
 
