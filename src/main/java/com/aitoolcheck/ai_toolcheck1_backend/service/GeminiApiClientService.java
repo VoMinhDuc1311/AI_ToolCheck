@@ -20,6 +20,12 @@ public interface GeminiApiClientService extends LlmClientService {
     Mono<String> sendPrompt(String promptText);
 
     /**
+     * Gửi prompt đầy đủ tới Gemini và trả về GeminiResponse (chứa tokens).
+     * Dùng cho các flow linh hoạt không theo Skill 0.
+     */
+    com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse sendFullPrompt(String prompt);
+
+    /**
      * Gọi Gemini và trả về toàn bộ đối tượng GeminiResponse đã được parse, 
      * chứa cả usageMetadata (Token tracking) và content.
      *

@@ -128,38 +128,38 @@ public class AiPromptConstants {
             "EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_NULL", "IS_NULL"
 
          # JSON SCHEMA DEFINITION
-         Your output must be a valid JSON array of objects. Each object represents one test case and MUST adhere to this exact structure:
+         Your output must be a valid JSON object matching this exact structure:
 
-         [
-           {
-             "case_name": "Description of the test scenario",
-             "case_type": "SUCCESS",
-             "priority_level": "HIGH", // Allowed values: "HIGH", "MEDIUM", "LOW"
-             "path_params": {
-               // If the path contains placeholders like {id}, you MUST provide a real value here.
-               // Example for path '/users/{userId}': { "userId": "123" }
-             },
-             "query_params": {
-               // Key-value pairs for query parameters. Example: { "status": "active" }
-             },
-             "request_body": {
-               // Mock JSON payload for the request body (POST/PUT/PATCH). Use {} if none.
-             },
-             "assertions": [
-               {
-                 "assertion_type": "STATUS_CODE",
-                 "target_path": "", // JSON path like '$.status' or '$.data.id'. Leave empty string "" if not applicable (e.g., for STATUS_CODE)
-                 "operator": "EQUALS",
-                 "expected_value": "200" // MUST always be cast to a String (e.g., "true", "200", "null")
-               }
-             ]
-           }
-         ]
+         {
+           "test_cases": [
+             {
+               "test_name": "Description of the test scenario",
+               "case_type": "SUCCESS",
+               "priority": "HIGH", // Allowed values: "HIGH", "MEDIUM", "LOW"
+               "http_method": "GET", // MUST match the API Method
+               "url": "/api/path", // MUST be the full path (including replaced path variables)
+               "inputs": [
+                 {
+                   "param_in": "QUERY", // Allowed values: "QUERY", "BODY", "HEADER", "PATH"
+                   "payload": { "key": "value" } // The actual data
+                 }
+               ],
+               "assertions": [
+                 {
+                   "assertion_type": "STATUS_CODE",
+                   "json_path": "", // JSON path like '$.status' or '$.data.id'. Leave empty string "" if not applicable
+                   "comparison_operator": "EQUALS",
+                   "expected_value": "200" // MUST always be a String
+                 }
+               ]
+             }
+           ]
+         }
 
-         # CRITICAL RULE (PATH VARIABLES)
-         If the <API_Endpoint_Details> indicates a Path with variables in curly braces (e.g., /api/orders/{orderId}), you MUST provide corresponding keys and mock values in the "path_params" object. The system will use these to reconstruct the final URL. Failure to do so will break the test execution.
+         # CRITICAL RULE (URL & PATH VARIABLES)
+         If the <API_Endpoint_Details> indicates a Path with variables (e.g., /api/orders/{orderId}), you MUST provide the final reconstructed URL in the "url" field (e.g., /api/orders/123) AND also list it in the "inputs" array with "param_in": "PATH".
 
          # CRITICAL RULE (ANTI-HALLUCINATION)
-         CRITICAL RULE: You MUST output ONLY a valid JSON array. Do NOT wrap the output in markdown code blocks (like ```json). Do NOT add any explanation, prefix, or suffix text. ONLY RETURN JSON.
+         CRITICAL RULE: You MUST output ONLY a valid JSON object. Do NOT wrap the output in markdown code blocks. Do NOT add any explanation. ONLY RETURN JSON.
          """;
 }
