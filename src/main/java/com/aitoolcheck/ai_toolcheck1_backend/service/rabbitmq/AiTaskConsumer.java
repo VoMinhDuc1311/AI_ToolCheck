@@ -238,7 +238,9 @@ public class AiTaskConsumer {
                         : resultDto.getOpenapiFragmentJson().toString();
             }
 
-            apiEndpointService.enrichEndpointData(
+            // Use the async-safe method — no CurrentUserService/SecurityContext required.
+            // Permission was already verified at HTTP trigger time (requireCanTriggerAiJob).
+            apiEndpointService.enrichEndpointDataFromAiJob(
                     apiEndpointId,
                     resultDto.getSummary(),
                     resultDto.getDescription(),
