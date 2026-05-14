@@ -1,3 +1,4 @@
+
 package com.aitoolcheck.ai_toolcheck1_backend.config.init;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiSkill;
@@ -21,11 +22,15 @@ public class AiSkillDataSeeder implements CommandLineRunner {
         log.info("Starting AiSkillDataSeeder...");
 
         List<AiSkill> defaultSkills = List.of(
-                AiSkill.builder().skillCode("legacy_code_reader").skillName("Legacy Code Reader").description("Reads and extracts endpoints from legacy Java code without annotations.").build(),
-                AiSkill.builder().skillCode("enrich_api_doc").skillName("Enrich API Documentation").description("Generates summary, description, and mock JSON for API Endpoints.").build(),
-                AiSkill.builder().skillCode("generate_testcases").skillName("Generate Test Cases").description("Generates test cases from OpenAPI specifications.").build(),
-                AiSkill.builder().skillCode("analyze_test_result").skillName("Analyze Test Result").description("Analyzes failed test executions and suggests fixes.").build()
-        );
+                AiSkill.builder().skillCode("legacy_code_reader").skillName("Legacy Code Reader")
+                        .description("Reads and extracts endpoints from legacy Java code without annotations.").build(),
+                AiSkill.builder().skillCode("enrich_api_doc").skillName("Enrich API Documentation")
+                        .description("Generates summary, description, and mock JSON for API Endpoints.").build(),
+                AiSkill.builder().skillCode("generate_testcases").skillName("Generate Test Cases")
+                        .description("Generates test cases from OpenAPI specifications.").build(),
+                AiSkill.builder().skillCode("analyze_test_result").skillName("Analyze Failed Test Result").description(
+                        "Analyze failed API test cases using Request, Expected Assertions and Actual Response, then suggest likely root cause and fixes.")
+                        .build());
 
         int count = 0;
         for (AiSkill skill : defaultSkills) {
