@@ -1,5 +1,5 @@
 # ==========================================
-# 1. CÁC FILE XUẤT RA KHI BUILD (MẶC ĐỊNH)
+# 1. Build output
 # ==========================================
 target/
 !.mvn/wrapper/maven-wrapper.jar
@@ -7,25 +7,19 @@ target/
 !**/src/test/**/target/
 
 # ==========================================
-# 2. XỬ LÝ FILE MARKDOWN (.md) (THEO YÊU CẦU CỦA BẠN)
+# 2. Markdown policy
 # ==========================================
-# Bỏ qua mặc định file HELP.md của Spring Boot
 HELP.md
-# Bỏ qua tất cả các file .md khác (ví dụ AI tự sinh ra báo cáo, document rác...)
 *.md
-# NGOẠI LỆ QUAN TRỌNG: LUÔN GIỮ LẠI file README.md để làm tài liệu hướng dẫn cho team
 !README.md
 
-# NGOẠI LỆ: giữ tài liệu thiết kế và tài liệu DB của project
+# Keep project design document
 !docs/
-!docs/*.md
-!docs/db/
-!docs/db/**
+!docs/design.md
 
 # ==========================================
-# 3. BẢO MẬT & CẤU HÌNH MÔI TRƯỜNG (CỰC KỲ QUAN TRỌNG)
+# 3. Security and local environment config
 # ==========================================
-# Tuyệt đối không đẩy các file chứa API Key (Gemini), DB Password lên Git
 .env
 .env.*
 application-secret.yml
@@ -34,12 +28,10 @@ application-local.yml
 *.properties.local
 
 # ==========================================
-# 4. THƯ MỤC CHẠY THỰC TẾ (RUNTIME & LOGS)
+# 4. Runtime and logs
 # ==========================================
-# Bỏ qua thư mục chứa source code người dùng upload lên ở BƯỚC 1
 uploads/
 temp/
-# Bỏ qua các file ghi chú lỗi hệ thống
 logs/
 *.log
 npm-debug.log*
@@ -47,7 +39,7 @@ yarn-debug.log*
 yarn-error.log*
 
 # ==========================================
-# 5. FILE RÁC CỦA HỆ ĐIỀU HÀNH
+# 5. OS generated files
 # ==========================================
 .DS_Store
 .DS_Store?
@@ -57,8 +49,9 @@ ehthumbs.db
 $RECYCLE.BIN/
 
 # ==========================================
-# 6. FILE RÁC TỪ CÁC PHẦN MỀM LẬP TRÌNH (IDE)
+# 6. IDE generated files
 # ==========================================
+
 ### STS ###
 .apt_generated
 .classpath
@@ -69,7 +62,7 @@ $RECYCLE.BIN/
 .sts4-cache
 
 ### IntelliJ IDEA ###
-.idea
+.idea/
 *.iws
 *.iml
 *.ipr
@@ -88,5 +81,15 @@ build/
 ### VS Code ###
 .vscode/
 *.code-workspace
+
+# Local Maven cache accidentally created inside project
 .m2/
-echo "*.txt" >> .gitignore
+
+# ==========================================
+# 7. Local-only helpers and samples
+# ==========================================
+src/test/resources/legacy_samples/
+src/test/java/com/aitoolcheck/ai_toolcheck1_backend/GeminiPromptTester.java
+backend_architecture_flow.txt
+docs/db/
+docs/rule-engine/
