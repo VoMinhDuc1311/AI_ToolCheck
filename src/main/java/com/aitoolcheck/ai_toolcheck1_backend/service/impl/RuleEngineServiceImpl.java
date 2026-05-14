@@ -60,6 +60,10 @@ public class RuleEngineServiceImpl implements RuleEngineService {
             return buildErrorResult(testResult, null, "TestRunItem does not have an associated TestCase");
         }
 
+        if (testResult.getActualStatus() != null && testResult.getActualStatus() == 0) {
+            return buildNetworkErrorResult(testResult, testCase.getId());
+        }
+
         List<TestCaseAssertion> assertions = testCaseAssertionRepository
                 .findByTestCase_IdOrderBySortOrderAsc(testCase.getId());
 
@@ -316,5 +320,33 @@ public class RuleEngineServiceImpl implements RuleEngineService {
                 .assertionResults(new ArrayList<>())
                 .summaryMessage("Rule Engine error: " + errorMessage)
                 .build();
+    }
+
+    private RuleEngineResultDto buildNetworkErrorResult(TestResult testResult, UUID testCaseId) {
+        String errorMessage = hasText(testResult.getErrorMessage())
+                ? testResult.getErrorMessage()
+                : "Network error from target";
+
+        log.warn("[RuleEngine] Target network error: testResultId={}, testCaseId={}, message={}",
+                testResult.getId(), testCaseId, errorMessage);
+
+        testResult.setResultStatus(ResultStatus.ERROR);
+        testResult.setErrorMessage(errorMessage);
+        testResultRepository.save(testResult);
+
+        return RuleEngineResultDto.builder()
+                .testResultId(testResult.getId())
+                .testCaseId(testCaseId)
+                .finalStatus(ResultStatus.ERROR)
+                .totalAssertions(0)
+                .passedAssertions(0)
+                .failedAssertions(0)
+                .assertionResults(new ArrayList<>())
+                .summaryMessage(errorMessage)
+                .build();
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.trim().isEmpty();
     }
 }
