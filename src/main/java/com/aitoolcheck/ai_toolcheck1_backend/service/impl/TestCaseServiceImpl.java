@@ -28,6 +28,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -59,6 +61,8 @@ public class TestCaseServiceImpl implements TestCaseService {
     private final AiSkillRepository aiSkillRepository;
     private final ObjectMapper objectMapper;
     private final org.springframework.context.ApplicationContext applicationContext;
+    private final AiPayloadOptimizerService aiPayloadOptimizerService;
+    private final AiOptimizationProperties aiOptimizationProperties;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -410,11 +414,15 @@ public class TestCaseServiceImpl implements TestCaseService {
             });
         }
 
+        // Optimize schema if needed
+        String optimizedSchemas = aiOptimizationProperties.isEnabled() ?
+                aiPayloadOptimizerService.truncateIfNeeded(schemas.toString(), aiOptimizationProperties.getMaxPromptChars() / 2) : schemas.toString();
+
         // 3. Inject Context vào Prompt
         String prompt = String.format(
                 AiPromptConstants.PROMPT_SKILL_2_GEN_TESTCASE,
                 apiDetails.toString(),
-                schemas.toString());
+                optimizedSchemas);
 
         String rawResult = null;
         try {

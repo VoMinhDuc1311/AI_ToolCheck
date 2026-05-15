@@ -133,4 +133,21 @@ public class OllamaApiClientServiceImpl implements OllamaApiClientService {
             throw new RuntimeException("[OllamaClient] Lỗi parse JSON phản hồi từ Ollama: " + e.getMessage(), e);
         }
     }
+
+    @Override
+    public boolean isHealthy() {
+        try {
+            // ping health check
+            String status = ollamaWebClient.get()
+                .uri("/")
+                .retrieve()
+                .bodyToMono(String.class)
+                .timeout(Duration.ofSeconds(2))
+                .block();
+            return status != null && status.contains("Ollama is running");
+        } catch (Exception e) {
+            log.warn("[OllamaClient] Health check failed: {}", e.getMessage());
+            return false;
+        }
+    }
 }
