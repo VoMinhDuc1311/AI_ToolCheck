@@ -43,6 +43,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.realtime.TestRunRealtimeEvent;
+import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunRealtimePublisher;
 
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -76,6 +78,7 @@ public class TestRunServiceImpl implements TestRunService {
     private final ProjectAccessService projectAccessService;
     private final RuleEngineService ruleEngineService;
     private final TransactionTemplate transactionTemplate;
+    private final TestRunRealtimePublisher testRunRealtimePublisher;
     private TestRunService self;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -333,20 +336,39 @@ public class TestRunServiceImpl implements TestRunService {
             List<UUID> itemIds = items.stream()
                     .map(TestRunItem::getId)
                     .toList();
-            return new ExecutionContext(savedRun.getId(), savedRun.getBaseUrl(), itemIds);
+            return new ExecutionContext(
+                    savedRun.getId(),
+                    savedRun.getSourceProject().getId(),
+                    savedRun.getBaseUrl(),
+                    itemIds,
+                    itemIds.size()
+            );
         });
+
+        RealtimeExecutionCounters counters = new RealtimeExecutionCounters(executionContext.totalItems());
+        testRunRealtimePublisher.publishRunStarted(
+                buildRunRealtimeEvent(executionContext, RunStatus.RUNNING, counters)
+        );
 
         boolean anyFailed = false;
 
         for (UUID itemId : executionContext.itemIds()) {
             try {
                 ItemExecutionContext itemContext = prepareItemExecution(itemId, executionContext.baseUrl());
+                testRunRealtimePublisher.publishItemStarted(
+                        buildItemStartedRealtimeEvent(executionContext, itemContext, counters)
+                );
 
                 if (itemContext.missingInput()) {
                     log.warn("[execute] No TestCaseInput for item id={}, testCase id={}",
                             itemContext.itemId(), itemContext.testCaseId());
                     markItemStatus(itemContext.itemId(), ExecutionStatus.FAILED);
                     saveErrorResult(itemContext.itemId(), null, "TestCaseInput is missing for this test case");
+                    RealtimeItemSnapshot completedSnapshot = loadRealtimeItemSnapshot(itemContext.itemId());
+                    counters.markCompleted(completedSnapshot.resultStatus());
+                    testRunRealtimePublisher.publishItemCompleted(
+                            buildItemCompletedRealtimeEvent(executionContext, completedSnapshot, counters)
+                    );
                     anyFailed = true;
                     continue;
                 }
@@ -370,6 +392,12 @@ public class TestRunServiceImpl implements TestRunService {
                 ExecutionStatus itemStatus = resolveItemStatus(ruleResult.getFinalStatus());
                 markItemStatus(itemContext.itemId(), itemStatus);
 
+                RealtimeItemSnapshot completedSnapshot = loadRealtimeItemSnapshot(itemContext.itemId());
+                counters.markCompleted(completedSnapshot.resultStatus());
+                testRunRealtimePublisher.publishItemCompleted(
+                        buildItemCompletedRealtimeEvent(executionContext, completedSnapshot, counters)
+                );
+
                 if (itemStatus == ExecutionStatus.FAILED) {
                     anyFailed = true;
                 }
@@ -378,6 +406,11 @@ public class TestRunServiceImpl implements TestRunService {
                 log.error("[execute] Unexpected error for TestRunItem id={}: {}", itemId, e.getMessage());
                 markItemStatus(itemId, ExecutionStatus.FAILED);
                 saveErrorResult(itemId, null, "Unexpected execution error: " + truncateSafe(e.getMessage(), 500));
+                RealtimeItemSnapshot completedSnapshot = loadRealtimeItemSnapshot(itemId);
+                counters.markCompleted(completedSnapshot.resultStatus());
+                testRunRealtimePublisher.publishItemCompleted(
+                        buildItemCompletedRealtimeEvent(executionContext, completedSnapshot, counters)
+                );
                 anyFailed = true;
             }
         }
@@ -391,6 +424,17 @@ public class TestRunServiceImpl implements TestRunService {
             testRun.setRunStatus(finalAnyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
             return testRunRepository.save(testRun);
         });
+
+        TestRunRealtimeEvent finalRunEvent = buildRunRealtimeEvent(
+                executionContext,
+                savedRun.getRunStatus(),
+                counters
+        );
+        if (savedRun.getRunStatus() == RunStatus.COMPLETED) {
+            testRunRealtimePublisher.publishRunCompleted(finalRunEvent);
+        } else {
+            testRunRealtimePublisher.publishRunFailed(finalRunEvent);
+        }
 
         return transactionTemplate.execute(status -> {
             TestRun finalRun = testRunRepository.findById(savedRun.getId())
@@ -412,12 +456,30 @@ public class TestRunServiceImpl implements TestRunService {
             TestCase testCase = item.getTestCase();
             TestCaseInput input = testCase.getTestCaseInput();
             if (input == null) {
-                return new ItemExecutionContext(item.getId(), testCase.getId(), null, true);
+                return new ItemExecutionContext(
+                        item.getId(),
+                        testCase.getId(),
+                        testCase.getCaseCode(),
+                        testCase.getCaseName(),
+                        item.getSortOrder(),
+                        item.getItemStatus(),
+                        null,
+                        true
+                );
             }
 
             // Build while the input entity is initialized; HTTP still happens outside this transaction.
             PreparedHttpRequestResponse prepared = testRequestBuilder.build(baseUrl, input);
-            return new ItemExecutionContext(item.getId(), testCase.getId(), prepared, false);
+            return new ItemExecutionContext(
+                    item.getId(),
+                    testCase.getId(),
+                    testCase.getCaseCode(),
+                    testCase.getCaseName(),
+                    item.getSortOrder(),
+                    item.getItemStatus(),
+                    prepared,
+                    false
+            );
         });
     }
 
@@ -470,14 +532,160 @@ public class TestRunServiceImpl implements TestRunService {
         });
     }
 
-    private record ExecutionContext(UUID runId, String baseUrl, List<UUID> itemIds) {
+    private RealtimeItemSnapshot loadRealtimeItemSnapshot(UUID itemId) {
+        return transactionTemplate.execute(status -> {
+            TestRunItem item = testRunItemRepository.findById(itemId)
+                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+
+            TestCase testCase = item.getTestCase();
+            TestResult result = item.getTestResult();
+
+            return new RealtimeItemSnapshot(
+                    item.getId(),
+                    testCase != null ? testCase.getId() : null,
+                    testCase != null ? testCase.getCaseCode() : null,
+                    testCase != null ? testCase.getCaseName() : null,
+                    item.getSortOrder(),
+                    item.getItemStatus(),
+                    result != null ? result.getResultStatus() : null,
+                    result != null ? result.getActualStatus() : null,
+                    result != null ? result.getResponseTimeMs() : null,
+                    result != null ? result.getErrorMessage() : null,
+                    result != null ? result.getBlockedReason() : null,
+                    result != null ? result.getActualResponseJson() : null
+            );
+        });
+    }
+
+    private TestRunRealtimeEvent buildRunRealtimeEvent(
+            ExecutionContext context,
+            RunStatus runStatus,
+            RealtimeExecutionCounters counters) {
+
+        return TestRunRealtimeEvent.builder()
+                .projectId(context.projectId())
+                .testRunId(context.runId())
+                .runStatus(enumToString(runStatus))
+                .totalItems(counters.totalItems)
+                .completedItems(counters.completedItems)
+                .successItems(counters.successItems)
+                .failedItems(counters.failedItems)
+                .errorItems(counters.errorItems)
+                .build();
+    }
+
+    private TestRunRealtimeEvent buildItemStartedRealtimeEvent(
+            ExecutionContext context,
+            ItemExecutionContext itemContext,
+            RealtimeExecutionCounters counters) {
+
+        return TestRunRealtimeEvent.builder()
+                .projectId(context.projectId())
+                .testRunId(context.runId())
+                .testRunItemId(itemContext.itemId())
+                .testCaseId(itemContext.testCaseId())
+                .runStatus(enumToString(RunStatus.RUNNING))
+                .itemStatus(enumToString(itemContext.itemStatus()))
+                .caseCode(itemContext.caseCode())
+                .caseName(itemContext.caseName())
+                .sortOrder(itemContext.sortOrder())
+                .totalItems(counters.totalItems)
+                .completedItems(counters.completedItems)
+                .successItems(counters.successItems)
+                .failedItems(counters.failedItems)
+                .errorItems(counters.errorItems)
+                .build();
+    }
+
+    private TestRunRealtimeEvent buildItemCompletedRealtimeEvent(
+            ExecutionContext context,
+            RealtimeItemSnapshot snapshot,
+            RealtimeExecutionCounters counters) {
+
+        return TestRunRealtimeEvent.builder()
+                .projectId(context.projectId())
+                .testRunId(context.runId())
+                .testRunItemId(snapshot.itemId())
+                .testCaseId(snapshot.testCaseId())
+                .runStatus(enumToString(RunStatus.RUNNING))
+                .itemStatus(enumToString(snapshot.itemStatus()))
+                .resultStatus(enumToString(snapshot.resultStatus()))
+                .caseCode(snapshot.caseCode())
+                .caseName(snapshot.caseName())
+                .sortOrder(snapshot.sortOrder())
+                .actualStatus(snapshot.actualStatus())
+                .responseTimeMs(snapshot.responseTimeMs())
+                .errorMessage(snapshot.errorMessage())
+                .blockedReason(snapshot.blockedReason())
+                .actualResponseJson(snapshot.actualResponseJson())
+                .totalItems(counters.totalItems)
+                .completedItems(counters.completedItems)
+                .successItems(counters.successItems)
+                .failedItems(counters.failedItems)
+                .errorItems(counters.errorItems)
+                .build();
+    }
+
+    private String enumToString(Enum<?> value) {
+        return value != null ? value.name() : null;
+    }
+
+    private record ExecutionContext(
+            UUID runId,
+            UUID projectId,
+            String baseUrl,
+            List<UUID> itemIds,
+            int totalItems) {
     }
 
     private record ItemExecutionContext(
             UUID itemId,
             UUID testCaseId,
+            String caseCode,
+            String caseName,
+            Integer sortOrder,
+            ExecutionStatus itemStatus,
             PreparedHttpRequestResponse preparedRequest,
             boolean missingInput) {
+    }
+
+    private static final class RealtimeExecutionCounters {
+        private final int totalItems;
+        private int completedItems;
+        private int successItems;
+        private int failedItems;
+        private int errorItems;
+
+        private RealtimeExecutionCounters(int totalItems) {
+            this.totalItems = totalItems;
+        }
+
+        private void markCompleted(ResultStatus resultStatus) {
+            completedItems++;
+
+            if (resultStatus == ResultStatus.PASS) {
+                successItems++;
+            } else if (resultStatus == ResultStatus.ERROR) {
+                errorItems++;
+            } else {
+                failedItems++;
+            }
+        }
+    }
+
+    private record RealtimeItemSnapshot(
+            UUID itemId,
+            UUID testCaseId,
+            String caseCode,
+            String caseName,
+            Integer sortOrder,
+            ExecutionStatus itemStatus,
+            ResultStatus resultStatus,
+            Integer actualStatus,
+            Integer responseTimeMs,
+            String errorMessage,
+            String blockedReason,
+            String actualResponseJson) {
     }
 
     /**
