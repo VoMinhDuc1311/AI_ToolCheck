@@ -122,8 +122,26 @@ public class AiJobLogServiceImpl implements AiJobLogService {
             return 0;
         }
 
+        AiSkill aiSkill = aiSkillRepository.findBySkillCode("enrich_api_doc")
+                .orElseThrow(() -> new BadRequestException("SkillCode không hợp lệ: enrich_api_doc"));
+
         int count = 0;
+        int skippedCount = 0;
         for (ApiEndpoint endpoint : endpoints) {
+            AiJobLog savedJob = createPendingJobIfNotExists(
+                    projectId,
+                    endpoint.getId(),
+                    JobType.DOCUMENT_ENRICHMENT,
+                    aiSkill.getId(),
+                    "gemini-1.5-flash",
+                    false
+            );
+
+            if (savedJob == null) {
+                skippedCount++;
+                continue;
+            }
+
             String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
             String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name().toLowerCase() : "get";
             String opId = endpoint.getOperationId() != null ? endpoint.getOperationId() : (endpoint.getMethodName() != null ? endpoint.getMethodName() : "operation");
@@ -132,11 +150,77 @@ public class AiJobLogServiceImpl implements AiJobLogService {
             String promptText = String.format("{\n  \"%s\" : {\n    \"%s\" : {\n      \"operationId\" : \"%s\",\n      \"summary\" : \"%s\"\n    }\n  }\n}",
                     path, method, opId, summary);
 
-            createPendingJobAndTriggerAi(promptText, "enrich_api_doc", projectId, null, endpoint.getId());
+            AiTaskMessage message = AiTaskMessage.builder()
+                    .jobId(savedJob.getId().toString())
+                    .promptText(promptText)
+                    .skillCode("enrich_api_doc")
+                    .projectId(projectId.toString())
+                    .apiEndpointId(endpoint.getId().toString())
+                    .build();
+
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                new org.springframework.transaction.support.TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        aiTaskProducer.sendAiTask(message);
+                        log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}]", savedJob.getId());
+                    }
+                }
+            );
+
             count++;
         }
 
+        log.info("triggerEnrichmentForProject: queued={}, skipped={}", count, skippedCount);
         return count;
+    }
+
+    @Override
+    @Transactional
+    public AiJobLog createPendingJobIfNotExists(
+            UUID projectId,
+            UUID apiEndpointId,
+            JobType jobType,
+            UUID aiSkillId,
+            String modelName,
+            boolean forceRegenerate) {
+
+        if (!forceRegenerate) {
+            boolean hasActive = aiJobLogRepository.existsBySourceProject_IdAndApiEndpoint_IdAndJobTypeAndExecutionStatusIn(
+                    projectId, apiEndpointId, jobType, List.of(ExecutionStatus.PENDING, ExecutionStatus.RUNNING));
+            if (hasActive) {
+                log.debug("Skip duplicate AI job: PENDING/RUNNING already exists for endpoint {}", apiEndpointId);
+                return null;
+            }
+
+            var latestOpt = aiJobLogRepository.findTopBySourceProject_IdAndApiEndpoint_IdAndJobTypeOrderByStartedAtDesc(
+                    projectId, apiEndpointId, jobType);
+            if (latestOpt.isPresent()) {
+                if (latestOpt.get().getExecutionStatus() == ExecutionStatus.SUCCESS) {
+                    log.debug("Skip duplicate AI job: SUCCESS already exists for endpoint {}", apiEndpointId);
+                    return null;
+                }
+            }
+        }
+
+        SourceProject projectRef = entityManager.getReference(SourceProject.class, projectId);
+        ApiEndpoint endpointRef = entityManager.getReference(ApiEndpoint.class, apiEndpointId);
+        AiSkill skillRef = entityManager.getReference(AiSkill.class, aiSkillId);
+
+        AiJobLog jobLog = AiJobLog.builder()
+                .executionStatus(ExecutionStatus.PENDING)
+                .startedAt(LocalDateTime.now())
+                .jobType(jobType)
+                .modelName(modelName)
+                .sourceProject(projectRef)
+                .apiEndpoint(endpointRef)
+                .aiSkill(skillRef)
+                .build();
+
+        AiJobLog savedJob = aiJobLogRepository.save(jobLog);
+        log.info("Đã tạo AiJobLog ID: [{}] trạng thái PENDING cho Endpoint: [{}] (Regenerate: {})",
+                savedJob.getId(), apiEndpointId, forceRegenerate);
+        return savedJob;
     }
 
     @Override

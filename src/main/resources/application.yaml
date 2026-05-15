@@ -21,7 +21,39 @@ springdoc:
     enabled: true
 
 ai:
+  optimization:
+    enabled: true
+    max-prompt-chars: 25000
+    max-response-chars-to-store: 30000
+    truncate-large-payload: true
+    cache-enabled: true
+    cache-ttl-minutes: 1440
+    retry-enabled: true
+    max-retries: 1
+    retry-delay-ms: 1000
+
+  batching:
+    enabled: true
+    default-max-items-per-batch: 5
+    max-items-per-batch: 10
+    max-chars-per-batch: 20000
+
+  router:
+    fallback-to-gemini: true
+    fail-fast-local-provider: true
+    provider-health-cache-seconds: 30
+
+  ollama:
+    enabled: true
+    health-timeout-ms: 3000
+    connect-timeout-ms: 3000
+    response-timeout-ms: 30000
+    read-timeout-ms: 30000
+
   gemini:
+    enabled: true
+    connect-timeout-ms: 5000
+    response-timeout-ms: 45000
     api-key: ${AI_GEMINI_API_KEY:}
 
 logging:
