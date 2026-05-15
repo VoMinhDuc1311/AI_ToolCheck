@@ -29,11 +29,9 @@ public class AiTestCaseItemDto {
     @NotBlank(message = "Test name is required")
     private String testName;
 
-    @NotNull(message = "Case type is required")
-    private CaseType caseType;
+    private String caseType;
 
-    @NotNull(message = "Priority level is required")
-    private PriorityLevel priority;
+    private String priority;
 
     @NotNull(message = "HTTP method is required")
     private HttpMethod httpMethod;

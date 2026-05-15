@@ -23,8 +23,10 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.TestRun;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRunItem;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.RuleEngineService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
@@ -37,6 +39,7 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionTemplate;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -65,11 +68,14 @@ public class TestRunServiceImpl implements TestRunService {
     private final TestRunItemRepository testRunItemRepository;
     private final TestCaseRepository testCaseRepository;
     private final SourceProjectRepository sourceProjectRepository;
+    private final TestResultRepository testResultRepository;
     private final TestRequestBuilder testRequestBuilder;
     private final TestHttpExecutor testHttpExecutor;
     private final ObjectMapper objectMapper;
     private final TestResultService testResultService;
     private final ProjectAccessService projectAccessService;
+    private final RuleEngineService ruleEngineService;
+    private final TransactionTemplate transactionTemplate;
     private TestRunService self;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -244,6 +250,8 @@ public class TestRunServiceImpl implements TestRunService {
 
         List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
 
+        boolean anyFailed = false;
+
         for (TestRunItem item : items) {
             try {
                 item.setItemStatus(ExecutionStatus.RUNNING);
@@ -256,6 +264,7 @@ public class TestRunServiceImpl implements TestRunService {
                     log.warn("TestCaseInput missing for item id: {}", item.getId());
                     item.setItemStatus(ExecutionStatus.FAILED);
                     testRunItemRepository.save(item);
+                    anyFailed = true;
                     continue;
                 }
 
@@ -267,95 +276,12 @@ public class TestRunServiceImpl implements TestRunService {
                 ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
                 HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
 
-                // 3. Evaluate assertions
-                List<TestCaseAssertion> assertions = testCase.getTestCaseAssertions();
-                RuleEngineResultDto ruleResult = testResultService.evaluateAssertions(actualResponse, assertions);
+                // 3. Persist raw result (No legacy evaluation)
+                TestResult rawTestResult = testResultService.saveRawTestResult(item, actualResponse);
 
-                // 4. Persist result
-                testResultService.saveTestResult(item, actualResponse, ruleResult);
+                // 4. Evaluate using RuleEngineService (Single Source of Truth)
+                RuleEngineResultDto ruleResult = ruleEngineService.evaluate(rawTestResult.getId());
 
-                item.setItemStatus(ExecutionStatus.SUCCESS);
-                testRunItemRepository.save(item);
-
-            } catch (Exception e) {
-                log.error("Error executing TestRunItem id: {}", item.getId(), e);
-                item.setItemStatus(ExecutionStatus.FAILED);
-                testRunItemRepository.save(item);
-            }
-        }
-
-        testRun.setRunStatus(RunStatus.COMPLETED);
-        testRunRepository.save(testRun);
-        log.info("Finished async execution for TestRun id: {}", id);
-    }
-
-    @Override
-    @Transactional
-    public TestRunDetailResponse execute(UUID id) {
-        if (id == null) {
-            throw new BadRequestException("id is required");
-        }
-
-        // Load and validate TestRun
-        TestRun testRun = testRunRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
-
-        // Guard: reject if already in progress (prevents concurrent double-execution)
-        if (testRun.getRunStatus() == RunStatus.RUNNING) {
-            throw new BadRequestException(
-                    "TestRun is already in RUNNING state. Wait for it to complete before re-executing.");
-        }
-
-        // Permission: mode-aware — SAFE_WRITE/FULL_WRITE require MAINTAINER
-        projectAccessService.requireCanExecuteTestRun(
-                testRun.getSourceProject().getId(),
-                testRun.getExecutionMode());
-
-        // Load items in deterministic order
-        List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
-        if (items.isEmpty()) {
-            throw new BadRequestException("TestRun has no items to execute");
-        }
-
-        // Mark run as RUNNING
-        testRun.setRunStatus(RunStatus.RUNNING);
-        testRunRepository.save(testRun);
-
-        boolean anyFailed = false;
-
-        for (TestRunItem item : items) {
-            try {
-                item.setItemStatus(ExecutionStatus.RUNNING);
-                testRunItemRepository.save(item);
-
-                TestCase testCase = item.getTestCase();
-                TestCaseInput input = testCase.getTestCaseInput();
-
-                if (input == null) {
-                    log.warn("[execute] No TestCaseInput for item id={}, testCase id={}", item.getId(), testCase.getId());
-                    item.setItemStatus(ExecutionStatus.FAILED);
-                    testRunItemRepository.save(item);
-                    saveErrorResult(item, null, "TestCaseInput is missing for this test case");
-                    anyFailed = true;
-                    continue;
-                }
-
-                // Build prepared request (pure frame — no HTTP)
-                PreparedHttpRequestResponse prepared = testRequestBuilder.build(
-                        testRun.getBaseUrl(), input);
-
-                // Execute real HTTP via dedicated executor
-                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
-                HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
-
-                // Evaluate assertions using existing TestResultService
-                List<TestCaseAssertion> assertions = testCase.getTestCaseAssertions();
-                RuleEngineResultDto ruleResult = testResultService.evaluateAssertions(actualResponse, assertions);
-
-                // Persist result
-                testResultService.saveTestResult(item, actualResponse, ruleResult);
-
-                // Map ResultStatus -> ExecutionStatus for item
                 ExecutionStatus itemStatus = resolveItemStatus(ruleResult.getFinalStatus());
                 item.setItemStatus(itemStatus);
                 testRunItemRepository.save(item);
@@ -365,21 +291,143 @@ public class TestRunServiceImpl implements TestRunService {
                 }
 
             } catch (Exception e) {
-                log.error("[execute] Unexpected error for TestRunItem id={}: {}", item.getId(), e.getMessage());
+                log.error("Error executing TestRunItem id: {}", item.getId(), e);
                 item.setItemStatus(ExecutionStatus.FAILED);
                 testRunItemRepository.save(item);
-                saveErrorResult(item, null, "Unexpected execution error: " + truncateSafe(e.getMessage(), 500));
+                anyFailed = true;
+            }
+        }
+
+        testRun.setRunStatus(anyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
+        testRunRepository.save(testRun);
+        log.info("Finished async execution for TestRun id: {}", id);
+    }
+
+    @Override
+    public TestRunDetailResponse execute(UUID id) {
+        if (id == null) {
+            throw new BadRequestException("id is required");
+        }
+
+        ExecutionContext executionContext = transactionTemplate.execute(status -> {
+            TestRun testRun = testRunRepository.findById(id)
+                    .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
+
+            if (testRun.getRunStatus() == RunStatus.RUNNING) {
+                throw new BadRequestException(
+                        "TestRun is already in RUNNING state. Wait for it to complete before re-executing.");
+            }
+
+            projectAccessService.requireCanExecuteTestRun(
+                    testRun.getSourceProject().getId(),
+                    testRun.getExecutionMode());
+
+            List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
+            if (items.isEmpty()) {
+                throw new BadRequestException("TestRun has no items to execute");
+            }
+
+            testRun.setRunStatus(RunStatus.RUNNING);
+            TestRun savedRun = testRunRepository.save(testRun);
+
+            List<UUID> itemIds = items.stream()
+                    .map(TestRunItem::getId)
+                    .toList();
+            return new ExecutionContext(savedRun.getId(), savedRun.getBaseUrl(), itemIds);
+        });
+
+        boolean anyFailed = false;
+
+        for (UUID itemId : executionContext.itemIds()) {
+            try {
+                ItemExecutionContext itemContext = prepareItemExecution(itemId, executionContext.baseUrl());
+
+                if (itemContext.missingInput()) {
+                    log.warn("[execute] No TestCaseInput for item id={}, testCase id={}",
+                            itemContext.itemId(), itemContext.testCaseId());
+                    markItemStatus(itemContext.itemId(), ExecutionStatus.FAILED);
+                    saveErrorResult(itemContext.itemId(), null, "TestCaseInput is missing for this test case");
+                    anyFailed = true;
+                    continue;
+                }
+
+                // Execute real HTTP via dedicated executor
+                ExecutedHttpResponse executed = testHttpExecutor.execute(itemContext.preparedRequest());
+                HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
+
+                // Persist raw result (No legacy evaluation)
+                TestResult rawTestResult = transactionTemplate.execute(status -> {
+                    TestRunItem item = testRunItemRepository.findById(itemContext.itemId())
+                            .orElseThrow(() -> new ResourceNotFoundException(
+                                    "TestRunItem not found with id: " + itemContext.itemId()));
+                    return testResultService.saveRawTestResult(item, actualResponse);
+                });
+
+                // Evaluate using RuleEngineService (Single Source of Truth)
+                RuleEngineResultDto ruleResult = ruleEngineService.evaluate(rawTestResult.getId());
+
+                // Map ResultStatus -> ExecutionStatus for item
+                ExecutionStatus itemStatus = resolveItemStatus(ruleResult.getFinalStatus());
+                markItemStatus(itemContext.itemId(), itemStatus);
+
+                if (itemStatus == ExecutionStatus.FAILED) {
+                    anyFailed = true;
+                }
+
+            } catch (Exception e) {
+                log.error("[execute] Unexpected error for TestRunItem id={}: {}", itemId, e.getMessage());
+                markItemStatus(itemId, ExecutionStatus.FAILED);
+                saveErrorResult(itemId, null, "Unexpected execution error: " + truncateSafe(e.getMessage(), 500));
                 anyFailed = true;
             }
         }
 
         // Aggregate run status
-        testRun.setRunStatus(anyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
-        TestRun savedRun = testRunRepository.save(testRun);
+        boolean finalAnyFailed = anyFailed;
+        TestRun savedRun = transactionTemplate.execute(status -> {
+            TestRun testRun = testRunRepository.findById(executionContext.runId())
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "TestRun not found with id: " + executionContext.runId()));
+            testRun.setRunStatus(finalAnyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
+            return testRunRepository.save(testRun);
+        });
 
-        // Reload items with results for response
-        List<TestRunItem> finalItems = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(savedRun.getId());
-        return toDetailResponse(savedRun, finalItems, Map.of());
+        return transactionTemplate.execute(status -> {
+            TestRun finalRun = testRunRepository.findById(savedRun.getId())
+                    .orElseThrow(() -> new ResourceNotFoundException(
+                            "TestRun not found with id: " + savedRun.getId()));
+            List<TestRunItem> finalItems = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(finalRun.getId());
+            return toDetailResponse(finalRun, finalItems, Map.of());
+        });
+    }
+
+    private ItemExecutionContext prepareItemExecution(UUID itemId, String baseUrl) {
+        return transactionTemplate.execute(status -> {
+            TestRunItem item = testRunItemRepository.findById(itemId)
+                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+
+            item.setItemStatus(ExecutionStatus.RUNNING);
+            testRunItemRepository.save(item);
+
+            TestCase testCase = item.getTestCase();
+            TestCaseInput input = testCase.getTestCaseInput();
+            if (input == null) {
+                return new ItemExecutionContext(item.getId(), testCase.getId(), null, true);
+            }
+
+            // Build while the input entity is initialized; HTTP still happens outside this transaction.
+            PreparedHttpRequestResponse prepared = testRequestBuilder.build(baseUrl, input);
+            return new ItemExecutionContext(item.getId(), testCase.getId(), prepared, false);
+        });
+    }
+
+    private void markItemStatus(UUID itemId, ExecutionStatus itemStatus) {
+        transactionTemplate.executeWithoutResult(status -> {
+            TestRunItem item = testRunItemRepository.findById(itemId)
+                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+            item.setItemStatus(itemStatus);
+            testRunItemRepository.save(item);
+        });
     }
 
     /**
@@ -400,7 +448,7 @@ public class TestRunServiceImpl implements TestRunService {
      * Save an ERROR result for a TestRunItem when execution itself cannot proceed
      * (e.g. missing input, unexpected exception before HTTP call).
      */
-    private void saveErrorResult(TestRunItem item, Integer statusCode, String errorMessage) {
+    private void saveErrorResult(UUID itemId, Integer statusCode, String errorMessage) {
         HttpActualResponseDto errResponse = HttpActualResponseDto.builder()
                 .statusCode(statusCode != null ? statusCode : 0)
                 .responseBody(null)
@@ -408,12 +456,28 @@ public class TestRunServiceImpl implements TestRunService {
                 .errorMessage(errorMessage)
                 .build();
 
-        RuleEngineResultDto errResult = RuleEngineResultDto.builder()
-                .finalStatus(ResultStatus.ERROR)
-                .logDetails(errorMessage)
-                .build();
+        transactionTemplate.executeWithoutResult(status -> {
+            TestRunItem item = testRunItemRepository.findById(itemId)
+                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
 
-        testResultService.saveTestResult(item, errResponse, errResult);
+            // 1. Save raw result with error message
+            TestResult rawTestResult = testResultService.saveRawTestResult(item, errResponse);
+
+            // 2. We can directly set ERROR to TestResult and item status since it's a pre-HTTP execution error
+            rawTestResult.setResultStatus(ResultStatus.ERROR);
+            testResultRepository.save(rawTestResult);
+            // Note: RuleEngineService won't be called here as we don't have enough data
+        });
+    }
+
+    private record ExecutionContext(UUID runId, String baseUrl, List<UUID> itemIds) {
+    }
+
+    private record ItemExecutionContext(
+            UUID itemId,
+            UUID testCaseId,
+            PreparedHttpRequestResponse preparedRequest,
+            boolean missingInput) {
     }
 
     /**

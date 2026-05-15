@@ -304,6 +304,47 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                 .block();
     }
 
+    @Override
+    public com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse sendFullPrompt(String prompt) {
+        try {
+            log.info("[GeminiClient] sendFullPrompt – độ dài: {} ký tự", prompt.length());
+
+            Map<String, Object> payload = new java.util.HashMap<>();
+            payload.put("contents", List.of(
+                    Map.of("parts", List.of(
+                            Map.of("text", prompt)))));
+
+            Map<String, Object> generationConfig = new java.util.HashMap<>();
+            generationConfig.put("responseMimeType", "application/json");
+            payload.put("generationConfig", generationConfig);
+
+            String uriPath = "/" + geminiProperties.getModel() + ":generateContent?key="
+                    + geminiProperties.getApiKey();
+
+            String rawGeminiResponse = webClient.post()
+                    .uri(uriPath)
+                    .bodyValue(payload)
+                    .retrieve()
+                    .onStatus(status -> status.isSameCodeAs(HttpStatus.TOO_MANY_REQUESTS),
+                            resp -> resp.bodyToMono(String.class)
+                                    .flatMap(err -> Mono.error(new RuntimeException("Rate Limit 429: " + err))))
+                    .onStatus(HttpStatusCode::isError, resp -> resp.bodyToMono(String.class)
+                            .flatMap(err -> Mono.error(new RuntimeException("Gemini API Error: " + err))))
+                    .bodyToMono(String.class)
+                    .retryWhen(Retry.backoff(4, Duration.ofSeconds(15))
+                            .doBeforeRetry(s -> log.warn("[GeminiClient] Retry lần {}/4 – lý do: {}",
+                                    s.totalRetries() + 1, s.failure().getMessage())))
+                    .block();
+
+            objectMapper.configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
+            return objectMapper.readValue(rawGeminiResponse, com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse.class);
+
+        } catch (Exception e) {
+            log.error("[GeminiClient] sendFullPrompt thất bại: {}", e.getMessage());
+            throw new RuntimeException("Lỗi gọi Gemini API (sendFullPrompt): " + e.getMessage(), e);
+        }
+    }
+
 
 
     // =========================================================================================

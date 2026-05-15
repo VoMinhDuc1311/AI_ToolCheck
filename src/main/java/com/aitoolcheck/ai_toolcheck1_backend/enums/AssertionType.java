@@ -9,7 +9,8 @@ public enum AssertionType {
     RESPONSE_TIME_MS,
     HEADER,
     BODY_CONTAINS,
-    BODY_NOT_NULL;
+    BODY_NOT_NULL,
+    ERROR_MESSAGE;
 
     @JsonCreator
     public static AssertionType fromString(String value) {

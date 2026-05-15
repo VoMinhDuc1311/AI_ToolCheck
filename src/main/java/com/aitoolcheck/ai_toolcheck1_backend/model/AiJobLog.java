@@ -30,6 +30,9 @@ public class AiJobLog {
     @Column(name = "model_name")
     private String modelName;
 
+    @Column(name = "ai_model_used", length = 100)
+    private String aiModelUsed;
+
     @Column(name = "token_input")
     private Integer tokenInput;
 

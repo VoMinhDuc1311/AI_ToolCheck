@@ -185,4 +185,23 @@ public class TestResultServiceImpl implements TestResultService {
         item.setTestResult(result);
         log.info("Saved test result for TestRunItem {}: Status={}", item.getId(), ruleResult.getFinalStatus());
     }
+
+    @Override
+    @Transactional
+    public TestResult saveRawTestResult(TestRunItem item, HttpActualResponseDto actualResponse) {
+        TestResult result = testResultRepository.findByTestRunItem_Id(item.getId())
+                .orElse(new TestResult());
+
+        result.setTestRunItem(item);
+        result.setActualStatus(actualResponse.getStatusCode());
+        result.setActualResponseJson(actualResponse.getResponseBody());
+        result.setResponseTimeMs(
+                actualResponse.getResponseTimeMs() != null ? actualResponse.getResponseTimeMs().intValue() : 0);
+        result.setErrorMessage(actualResponse.getErrorMessage());
+        // Do not set resultStatus here, leave it to RuleEngineService
+
+        testResultRepository.save(result);
+        item.setTestResult(result);
+        return result;
+    }
 }

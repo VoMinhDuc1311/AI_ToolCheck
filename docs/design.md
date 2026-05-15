@@ -17,6 +17,77 @@ AI ToolCheck is a backend intelligence platform that:
 
 ---
 
+## 1.1 Build and Runtime Stack
+
+- **Java**: Version 21
+- **Spring Boot**: Version 4.0.5
+- **Database**: MySQL and PostgreSQL supported (via `mysql-connector-j` and `postgresql` drivers)
+- **ORM**: Spring Data JPA / Hibernate
+- **Security**: Spring Security with JWT (`jjwt` 0.12.6)
+- **Messaging**: RabbitMQ (`spring-boot-starter-amqp`)
+- **Realtime**: WebSocket (`spring-boot-starter-websocket` is included in `pom.xml`, ready for Step 10)
+- **AI Integration**: Custom Ollama and Gemini API clients using Spring WebFlux/WebClient
+- **Testing**: JUnit, Spring Boot Test, Jayway JsonPath (for assertions)
+
+---
+
+## 1.2 Backend Project Structure
+
+The codebase is organized by technical layers:
+- `config`: Spring Boot configurations (SecurityConfig, RabbitMQConfig, WebClientConfig, etc.)
+- `controller`: REST APIs (`@RestController`), mapping HTTP requests to Service layer.
+- `service`: Business logic interfaces.
+- `service/impl`: Implementations of business logic.
+- `service/access`: `ProjectAccessService` for project-level authorization rules.
+- `service/ai`: Integration with Ollama and Gemini (`GeminiApiClientService`, `OllamaApiClientService`, `AiModelRouterService`).
+- `service/analysis`: Source code parsing and classification logic using JavaParser.
+- `service/rabbitmq`: RabbitMQ Producers and Consumers (`AiTaskProducer`, `AiTaskConsumer`, `AiTaskPersistenceService`).
+- `service/runner`: HTTP Test Execution logic (`TestHttpExecutor`, `TestRequestBuilder`).
+- `repository`: Spring Data JPA repositories (`@Repository`).
+- `model`: JPA Entities defining database tables and relationships.
+- `dto`: Request and Response objects, organized by feature domains.
+- `enums`: Domain constants (ProjectStatus, RunStatus, ExecutionStatus, ResultStatus, etc.).
+- `security`: JWT authentication filters, entry points, and user details services.
+- `exception`: Global exception handlers and custom exception classes.
+
+---
+
+## 1.3 Security and Auth Design
+
+- **Login Flow**: `POST /api/v1/auth/login` returns an `AuthTokenResponse` containing `accessToken` and `refreshToken`.
+- **Refresh Token Flow**: `POST /api/v1/auth/refresh` accepts a refresh token and issues a new access token.
+- **Protected APIs**: Handled by `SecurityConfig`. By default, `anyRequest().authenticated()` is applied. Public endpoints include `/v1/auth/login`, `/v1/auth/refresh`, and Swagger UI.
+- **Project Permissions**: Fine-grained access control is managed by `ProjectAccessService` which validates `UserRole` and `ProjectMemberRole`.
+- **Rule - No Fake SecurityContext**: Background workers (like RabbitMQ consumers) do not have a standard HTTP request context. We MUST NOT mock or fake the `SecurityContext`.
+- **Rule - Do Not Disable Security**: The global security configuration must remain intact.
+- **Background Worker Fix**: Background async processes (RabbitMQ) bypass public HTTP controllers and directly call internal `@Service` methods that do not enforce `ProjectAccessService` security checks, ensuring async safety.
+- **Step 10 WebSocket Note**: When implementing WebSocket handshake, only permit `/ws/**` in `SecurityConfig`. Do not weaken the existing HTTP API security rules.
+
+---
+
+## 1.4 Domain Model (Entity Relationships)
+
+Based on the actual JPA `model` package:
+- `SourceProject` -> `SourceFile` (1:N)
+- `SourceProject` -> `SourceAnalysisResult` (1:1)
+- `SourceProject` -> `ApiDocument` (1:1)
+- `ApiDocument` -> `ApiDocumentVersion` (1:N)
+- `SourceProject` -> `ApiEndpoint` (1:N)
+- `SourceProject` -> `ApiSchema` (1:N)
+- `SourceProject` -> `TestCase` (1:N)
+- `ApiEndpoint` -> `TestCase` (1:N)
+- `ApiDocumentVersion` -> `TestCase` (1:N)
+- `SourceProject` -> `TestRun` (1:N)
+- `TestRun` -> `TestRunItem` (1:N)
+- `TestCase` -> `TestCaseInput` (1:1)
+- `TestCase` -> `TestCaseAssertion` (1:N)
+- `TestCase` -> `TestRunItem` (1:N)
+- `TestRunItem` -> `TestResult` (1:1)
+- `SourceProject` -> `AiJobLog` (1:N)
+- `SourceProject` -> `LegacyInferenceLog` (1:N)
+
+---
+
 ## 2. Roles and Permissions
 
 ### System-level Roles (`UserRole`)
@@ -114,8 +185,9 @@ Display status as a progress indicator on Project Detail page.
    POST /api/v1/ai-job-logs/trigger/project/{id}/enrich-endpoints
    → Creates N AiJobLog rows (ExecutionStatus=PENDING)
    → Pushes N messages to RabbitMQ
-5. RabbitMQ consumer processes each job:
-   PENDING → RUNNING → (Ollama qwen2.5-coder:7b / Gemini) → SUCCESS or FAILED
+5. RabbitMQ consumer (`AiTaskConsumer`) processes each job:
+   PENDING → RUNNING → AI Router (Ollama Tier 1 → Gemini Tier 2 fallback) → SUCCESS or FAILED
+   *Note: Consumer calls internal async-safe services (`aiJobLogService`, `documentEnrichmentService`) bypassing `ProjectAccessService` since there is no SecurityContext.*
 6. Poll job status
    GET  /api/v1/ai-job-logs/{jobId}
 7. After SUCCESS: endpoint reflects enrichment
@@ -126,6 +198,9 @@ Display status as a progress indicator on Project Detail page.
    → aiEnrichedAt populated
    → lastAiJobLogId populated
 ```
+
+**Bug Fixed:** 
+- The RabbitMQ worker previously failed due to lack of `SecurityContext`. Public HTTP methods enforce `ProjectAccessService`. To fix this, the worker now uses internal async-safe service methods, maintaining security rules without mocking/faking the `SecurityContext` or disabling security.
 
 ### AI Job States (`ExecutionStatus`)
 | State | Display | Color |
@@ -183,7 +258,7 @@ Display status as a progress indicator on Project Detail page.
 
 ---
 
-## 8. Page-to-Backend API Mapping
+## 8. Backend API Map
 
 ### Auth
 | Action | Method | Endpoint |
@@ -265,17 +340,17 @@ Display status as a progress indicator on Project Detail page.
 | Get detail | GET | `/api/v1/test-cases/{caseId}` |
 | Update | PATCH | `/api/v1/test-cases/{caseId}` |
 | Delete (soft) | DELETE | `/api/v1/test-cases/{caseId}` |
-| Generate via AI (async) | POST | `/api/v1/test-cases/generate` |
+| Generate via AI (async) | POST | `/api/v1/test-cases/generate` (or `/generate-async`) |
 
 ### Test Runs
 | Action | Method | Endpoint |
 |--------|--------|----------|
 | Create test run | POST | `/api/v1/test-runs` |
-| Execute (init + prepare) | POST | `/api/v1/test-runs/execute` |
+| Execute (init async) | POST | `/api/v1/test-runs/execute` |
 | List by project | GET | `/api/v1/test-runs/project/{id}` |
 | Get detail | GET | `/api/v1/test-runs/{runId}` |
 | Prepare requests | POST | `/api/v1/test-runs/{runId}/prepare` |
-| Execute run | POST | `/api/v1/test-runs/{runId}/execute` |
+| Execute run (sync mode) | POST | `/api/v1/test-runs/{runId}/execute` |
 
 ### Admin — Users
 | Action | Method | Endpoint |
@@ -357,15 +432,21 @@ Display status as a progress indicator on Project Detail page.
 
 ---
 
-## 10. Test Execution Result States
+## 10. Test Runner Design & Execution States
 
-### Per TestRunItem
+### Test Runner Domain Concepts
+- **`TestCase`**: Defines the request input (`TestCaseInput`) and expected results (`TestCaseAssertion`).
+- **`TestRun`**: Groups an execution batch for multiple test cases. Has a `RunStatus` lifecycle (PENDING, RUNNING, COMPLETED, FAILED).
+- **`TestRunItem`**: Represents a single case execution within a run. Has an `ExecutionStatus` lifecycle (PENDING, RUNNING, SUCCESS, FAILED).
+- **`TestResult`**: Stores the actual outcome of a `TestRunItem` execution, including `actualStatus`, `actualResponseJson`, `responseTimeMs`, `resultStatus` (PASS, FAIL, ERROR), and `errorMessage`.
+
+### Per TestRunItem Execution Result (`ResultStatus`)
 | Scenario | `resultStatus` | `actualStatus` | `errorMessage` |
 |----------|---------------|---------------|----------------|
 | Assertion passed | `PASS` | e.g. 200 | null |
-| Assertion failed | `FAIL` | actual HTTP code | assertion detail |
-| Network error / refused | `ERROR` | null | connection error text |
-| Target returned 401 | `FAIL` | 401 | assertion mismatch |
+| Assertion failed | `FAIL` | actual HTTP code | assertion detail / mismatch |
+| Network error / refused | `ERROR` | 0 | connection error text |
+| Target returned 401 | `FAIL` | 401 | HTTP 401 from target |
 | Blocked / precondition | `FAIL` or `SKIPPED` | null | `blockedReason` |
 
 ### Run-level Aggregation (compute client-side from items)
@@ -378,6 +459,30 @@ successRate   = passCount / totalItems * 100   (only after run COMPLETED)
 ```
 
 > **Never show successRate, healthScore, or testCoverage before a test run has COMPLETED.**
+> **Note on Realtime Counters**: Realtime counters in `TestRunRealtimeEvent` are backend progress snapshots at the time of publishing. The final report, `successRate`, and `healthScore` MUST be re-fetched from the `TestRun` detail endpoint and calculated from persisted `TestResult` records. WebSocket events are NOT the final source of truth for reports.
+
+---
+
+## 10.1. Test Execution Flow (Step 9 implementation)
+
+**Endpoint:** `POST /api/v1/test-runs/{id}/execute`
+
+1. **Controller**: `TestRunController.executeById(UUID)` receives the request.
+2. **Service & Validation**: 
+   - `TestRunServiceImpl.execute(UUID)` is called.
+   - Validates TestRun existence. Guards against concurrent double-execution.
+   - Checks project permission via `ProjectAccessService.requireCanExecuteTestRun(projectId, executionMode)`. (Requires MAINTAINER or EDITOR for READ_ONLY; MAINTAINER for SAFE_WRITE/FULL_WRITE).
+3. **Load Items**: Loads deterministic list of `TestRunItem` for the run. Updates TestRun status to `RUNNING`.
+4. **Execution Loop**: For each `TestRunItem`:
+   - Set item status to `RUNNING`.
+   - Extract `TestCase` and `TestCaseInput`. If missing input, marks as `FAILED` (with `ERROR` ResultStatus) and skips.
+   - `TestRequestBuilder.build()` creates a `PreparedHttpRequestResponse`.
+   - `TestHttpExecutor.execute()` performs the actual target HTTP request. Handles connection/timeout errors returning an `ExecutedHttpResponse` (prevents crashing).
+   - Maps actual response to `HttpActualResponseDto` (contains `actualStatus`, `responseBody`, `responseTimeMs`).
+   - `TestResultService.saveRawTestResult()` persists the raw outcome.
+   - `RuleEngineService.evaluate()` evaluates expected assertions against actual result. Updates `TestResult`.
+   - Final `ResultStatus` maps to `ExecutionStatus` (PASS -> SUCCESS, FAIL/ERROR/SKIPPED -> FAILED), saved to `TestRunItem`.
+5. **Final Aggregation**: Sets final `TestRun` status to `FAILED` (if any item failed) or `COMPLETED`.
 
 ---
 
@@ -539,22 +644,18 @@ Page: Project Detail → Members tab
 
 ---
 
-## 17. API Gaps Discovered
+## 17. API Gaps / Open Questions
 
-The following frontend pages/features have **no corresponding backend API** at time of inspection:
+The following features have **no corresponding backend API** or are partially implemented:
 
-| Feature | Gap Description |
-|---------|----------------|
-| **List AI jobs by project** | No `GET /api/v1/ai-job-logs/project/{id}` endpoint exists. Only `GET /api/v1/ai-job-logs/{jobId}` (single) and `/statistics` (admin). Frontend must track jobIds from trigger responses or this endpoint needs to be added. |
-| **TestResult detail endpoint** | No `GET /api/v1/test-results/{id}` controller exists. TestResult data is only accessible via TestRunItem inside TestRun detail. |
-| **TestRunItem list** | No standalone `GET /api/v1/test-run-items/run/{runId}` endpoint. Items embedded in `GET /api/v1/test-runs/{id}` response. |
-| **Source Analysis history** | Only one analysis result per project (1:1). No history list endpoint. |
-| **Legacy Inference Logs list** | `LegacyInferenceLog` entity exists in DB; no controller exposes it to the frontend. Audit trail not accessible via API. |
-| **AI Skill list for UI** | `GET /api/v1/ai-skills` returns paginated list but requires admin role in practice; no public read for skill selection UI. |
-| **TestRun report export** | No `GET /api/v1/test-runs/{id}/report` or PDF/CSV export endpoint. Report page must be client-side rendered from run detail data. |
-| **Source file content streaming** | `GET /api/v1/source-files/{id}` returns metadata + content inline; no streaming or pagination for large files. |
-| **Dashboard aggregate stats** | No `/api/v1/dashboard` or summary endpoint. Dashboard must assemble stats from multiple API calls (projects, test runs, job logs). |
-| **User profile update** | No `PATCH /api/v1/users/me` or profile update endpoint. Only password change via `/auth/change-password`. |
+| Feature | Status | Description |
+|---------|--------|-------------|
+| **List AI jobs by project** | Missing | No `GET /api/v1/ai-job-logs/project/{id}` endpoint exists. Only single lookup or admin stats. |
+| **TestResult detail endpoint** | Partially Implemented | No standalone `/test-results/{id}` controller. Data is embedded in TestRun detail response. |
+| **TestRunItem list** | Partially Implemented | Embedded in `GET /api/v1/test-runs/{id}` response. |
+| **WebSocket Realtime Test Execution** | Proposed for Step 10 | See Section 22 for proposal. |
+| **Dashboard aggregate stats** | Missing | Frontend must assemble stats from multiple calls. |
+| **User profile update** | Missing | Only password change is supported via `/auth/change-password`. |
 
 ---
 
@@ -614,3 +715,73 @@ From `ApiEndpoint` entity — used on Endpoint Detail page:
 | `openapiFragmentJson` | OpenAPI Fragment | JSON |
 | `aiEnrichedAt` | Enriched At | Formatted datetime |
 | `lastAiJobLogId` | Last AI Job | Link to job log detail |
+
+---
+
+## 21. Backend Coding Conventions
+
+- **DTOs**: Standard class-based DTOs are used (not Java 14 records), organized by domain.
+- **Lombok**: Heavily used for Getters, Setters, NoArgsConstructor, AllArgsConstructor, and Builder pattern.
+- **Identifiers**: `UUID` is used for all entity primary keys.
+- **Timestamps**: Uses `java.time.LocalDateTime` for `createdAt`, `updatedAt`, `deletedAt`.
+- **API Responses**: All controllers wrap successful responses in a generic `ApiResponse<T>` wrapper (contains `code`, `message`, `data`, `timestamp`).
+- **Exceptions**: Custom runtime exceptions (e.g., `BadRequestException`, `ResourceNotFoundException`) mapped by global exception handler to standard error responses.
+- **Logging**: SLF4J `@Slf4j` is used across services.
+
+---
+
+## 22. Step 10: WebSocket Realtime Test Execution (Design Proposal)
+
+**Goal**: When a test execution is triggered (`POST /api/v1/test-runs/{id}/execute`), the backend will continue to execute and save `TestResult` to the database exactly like Step 9, while simultaneously publishing realtime STOMP events to notify subscribers of execution progress.
+
+### WebSocket Configuration Proposal
+- **Endpoint**: `/ws`
+- **STOMP App Destination Prefix**: `/app`
+- **STOMP Broker Prefix**: `/topic`
+- **Topic Pattern**: `/topic/projects/{projectId}/test-runs/{testRunId}`
+
+### Event Types
+- `RUN_STARTED`: Emitted before the batch execution begins.
+- `ITEM_STARTED`: Emitted before executing an individual `TestRunItem`.
+- `ITEM_COMPLETED`: Emitted *only after* a `TestResult` is successfully persisted to the database.
+  - *Publish Rule*: Must be emitted only after TestResult save/update succeeds.
+  - If execution uses one large transaction, consider after-commit publishing if frontend stale-read issue appears.
+  - Step 10 initial implementation may keep safe publish after save/update, but must not publish before DB persistence.
+- `RUN_COMPLETED`: Emitted after the completed run state is persisted.
+- `RUN_FAILED`: Emitted after a failed run state is persisted.
+
+### DTO Proposal (`TestRunRealtimeEvent`)
+```java
+public class TestRunRealtimeEvent {
+    private UUID projectId;
+    private UUID testRunId;
+    private UUID testRunItemId; // Null for RUN-level events
+    private UUID testCaseId;
+    private String eventType; // RUN_STARTED, ITEM_COMPLETED, etc.
+    private String runStatus; // PENDING, RUNNING, COMPLETED, FAILED
+    private String itemStatus; // PENDING, RUNNING, SUCCESS, FAILED
+    private String resultStatus; // PASS, FAIL, ERROR
+    private String caseCode;
+    private String caseName;
+    private Integer sortOrder;
+    private Integer actualStatus;
+    private Integer responseTimeMs;
+    private String errorMessage;
+    private String blockedReason;
+    private String actualResponseJson; // Optional, might be truncated for WS payload limit
+    private Integer totalItems;
+    private Integer completedItems;
+    private Integer successItems;
+    private Integer failedItems;
+    private Integer errorItems;
+    private LocalDateTime occurredAt;
+}
+```
+
+### Safety and Security Rules
+- **Non-blocking Delivery**: WebSocket publish failures MUST ONLY log warnings and MUST NOT break or abort the actual HTTP test execution process.
+- **Integrity**: Realtime updates MUST NOT change the core `PASS/FAIL/ERROR` logic, and MUST NOT interfere with standard database persistence.
+- **Security**: 
+  - Do NOT weaken existing HTTP API security rules.
+  - Permit `/ws/**` in Spring Security config only if strictly required for the STOMP handshake during local development.
+  - Future enhancement: Require JWT authentication during STOMP CONNECT.
