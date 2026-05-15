@@ -23,4 +23,9 @@ public interface OllamaApiClientService extends LlmClientService {
      * @throws RuntimeException on timeout, network failure, or Ollama API error.
      */
     String generateTextWithModel(String prompt, String model);
+
+    /**
+     * Check if Ollama is healthy and reachable.
+     */
+    boolean isHealthy();
 }

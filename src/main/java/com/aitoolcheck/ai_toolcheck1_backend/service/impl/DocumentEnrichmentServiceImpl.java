@@ -10,6 +10,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.DocumentEnrichmentService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.VectorSearchService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -37,6 +39,8 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
     private final VectorSearchService vectorSearchService;
     private final AiJsonParserService aiJsonParserService;
     private final GeminiApiClientService geminiApiClientService;
+    private final AiPayloadOptimizerService aiPayloadOptimizerService;
+    private final AiOptimizationProperties aiOptimizationProperties;
 
     // =========================================================================
     // PRIMARY ENTRY POINT (Multi-Model + RAG)
@@ -51,9 +55,12 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
             throw new IllegalArgumentException("[DocumentEnrichment] openApiFragment không được để trống.");
         }
 
+        String optimizedFragment = aiOptimizationProperties.isEnabled() ?
+                aiPayloadOptimizerService.truncateIfNeeded(openApiFragment, aiOptimizationProperties.getMaxPromptChars() / 2) : openApiFragment;
+
         // ── Bước 1: RAG Retrieval — Tìm context tương tự từ Vector Store ──────
         log.info("[DocumentEnrichment] Bước 1: Tìm RAG context liên quan...");
-        String ragContext = vectorSearchService.findSimilarContext(openApiFragment, 3);
+        String ragContext = vectorSearchService.findSimilarContext(optimizedFragment, 3);
 
         if (ragContext.isBlank()) {
             log.info("[DocumentEnrichment] Không có RAG context (Vector Store trống hoặc không tìm thấy kết quả).");
@@ -63,7 +70,7 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
 
         // ── Bước 2: Build Prompt với RAG Context ─────────────────────────────
         String finalPrompt = String.format(AiPromptConstants.ENRICH_DOC_SYSTEM_PROMPT,
-                ragContext, openApiFragment);
+                ragContext, optimizedFragment);
 
         log.info("[DocumentEnrichment] Bước 2: Đã build Prompt — tổng {} chars.", finalPrompt.length());
 
@@ -80,7 +87,7 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
         // ── Bước 5: Lưu Embedding vào Vector Store (Chống Rác + Gắn ID) ────────
         // THAY ĐỔI: Kiểm tra nếu summary rỗng hoặc quá ngắn thì không lưu để tránh làm "ngu" AI
         if (resultDto.getSummary() != null && !resultDto.getSummary().trim().isEmpty()) {
-            String contentToStore = "API Metadata:\n" + openApiFragment
+            String contentToStore = "API Metadata:\n" + optimizedFragment
                     + "\n\nAI Summary:\n" + resultDto.getSummary();
             
             // THAY ĐỔI: Truyền apiEndpointId thay vì chữ null

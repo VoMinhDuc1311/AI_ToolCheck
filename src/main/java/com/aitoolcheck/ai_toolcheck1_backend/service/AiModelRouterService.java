@@ -1,9 +1,11 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service;
 
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.OllamaProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
 
 import java.util.UUID;
 
@@ -44,6 +46,8 @@ public class AiModelRouterService {
     private final GeminiApiClientService geminiApiClientService;
     private final OllamaProperties ollamaProperties;
     private final AiJobLogService aiJobLogService;
+    private final AiOptimizationProperties aiOptimizationProperties;
+    private final AiPayloadOptimizerService aiPayloadOptimizerService;
 
     /**
      * Thực thi prompt qua chuỗi fallback 3 tầng và trả về raw text từ LLM đầu tiên
@@ -55,36 +59,49 @@ public class AiModelRouterService {
      */
     public String executeWithFallback(String prompt) {
 
-        // ─── TIER 1: Ollama Primary — qwen3-coder:30b ────────────────────────
-        try {
-            log.info("[Router][Tier1] Đang gọi Ollama model: {} — prompt: {} chars",
-                    ollamaProperties.getPrimaryModel(), prompt.length());
+        String optimizedPrompt = aiOptimizationProperties.isEnabled() ?
+                aiPayloadOptimizerService.truncateIfNeeded(prompt, aiOptimizationProperties.getMaxPromptChars()) : prompt;
 
-            String result = ollamaApiClientService.generateTextWithModel(
-                    prompt, ollamaProperties.getPrimaryModel());
-
-            log.info("[Router][Tier1] Thành công với model: {}", ollamaProperties.getPrimaryModel());
-            return result;
-
-        } catch (Exception tier1Ex) {
-            log.warn("[Router][Tier1] Model {} thất bại: {}. Chuyển sang Tier 2...",
-                    ollamaProperties.getPrimaryModel(), tier1Ex.getMessage());
+        boolean tryOllama = true;
+        if (aiOptimizationProperties.isEnabled() && aiOptimizationProperties.getRouter().isFailFastLocalProvider()) {
+            if (!ollamaApiClientService.isHealthy()) {
+                log.warn("[Router] Ollama health check failed. Bỏ qua Ollama, chuyển thẳng sang Gemini.");
+                tryOllama = false;
+            }
         }
 
-        // ─── TIER 2: Ollama Fallback — qwen2.5-coder:7b ─────────────────────
-        try {
-            log.info("[Router][Tier2] Fallback sang Ollama model: {}",
-                    ollamaProperties.getFallbackModel());
+        if (tryOllama) {
+            // ─── TIER 1: Ollama Primary — qwen3-coder:30b ────────────────────────
+            try {
+                log.info("[Router][Tier1] Đang gọi Ollama model: {} — prompt: {} chars",
+                        ollamaProperties.getPrimaryModel(), optimizedPrompt.length());
 
-            String result = ollamaApiClientService.generateTextWithModel(
-                    prompt, ollamaProperties.getFallbackModel());
+                String result = ollamaApiClientService.generateTextWithModel(
+                        optimizedPrompt, ollamaProperties.getPrimaryModel());
 
-            log.info("[Router][Tier2] Thành công với model: {}", ollamaProperties.getFallbackModel());
-            return result;
+                log.info("[Router][Tier1] Thành công với model: {}", ollamaProperties.getPrimaryModel());
+                return result;
 
-        } catch (Exception tier2Ex) {
-            log.warn("[Router][Tier2] Model {} cũng thất bại: {}. Chuyển sang Gemini Cloud (Tier 3)...",
-                    ollamaProperties.getFallbackModel(), tier2Ex.getMessage());
+            } catch (Exception tier1Ex) {
+                log.warn("[Router][Tier1] Model {} thất bại: {}. Chuyển sang Tier 2...",
+                        ollamaProperties.getPrimaryModel(), tier1Ex.getMessage());
+            }
+
+            // ─── TIER 2: Ollama Fallback — qwen2.5-coder:7b ─────────────────────
+            try {
+                log.info("[Router][Tier2] Fallback sang Ollama model: {}",
+                        ollamaProperties.getFallbackModel());
+
+                String result = ollamaApiClientService.generateTextWithModel(
+                        optimizedPrompt, ollamaProperties.getFallbackModel());
+
+                log.info("[Router][Tier2] Thành công với model: {}", ollamaProperties.getFallbackModel());
+                return result;
+
+            } catch (Exception tier2Ex) {
+                log.warn("[Router][Tier2] Model {} cũng thất bại: {}. Chuyển sang Gemini Cloud (Tier 3)...",
+                        ollamaProperties.getFallbackModel(), tier2Ex.getMessage());
+            }
         }
 
         // ─── TIER 3: Google Gemini Cloud ─────────────────────────────────────
@@ -99,7 +116,7 @@ public class AiModelRouterService {
 
         try {
             log.info("[Router][Tier3] Đang gọi Gemini Cloud...");
-            String result = geminiApiClientService.generateText(prompt);
+            String result = geminiApiClientService.generateText(optimizedPrompt);
             log.info("[Router][Tier3] Thành công với Gemini Cloud.");
             return result;
 
@@ -122,22 +139,39 @@ public class AiModelRouterService {
      * Thu thập token và cập nhật trạng thái SUCCESS vào AiJobLog sau khi xong.
      */
     public String routeAndExecute(String prompt, UUID jobId) {
-        String modelName;
-        Integer tokenInput = prompt.length() / 4; // Giả lập token input do Ollama không trả về
+        String modelName = "Unknown";
+        
+        String optimizedPrompt = aiOptimizationProperties.isEnabled() ?
+                aiPayloadOptimizerService.truncateIfNeeded(prompt, aiOptimizationProperties.getMaxPromptChars()) : prompt;
+
+        Integer tokenInput = optimizedPrompt.length() / 4; // Giả lập token input do Ollama không trả về
         Integer tokenOutput = 0;
-        String result;
+        String result = null;
+
+        boolean tryOllama = true;
+        if (aiOptimizationProperties.isEnabled() && aiOptimizationProperties.getRouter().isFailFastLocalProvider()) {
+            if (!ollamaApiClientService.isHealthy()) {
+                log.warn("[Router] Ollama health check failed. Bỏ qua Ollama, chuyển thẳng sang Gemini cho jobId={}", jobId);
+                tryOllama = false;
+            }
+        }
 
         // TIER 1 - ƯU TIÊN: Ollama Local
-        try {
-            modelName = ollamaProperties.getPrimaryModel();
-            log.info("[Router][Tier1] Đang gọi Ollama model: {}", modelName);
-            result = ollamaApiClientService.generateTextWithModel(prompt, modelName);
-            tokenOutput = result.length() / 4; // Giả lập token output
-            log.info("[Router][Tier1] Thành công với Ollama model: {}", modelName);
+        if (tryOllama) {
+            try {
+                modelName = ollamaProperties.getPrimaryModel();
+                log.info("[Router][Tier1] Đang gọi Ollama model: {}", modelName);
+                result = ollamaApiClientService.generateTextWithModel(optimizedPrompt, modelName);
+                tokenOutput = result.length() / 4; // Giả lập token output
+                log.info("[Router][Tier1] Thành công với Ollama model: {}", modelName);
 
-        } catch (Exception ex) {
-            log.warn("[Router][Tier1] Ollama thất bại: {}. Đang chuyển hướng sang Gemini...", ex.getMessage());
+            } catch (Exception ex) {
+                log.warn("[Router][Tier1] Ollama thất bại: {}. Đang chuyển hướng sang Gemini...", ex.getMessage());
+                tryOllama = false;
+            }
+        }
 
+        if (!tryOllama) {
             // FALLBACK LOGIC: Chuyển sang Tier 2 (Gemini Cloud)
             try {
                 modelName = "gemini-1.5-flash";
@@ -151,7 +185,7 @@ public class AiModelRouterService {
                 }
 
                 com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse geminiResponse = geminiApiClientService
-                        .sendFullPrompt(prompt);
+                        .sendFullPrompt(optimizedPrompt);
 
                 result = geminiResponse.extractText();
 

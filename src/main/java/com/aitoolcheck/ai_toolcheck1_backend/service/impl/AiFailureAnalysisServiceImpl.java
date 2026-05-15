@@ -13,6 +13,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.AiSkillRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiFailureAnalysisService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -30,11 +32,26 @@ public class AiFailureAnalysisServiceImpl implements AiFailureAnalysisService {
     private final AiModelRouterService aiModelRouterService;
     private final AiSkillRepository aiSkillRepository;
     private final AiJobLogService aiJobLogService;
+    private final AiPayloadOptimizerService aiPayloadOptimizerService;
+    private final AiOptimizationProperties aiOptimizationProperties;
 
     @Override
     public String buildAnalyzeFailurePrompt(FailedTestCaseAiPayload payload) {
         if (payload == null) {
             throw new IllegalArgumentException("Payload cannot be null");
+        }
+
+        if (aiOptimizationProperties.isEnabled() && aiOptimizationProperties.isTruncateLargePayload()) {
+            int maxChars = 5000; // safe limit for fields
+            if (payload.getActual() != null && payload.getActual().getActualResponseJson() != null) {
+                payload.getActual().setActualResponseJson(aiPayloadOptimizerService.safeJsonPreview(payload.getActual().getActualResponseJson(), maxChars));
+            }
+            if (payload.getRequest() != null && payload.getRequest().getRequestBodyJson() != null) {
+                payload.getRequest().setRequestBodyJson(aiPayloadOptimizerService.safeJsonPreview(payload.getRequest().getRequestBodyJson(), maxChars));
+            }
+            if (payload.getRequest() != null && payload.getRequest().getHeadersJson() != null) {
+                payload.getRequest().setHeadersJson(aiPayloadOptimizerService.safeJsonPreview(payload.getRequest().getHeadersJson(), maxChars));
+            }
         }
 
         try {

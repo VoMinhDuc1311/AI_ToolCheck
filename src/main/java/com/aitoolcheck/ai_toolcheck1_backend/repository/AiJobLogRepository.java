@@ -7,6 +7,7 @@ import org.springframework.stereotype.Repository;
 import java.util.UUID;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import org.springframework.data.jpa.repository.Query;
 
 @Repository
@@ -18,4 +19,17 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
 
     @Query("SELECT COALESCE(SUM(a.tokenOutput), 0L) FROM AiJobLog a")
     long sumTotalTokenOutput();
+
+    boolean existsBySourceProject_IdAndApiEndpoint_IdAndJobTypeAndExecutionStatusIn(
+            UUID projectId,
+            UUID apiEndpointId,
+            JobType jobType,
+            java.util.Collection<ExecutionStatus> statuses
+    );
+
+    java.util.Optional<AiJobLog> findTopBySourceProject_IdAndApiEndpoint_IdAndJobTypeOrderByStartedAtDesc(
+            UUID projectId,
+            UUID apiEndpointId,
+            JobType jobType
+    );
 }

@@ -3,6 +3,8 @@ package com.aitoolcheck.ai_toolcheck1_backend.service;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.req.CreateAiJobLogRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobLogResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
+import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 
 import java.util.UUID;
 
@@ -21,6 +23,15 @@ public interface AiJobLogService {
     int triggerEnrichmentForProject(UUID projectId);
 
     AiJobLogResponse createPendingJob(CreateAiJobLogRequest request);
+
+    AiJobLog createPendingJobIfNotExists(
+            UUID projectId,
+            UUID apiEndpointId,
+            JobType jobType,
+            UUID aiSkillId,
+            String modelName,
+            boolean forceRegenerate
+    );
 
     void markJobAsRunning(UUID id);
 
