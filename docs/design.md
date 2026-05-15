@@ -351,6 +351,7 @@ Display status as a progress indicator on Project Detail page.
 | Get detail | GET | `/api/v1/test-runs/{runId}` |
 | Prepare requests | POST | `/api/v1/test-runs/{runId}/prepare` |
 | Execute run (sync mode) | POST | `/api/v1/test-runs/{runId}/execute` |
+| Analyze failures | POST | `/api/v1/test-runs/{testRunId}/failure-analysis/analyze` |
 
 ### Admin — Users
 | Action | Method | Endpoint |

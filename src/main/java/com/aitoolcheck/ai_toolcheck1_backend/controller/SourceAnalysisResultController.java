@@ -8,7 +8,6 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.util.UUID;
@@ -16,24 +15,14 @@ import java.util.UUID;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 @RestController
-@RequestMapping("/v1")
+@RequestMapping("/v1/source-analysis-results")
 @RequiredArgsConstructor
-@Tag(name = "Source Analysis", description = "Source project analysis APIs")
+@Tag(name = "Source Analysis", description = "Source analysis result lookup APIs")
 public class SourceAnalysisResultController {
 
     private final SourceAnalysisResultService sourceAnalysisResultService;
 
-    @PostMapping("/source-projects/{projectId}/analyze-source")
-    @Operation(
-            summary = "Analyze source project",
-            description = "Analyze the source files for a source project.",
-            operationId = "analyzeSourceProject"
-    )
-    public ResponseEntity<SourceAnalysisResultDetailResponse> analyzeProject(@PathVariable UUID projectId) {
-        return ResponseEntity.ok(sourceAnalysisResultService.analyzeProject(projectId));
-    }
-
-    @GetMapping("/source-analysis-results/project/{projectId}")
+    @GetMapping("/project/{projectId}")
     @Operation(
             summary = "Get source analysis by project",
             description = "Get source analysis result detail for a source project.",

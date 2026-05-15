@@ -1,13 +1,11 @@
 package com.aitoolcheck.ai_toolcheck1_backend.controller;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
-import com.aitoolcheck.ai_toolcheck1_backend.dto.auth.res.AuthMeResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.user.req.AdminResetPasswordRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.user.req.CreateUserRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.user.req.UpdateUserRoleRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.user.req.UpdateUserStatusRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.user.res.UserResponse;
-import com.aitoolcheck.ai_toolcheck1_backend.service.AuthService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.UserService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -28,7 +26,6 @@ import java.util.UUID;
 public class UserController {
 
     private final UserService userService;
-    private final AuthService authService;
 
     @PostMapping
     @Operation(
@@ -59,23 +56,6 @@ public class UserController {
         return ResponseEntity.ok(ApiResponse.<List<UserResponse>>builder()
                 .code("SUCCESS")
                 .message("Users fetched successfully.")
-                .data(response)
-                .timestamp(LocalDateTime.now())
-                .build());
-    }
-
-    @GetMapping("/me")
-    @Operation(
-            summary = "Get current user",
-            description = "Get the current authenticated user profile.",
-            operationId = "getCurrentUserFromUsers"
-    )
-    public ResponseEntity<ApiResponse<AuthMeResponse>> getMe() {
-        AuthMeResponse response = authService.getMe();
-
-        return ResponseEntity.ok(ApiResponse.<AuthMeResponse>builder()
-                .code("SUCCESS")
-                .message("Current user fetched successfully.")
                 .data(response)
                 .timestamp(LocalDateTime.now())
                 .build());
