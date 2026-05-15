@@ -17,14 +17,14 @@ import java.util.UUID;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 @RestController
-@RequestMapping("/v1")
+@RequestMapping("/v1/api-endpoints")
 @RequiredArgsConstructor
 @Tag(name = "API Endpoints", description = "Parsed API endpoint lookup APIs")
 public class ApiEndpointController {
 
     private final ApiEndpointService apiEndpointService;
 
-    @GetMapping("/api-endpoints/project/{projectId}")
+    @GetMapping("/project/{projectId}")
     @Operation(
             summary = "Get endpoints by project",
             description = "Get parsed API endpoints associated with a source project.",
@@ -34,7 +34,7 @@ public class ApiEndpointController {
         return ResponseEntity.ok(apiEndpointService.getByProjectId(projectId));
     }
 
-    @GetMapping("/api-endpoints/{id}")
+    @GetMapping("/{id}")
     @Operation(
             summary = "Get endpoint by id",
             description = "Get parsed API endpoint detail by UUID.",
