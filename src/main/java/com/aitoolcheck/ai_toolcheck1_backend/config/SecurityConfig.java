@@ -53,7 +53,6 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
                         // Local dev WebSocket handshake. STOMP JWT auth can be added later.
                         .requestMatchers("/ws", "/ws/**").permitAll()
-                        .requestMatchers(HttpMethod.GET, "/v1/users/me").authenticated()
                         .requestMatchers("/v1/users/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/v1/api-documents/*/publish").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/v1/api-documents/*/unpublish").hasRole("ADMIN")

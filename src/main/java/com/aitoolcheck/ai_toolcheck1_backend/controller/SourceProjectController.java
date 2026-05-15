@@ -4,16 +4,22 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.CreateSourceProjectRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateProjectVisibilityRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateSourceProjectRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceanalysisresult.res.SourceAnalysisResultDetailResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileUploadResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
 import java.util.List;
@@ -26,6 +32,8 @@ import java.util.UUID;
 public class SourceProjectController {
 
     private final SourceProjectService sourceProjectService;
+    private final SourceFileService sourceFileService;
+    private final SourceAnalysisResultService sourceAnalysisResultService;
 
     @PostMapping
     @Operation(
@@ -80,6 +88,30 @@ public class SourceProjectController {
     public ResponseEntity<List<SourceProjectResponse>> getPublic() {
         List<SourceProjectResponse> response = sourceProjectService.getPublic();
         return ResponseEntity.ok(response);
+    }
+
+    @PostMapping(value = "/{projectId}/upload-zip", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    @Operation(
+            summary = "Upload source ZIP",
+            description = "Upload a source ZIP archive for a source project.",
+            operationId = "uploadSourceZip"
+    )
+    public ResponseEntity<SourceFileUploadResponse> uploadZip(
+            @PathVariable UUID projectId,
+            @RequestPart("file") MultipartFile file
+    ) {
+        SourceFileUploadResponse response = sourceFileService.uploadZip(projectId, file);
+        return ResponseEntity.ok(response);
+    }
+
+    @PostMapping("/{projectId}/analyze-source")
+    @Operation(
+            summary = "Analyze source project",
+            description = "Analyze the source files for a source project.",
+            operationId = "analyzeSourceProject"
+    )
+    public ResponseEntity<SourceAnalysisResultDetailResponse> analyzeProject(@PathVariable UUID projectId) {
+        return ResponseEntity.ok(sourceAnalysisResultService.analyzeProject(projectId));
     }
 
     @PutMapping("/{id}")

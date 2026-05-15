@@ -15,14 +15,14 @@ import java.util.UUID;
 import org.springframework.web.bind.annotation.RequestMapping;
 
 @RestController
-@RequestMapping("/v1")
+@RequestMapping("/v1/source-projects")
 @RequiredArgsConstructor
 @Tag(name = "API Metadata Parser", description = "API metadata parsing APIs")
 public class ApiMetadataParserController {
 
     private final ApiMetadataParserService apiMetadataParserService;
 
-    @PostMapping("/source-projects/{projectId}/parse-api-metadata")
+    @PostMapping("/{projectId}/parse-api-metadata")
     @Operation(
             summary = "Parse API metadata",
             description = "Parse API metadata from an analyzed source project.",
