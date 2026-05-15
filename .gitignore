@@ -93,3 +93,4 @@ src/test/java/com/aitoolcheck/ai_toolcheck1_backend/GeminiPromptTester.java
 backend_architecture_flow.txt
 docs/db/
 docs/rule-engine/
+docs/websocket-test.html

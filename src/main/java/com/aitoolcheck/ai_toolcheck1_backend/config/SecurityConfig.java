@@ -51,6 +51,8 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/swagger-ui.html").permitAll()
                         .requestMatchers(HttpMethod.GET, "/webjars/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
+                        // Local dev WebSocket handshake. STOMP JWT auth can be added later.
+                        .requestMatchers("/ws", "/ws/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/v1/users/me").authenticated()
                         .requestMatchers("/v1/users/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/v1/api-documents/*/publish").hasRole("ADMIN")
@@ -66,8 +68,14 @@ public class SecurityConfig {
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
         configuration.setAllowedOrigins(List.of(
+                "http://localhost:3000",
                 "http://localhost:5173",
-                "http://127.0.0.1:5173"
+                "http://localhost:5500",
+                "http://localhost:63342",
+                "http://127.0.0.1:3000",
+                "http://127.0.0.1:5173",
+                "http://127.0.0.1:5500",
+                "http://127.0.0.1:63342"
         ));
         configuration.setAllowedMethods(List.of(
                 "GET",
