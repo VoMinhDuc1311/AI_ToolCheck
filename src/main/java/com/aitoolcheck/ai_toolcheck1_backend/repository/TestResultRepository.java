@@ -1,7 +1,9 @@
 package com.aitoolcheck.ai_toolcheck1_backend.repository;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestResult;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.projection.TestResultStatusCountProjection;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -10,6 +12,9 @@ import java.util.UUID;
 
 @Repository
 public interface TestResultRepository extends JpaRepository<TestResult, UUID> {
+
+    @Query("SELECT tr.resultStatus AS status, COUNT(tr) AS total FROM TestResult tr GROUP BY tr.resultStatus")
+    List<TestResultStatusCountProjection> getStatusStatistics();
 
     Optional<TestResult> findByTestRunItem_Id(UUID testRunItemId);
 
