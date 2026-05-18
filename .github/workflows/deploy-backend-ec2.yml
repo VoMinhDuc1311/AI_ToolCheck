@@ -1,0 +1,115 @@
+name: Deploy Backend Docker to EC2
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ai-toolcheck-dev
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Build and deploy Docker Compose stack on EC2
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Deploy over SSH
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_APP_DIR: ${{ secrets.EC2_APP_DIR }}
+          DEPLOY_BRANCH: dev
+        run: |
+          set -Eeuo pipefail
+
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/ai-toolcheck-ec2-key
+          chmod 600 ~/.ssh/ai-toolcheck-ec2-key
+
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+
+          ssh -i ~/.ssh/ai-toolcheck-ec2-key "$EC2_USER@$EC2_HOST" "APP_DIR='$EC2_APP_DIR' BRANCH='$DEPLOY_BRANCH' bash -s" << 'EOF'
+          set -Eeuo pipefail
+
+          ENV_FILE="/etc/ai-toolcheck.env"
+          COMPOSE_FILE="$APP_DIR/docker-compose.prod.yml"
+
+          echo "=== AI ToolCheck Docker deploy started ==="
+          echo "APP_DIR=$APP_DIR"
+          echo "BRANCH=$BRANCH"
+
+          echo "=== [1/9] Navigate to app directory ==="
+          cd "$APP_DIR"
+
+          echo "=== [2/9] Fetch and reset to origin/$BRANCH ==="
+          git fetch origin "$BRANCH"
+          git checkout -B "$BRANCH" "origin/$BRANCH"
+          git reset --hard "origin/$BRANCH"
+
+          echo "=== [3/9] Verify required files ==="
+          test -f Dockerfile || { echo "ERROR: Dockerfile missing"; exit 1; }
+          test -f docker-compose.prod.yml || { echo "ERROR: docker-compose.prod.yml missing"; exit 1; }
+          test -f "$ENV_FILE" || { echo "ERROR: $ENV_FILE missing on EC2"; exit 1; }
+
+          echo "=== [4/9] Verify Docker and Docker Compose ==="
+          sudo docker --version
+          sudo docker compose version
+
+          echo "=== [5/9] Verify required runtime env keys ==="
+          sudo grep -q '^RABBITMQ_USERNAME=' "$ENV_FILE" || { echo "ERROR: RABBITMQ_USERNAME missing in $ENV_FILE"; exit 1; }
+          sudo grep -q '^RABBITMQ_PASSWORD=' "$ENV_FILE" || { echo "ERROR: RABBITMQ_PASSWORD missing in $ENV_FILE"; exit 1; }
+
+          echo "=== [6/9] Stop old systemd jar service to avoid port 8080 conflict ==="
+          sudo systemctl stop ai-toolcheck || true
+          sudo systemctl disable ai-toolcheck || true
+
+          echo "=== [7/9] Remove old standalone RabbitMQ container if not compose-managed ==="
+          if sudo docker ps -a --format '{{.Names}}' | grep -qx 'ai-toolcheck-rabbitmq'; then
+            COMPOSE_SERVICE="$(sudo docker inspect ai-toolcheck-rabbitmq --format '{{ index .Config.Labels "com.docker.compose.service" }}' 2>/dev/null || true)"
+            if [ "$COMPOSE_SERVICE" != "ai-toolcheck-rabbitmq" ]; then
+              echo "Found old standalone ai-toolcheck-rabbitmq container. Removing it..."
+              sudo docker stop ai-toolcheck-rabbitmq || true
+              sudo docker rm ai-toolcheck-rabbitmq || true
+            else
+              echo "ai-toolcheck-rabbitmq is already compose-managed. Keeping it."
+            fi
+          fi
+
+          echo "=== [8/9] Build and start Docker Compose stack ==="
+          sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --build
+
+          echo "=== Running containers ==="
+          sudo docker ps
+
+          echo "=== [9/9] Health check backend ==="
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/api/api-docs >/dev/null; then
+              echo "Health check PASSED"
+              echo "=== AI ToolCheck Docker deploy completed successfully ==="
+              exit 0
+            fi
+
+            echo "Backend not ready yet... attempt $i/30"
+            sleep 5
+          done
+
+          echo "ERROR: Health check FAILED after 150 seconds"
+
+          echo "=== Backend logs ==="
+          sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=150 ai-toolcheck-backend || true
+
+          echo "=== RabbitMQ logs ==="
+          sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 ai-toolcheck-rabbitmq || true
+
+          exit 1
+          EOF
