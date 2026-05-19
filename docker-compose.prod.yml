@@ -1,0 +1,53 @@
+name: ai-toolcheck-prod
+
+networks:
+  ai-toolcheck-network:
+    name: ai-toolcheck-network
+    driver: bridge
+
+volumes:
+  rabbitmq-data:
+    name: ai-toolcheck-rabbitmq-data
+
+services:
+  ai-toolcheck-rabbitmq:
+    image: rabbitmq:3-management
+    container_name: ai-toolcheck-rabbitmq
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USERNAME:?RABBITMQ_USERNAME is required}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD-SHELL", "rabbitmq-diagnostics -q ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    networks:
+      - ai-toolcheck-network
+
+  ai-toolcheck-backend:
+    container_name: ai-toolcheck-backend
+    image: ${BACKEND_IMAGE:-ghcr.io/vominhduc1311/ai-toolcheck-backend:dev}
+    restart: unless-stopped
+    env_file:
+      - /etc/ai-toolcheck.env
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      SERVER_PORT: "8080"
+      SPRING_RABBITMQ_HOST: ai-toolcheck-rabbitmq
+      SPRING_RABBITMQ_PORT: "5672"
+      SPRING_RABBITMQ_USERNAME: ${RABBITMQ_USERNAME:?RABBITMQ_USERNAME is required}
+      SPRING_RABBITMQ_PASSWORD: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
+    ports:
+      - "8080:8080"
+    depends_on:
+      ai-toolcheck-rabbitmq:
+        condition: service_healthy
+    networks:
+      - ai-toolcheck-network

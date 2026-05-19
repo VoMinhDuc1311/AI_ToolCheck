@@ -47,12 +47,28 @@ public class FailedTestCaseCollectorServiceImpl implements FailedTestCaseCollect
         
         List<TestResult> failedResults = testResultRepository.findFailedResultsWithPayloadData(testRunId, targetStatuses);
         
+        return buildPayloadsFromResults(failedResults, testRunId);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public List<FailedTestCaseAiPayload> collectUnanalyzedFailedTestCasesForAi(UUID testRunId) {
+        log.info("[FailedTestCaseCollector] Start collecting UNANALYZED failed test results for TestRun: {}", testRunId);
+
+        Set<ResultStatus> targetStatuses = Set.of(ResultStatus.FAIL, ResultStatus.ERROR);
+
+        List<TestResult> failedResults = testResultRepository.findUnanalyzedFailedResultsWithPayloadData(testRunId, targetStatuses);
+
+        return buildPayloadsFromResults(failedResults, testRunId);
+    }
+
+    private List<FailedTestCaseAiPayload> buildPayloadsFromResults(List<TestResult> failedResults, UUID testRunId) {
         if (failedResults.isEmpty()) {
-            log.info("[FailedTestCaseCollector] No failed test results found for TestRun: {}", testRunId);
+            log.info("[FailedTestCaseCollector] No applicable failed test results found for TestRun: {}", testRunId);
             return new ArrayList<>();
         }
 
-        log.info("[FailedTestCaseCollector] Found {} failed/error results. Building payload...", failedResults.size());
+        log.info("[FailedTestCaseCollector] Found {} results. Building payload...", failedResults.size());
 
         List<FailedTestCaseAiPayload> payloads = new ArrayList<>();
 

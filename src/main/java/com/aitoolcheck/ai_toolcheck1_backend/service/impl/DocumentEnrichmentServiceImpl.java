@@ -20,14 +20,20 @@ import org.springframework.stereotype.Service;
 /**
  * Triển khai luồng AI Skill 1 — Làm giàu tài liệu API (Document Enrichment).
  *
- * <p><b>Luồng mới (v2 — Multi-Model + RAG):</b>
+ * <p>
+ * <b>Luồng mới (v2 — Multi-Model + RAG):</b>
  * <ol>
- *   <li>Gọi {@link VectorSearchService} để tìm các ví dụ tương tự trong Vector Store (RAG Retrieval).</li>
- *   <li>Ghép RAG context vào Prompt chuẩn ({@link AiPromptConstants#ENRICH_DOC_SYSTEM_PROMPT}).</li>
- *   <li>Gọi {@link AiModelRouterService#executeWithFallback(String)} — Router tự quyết định
- *       Ollama Tier1 → Ollama Tier2 → Gemini Cloud.</li>
- *   <li>Đưa raw text qua {@link AiJsonParserService#parseJson} để ép kiểu sang DTO.</li>
- *   <li>Lưu embedding của nội dung vừa enrich vào Vector Store để làm giàu RAG context tương lai.</li>
+ * <li>Gọi {@link VectorSearchService} để tìm các ví dụ tương tự trong Vector
+ * Store (RAG Retrieval).</li>
+ * <li>Ghép RAG context vào Prompt chuẩn
+ * ({@link AiPromptConstants#ENRICH_DOC_SYSTEM_PROMPT}).</li>
+ * <li>Gọi {@link AiModelRouterService#executeWithFallback(String)} — Router tự
+ * quyết định
+ * Ollama Tier1 → Ollama Tier2 → Gemini Cloud.</li>
+ * <li>Đưa raw text qua {@link AiJsonParserService#parseJson} để ép kiểu sang
+ * DTO.</li>
+ * <li>Lưu embedding của nội dung vừa enrich vào Vector Store để làm giàu RAG
+ * context tương lai.</li>
  * </ol>
  */
 @Slf4j
@@ -47,7 +53,7 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
     // =========================================================================
 
     @Override
-    // THAY ĐỔI: Thêm tham số apiEndpointId vào hàm
+    // THAY ĐỔI: Thêm tham số apiEndpointId vào hàm (20/05/2026)
     public AiDocumentEnrichmentResponseDto enrichDocumentation(String apiEndpointId, String openApiFragment) {
         log.info("[DocumentEnrichment] Bắt đầu luồng RAG + Multi-Model Enrichment cho Endpoint ID: {}", apiEndpointId);
 
@@ -55,8 +61,10 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
             throw new IllegalArgumentException("[DocumentEnrichment] openApiFragment không được để trống.");
         }
 
-        String optimizedFragment = aiOptimizationProperties.isEnabled() ?
-                aiPayloadOptimizerService.truncateIfNeeded(openApiFragment, aiOptimizationProperties.getMaxPromptChars() / 2) : openApiFragment;
+        String optimizedFragment = aiOptimizationProperties.isEnabled()
+                ? aiPayloadOptimizerService.truncateIfNeeded(openApiFragment,
+                        aiOptimizationProperties.getMaxPromptChars() / 2)
+                : openApiFragment;
 
         // ── Bước 1: RAG Retrieval — Tìm context tương tự từ Vector Store ──────
         log.info("[DocumentEnrichment] Bước 1: Tìm RAG context liên quan...");
@@ -85,14 +93,16 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
                 rawAiText, AiDocumentEnrichmentResponseDto.class);
 
         // ── Bước 5: Lưu Embedding vào Vector Store (Chống Rác + Gắn ID) ────────
-        // THAY ĐỔI: Kiểm tra nếu summary rỗng hoặc quá ngắn thì không lưu để tránh làm "ngu" AI
+        // THAY ĐỔI: Kiểm tra nếu summary rỗng hoặc quá ngắn thì không lưu để tránh làm
+        // "ngu" AI
         if (resultDto.getSummary() != null && !resultDto.getSummary().trim().isEmpty()) {
             String contentToStore = "API Metadata:\n" + optimizedFragment
                     + "\n\nAI Summary:\n" + resultDto.getSummary();
-            
+
             // THAY ĐỔI: Truyền apiEndpointId thay vì chữ null
             vectorSearchService.storeEmbedding(apiEndpointId, contentToStore);
-            log.info("[DocumentEnrichment] Bước 5: Đã lưu embedding mới vào Vector Store (source_id: {}).", apiEndpointId);
+            log.info("[DocumentEnrichment] Bước 5: Đã lưu embedding mới vào Vector Store (source_id: {}).",
+                    apiEndpointId);
         } else {
             log.warn("[DocumentEnrichment] Bước 5: Bỏ qua lưu Vector vì nội dung AI sinh ra rỗng (Tránh rác DB).");
         }

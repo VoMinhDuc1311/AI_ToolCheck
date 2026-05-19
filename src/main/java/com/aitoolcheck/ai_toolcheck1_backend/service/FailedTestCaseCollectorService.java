@@ -17,4 +17,12 @@ public interface FailedTestCaseCollectorService {
      */
     List<FailedTestCaseAiPayload> collectFailedTestCasesForAi(UUID testRunId);
 
+    /**
+     * Thu thập các TestResult bị FAIL hoặc ERROR CHƯA CÓ analysis trong một TestRun.
+     *
+     * @param testRunId ID của đợt chạy test
+     * @return Danh sách các payload chứa đủ dữ kiện để AI phân tích
+     */
+    List<FailedTestCaseAiPayload> collectUnanalyzedFailedTestCasesForAi(UUID testRunId);
+
 }
