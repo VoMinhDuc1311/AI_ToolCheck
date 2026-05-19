@@ -33,10 +33,7 @@ services:
 
   ai-toolcheck-backend:
     container_name: ai-toolcheck-backend
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ai-toolcheck-backend:prod
+    image: ${BACKEND_IMAGE:-ghcr.io/vominhduc1311/ai-toolcheck-backend:dev}
     restart: unless-stopped
     env_file:
       - /etc/ai-toolcheck.env
