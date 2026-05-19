@@ -26,6 +26,8 @@ RUN useradd --system --create-home --shell /usr/sbin/nologin appuser
 
 COPY --from=build /app/target/ai_toolcheck1_backend-0.0.1-SNAPSHOT.jar /app/app.jar
 
+RUN mkdir -p /app/logs && chown -R appuser:appuser /app
+
 ENV SPRING_PROFILES_ACTIVE=prod
 ENV SERVER_PORT=8080
 
