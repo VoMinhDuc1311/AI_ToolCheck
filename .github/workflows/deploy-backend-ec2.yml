@@ -144,9 +144,10 @@ jobs:
           sudo docker ps
 
           echo "=== [10/10] Health check backend ==="
+          echo "Waiting for backend actuator health..."
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:8080/api/api-docs > /dev/null; then
-              echo "Health check PASSED"
+            if curl -fsS http://localhost:8080/api/actuator/health | grep -q '"status"[[:space:]]*:[[:space:]]*"UP"'; then
+              echo "Backend health OK"
               echo "=== AI ToolCheck Docker deploy completed successfully ==="
               exit 0
             fi
@@ -155,10 +156,10 @@ jobs:
             sleep 5
           done
 
-          echo "ERROR: Health check FAILED after 150 seconds"
+          echo "ERROR: Backend health check FAILED after 150 seconds"
 
-          echo "=== Backend logs ==="
-          sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=150 ai-toolcheck-backend || true
+          echo "=== Backend logs (last 200 lines) ==="
+          sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=200 ai-toolcheck-backend || true
 
           echo "=== RabbitMQ logs ==="
           sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 ai-toolcheck-rabbitmq || true
