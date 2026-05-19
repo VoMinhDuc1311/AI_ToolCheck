@@ -38,7 +38,13 @@ jobs:
 
           ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
 
-          ssh -i ~/.ssh/ai-toolcheck-ec2-key "$EC2_USER@$EC2_HOST" "APP_DIR='$EC2_APP_DIR' BRANCH='$DEPLOY_BRANCH' bash -s" << 'EOF'
+          ssh \
+            -i ~/.ssh/ai-toolcheck-ec2-key \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=120 \
+            -o TCPKeepAlive=yes \
+            "$EC2_USER@$EC2_HOST" \
+            "APP_DIR='$EC2_APP_DIR' BRANCH='$DEPLOY_BRANCH' bash -s" << 'EOF'
           set -Eeuo pipefail
 
           ENV_FILE="/etc/ai-toolcheck.env"
@@ -61,9 +67,10 @@ jobs:
           test -f docker-compose.prod.yml || { echo "ERROR: docker-compose.prod.yml missing"; exit 1; }
           test -f "$ENV_FILE" || { echo "ERROR: $ENV_FILE missing on EC2"; exit 1; }
 
-          echo "=== [4/9] Verify Docker and Docker Compose ==="
+          echo "=== [4/9] Verify Docker, Docker Compose, and Buildx ==="
           sudo docker --version
           sudo docker compose version
+          sudo docker buildx version
 
           echo "=== [5/9] Verify required runtime env keys ==="
           sudo grep -q '^RABBITMQ_USERNAME=' "$ENV_FILE" || { echo "ERROR: RABBITMQ_USERNAME missing in $ENV_FILE"; exit 1; }
