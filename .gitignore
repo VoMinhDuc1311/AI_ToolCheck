@@ -16,6 +16,7 @@ HELP.md
 # Keep project design document
 !docs/
 !docs/design.md
+!docs/runbook.md
 
 # ==========================================
 # 3. Security and local environment config
