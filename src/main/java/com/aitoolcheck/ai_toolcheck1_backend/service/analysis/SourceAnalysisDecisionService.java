@@ -10,7 +10,23 @@ public class SourceAnalysisDecisionService {
 
     private final SourceAnalysisScoringService scoringService;
 
-    public SourceStyle determineSourceStyle(double parseSuccessRate, int annotationScore, int structureScore) {
+    // Priority order:
+    // 1. Strong modern signals (@RestController + composed mapping) → MODERN
+    // 2. Strong legacy signals (@RequestMapping(method=...) or @Controller+@ResponseBody) → LEGACY
+    // 3. Score gate (parseSuccessRate >= 0.70, annotationScore >= 50, structureScore >= 50) → MODERN
+    // 4. Default → LEGACY
+    public SourceStyle determineSourceStyle(
+            AnalysisSignals signals,
+            double parseSuccessRate,
+            int annotationScore,
+            int structureScore
+    ) {
+        if (signals.hasStrongModernSpringSignals()) {
+            return SourceStyle.MODERN;
+        }
+        if (signals.hasStrongLegacySignals()) {
+            return SourceStyle.LEGACY;
+        }
         if (parseSuccessRate >= 0.70 && annotationScore >= 50 && structureScore >= 50) {
             return SourceStyle.MODERN;
         }
@@ -30,7 +46,6 @@ public class SourceAnalysisDecisionService {
             int analyzableFiles
     ) {
         double parseFailureRate = scoringService.calculateRate(parsedFailedFiles, analyzableFiles);
-
         return parseSuccessRate < 0.70
                 || annotationScore < 40
                 || structureScore < 40

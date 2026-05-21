@@ -70,7 +70,7 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         int annotationScore = scoringService.calculateAnnotationScore(signals);
         int structureScore = scoringService.calculateStructureScore(analyzableFiles, parseSuccessRate);
 
-        SourceStyle sourceStyle = decisionService.determineSourceStyle(parseSuccessRate, annotationScore, structureScore);
+        SourceStyle sourceStyle = decisionService.determineSourceStyle(signals, parseSuccessRate, annotationScore, structureScore);
         boolean parserRecommended = decisionService.determineParserRecommended(parseSuccessRate, annotationScore, structureScore);
         boolean aiRecommended = decisionService.determineAiRecommended(
                 sourceStyle,
