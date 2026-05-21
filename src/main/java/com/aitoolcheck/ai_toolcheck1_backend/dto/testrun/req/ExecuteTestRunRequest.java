@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
@@ -23,16 +24,21 @@ import java.util.UUID;
 @Builder
 public class ExecuteTestRunRequest {
 
-    @NotNull(message = "testRunId is required")
-    private UUID testRunId;
-
     @NotNull(message = "projectId is required")
     private UUID projectId;
+
+    @Size(max = 150, message = "runName must not exceed 150 characters")
+    private String runName;
+
+    @Size(max = 2000, message = "description must not exceed 2000 characters")
+    private String description;
 
     @Size(max = 100, message = "runCode must not exceed 100 characters")
     private String runCode;
 
     private EnvironmentType environmentName;
+
+    private ExecutionMode executionMode;
 
     @NotBlank(message = "baseUrl is required")
     @Size(max = 500, message = "baseUrl must not exceed 500 characters")
@@ -43,4 +49,4 @@ public class ExecuteTestRunRequest {
 
     /** When true, prepare and validate the request but do not send it. */
     private Boolean dryRun;
-}
+}
