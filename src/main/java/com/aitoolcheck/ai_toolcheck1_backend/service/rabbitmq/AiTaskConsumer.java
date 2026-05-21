@@ -16,6 +16,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.OllamaApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.DocumentEnrichmentService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiEndpointService;
@@ -93,9 +94,10 @@ public class AiTaskConsumer {
     private final DocumentEnrichmentService documentEnrichmentService;
     private final ApiEndpointService apiEndpointService;
     private final TestCaseService testCaseService;
-    // Injected for legacy_code_reader fallback routing (Ollama → Gemini)
+    // Injected for legacy_code_reader fallback routing (Gemini → Ollama)
     private final AiModelRouterService aiModelRouterService;
     private final OllamaProperties ollamaProperties;
+    private final OllamaApiClientService ollamaApiClientService;
 
     // =========================================================================
     // ENTRY POINT - Phase 4: Quản lý trạng thái Job
@@ -235,57 +237,87 @@ public class AiTaskConsumer {
     // =========================================================================
 
     /**
-     * Skill 0: Legacy Code Reader — Tiered Fallback (Ollama Tier1 → Gemini).
+     * Skill 0: Legacy Code Reader — Gemini primary → Ollama fallback.
      *
-     * <p>Previously called Gemini directly, which caused a hard failure when
-     * Gemini quota/rate-limit was hit. Now routes through {@link AiModelRouterService}
-     * so Ollama (qwen2.5-coder:7b) is attempted first, Gemini is the cloud fallback.
+     * <p><b>Fallback order (business requirement):</b>
+     * <ol>
+     *   <li><b>Gemini Cloud (primary):</b> gemini-2.5-flash via {@code getFullAiResponse()}.
+     *       Preferred because it produces structured JSON with usageMetadata and
+     *       enforces the responseSchema defined in {@code GeminiApiClientServiceImpl}.</li>
+     *   <li><b>Ollama (fallback):</b> qwen2.5-coder:7b. Only invoked when Gemini fails
+     *       due to quota exhaustion, rate-limit (429), network error, or any exception.
+     *       Ollama does not return usageMetadata, so token counts are estimated.</li>
+     *   <li><b>All failed:</b> Job marked FAILED with provider error details.</li>
+     * </ol>
      *
-     * <p>Job lifecycle: RUNNING → SUCCESS (on any provider success) or FAILED (all providers fail).
+     * <p>Note: {@link AiModelRouterService#executeWithFallback(String)} is Ollama-first
+     * and is intentionally NOT used here. {@code enrich_api_doc} and
+     * {@code generate_testcases} use the router because Ollama is their preferred
+     * low-cost provider. {@code legacy_code_reader} requires Gemini's structured JSON
+     * schema enforcement as the primary path.
      *
-     * @return rawAiResponse string (used for audit log if error occurs downstream).
+     * @return rawAiResponse string (used for audit log if parse error occurs downstream).
      */
     private String executeLegacyCodeReader(AiTaskMessage message, AiJobLog jobLog) {
-        log.info("[LegacyCodeReader] Starting — prompt: {} chars. Router: Ollama({}) → Gemini",
-                message.getPromptText().length(), ollamaProperties.getPrimaryModel());
+        log.info("[LegacyCodeReader] Starting — prompt: {} chars. Order: Gemini → Ollama fallback",
+                message.getPromptText().length());
 
         String rawAiResponse;
         String modelUsed;
-        int tokenInput = message.getPromptText().length() / 4; // estimated
+        int tokenInput = 0;
         int tokenOutput = 0;
 
-        // ── Route: Ollama (primary) → Gemini (cloud fallback) ────────────────
-        // AiModelRouterService.executeWithFallback() implements the 3-tier chain:
-        //   Tier 1 → Ollama primaryModel (qwen2.5-coder:7b)
-        //   Tier 2 → Ollama fallbackModel
-        //   Tier 3 → Gemini Cloud
-        // It returns raw text or throws AiJsonParseException if all tiers fail.
+        // ── TIER 1: Gemini Cloud (primary) ───────────────────────────────────
         try {
-            log.info("[LegacyCodeReader][Router] Delegating to AiModelRouterService...");
-            rawAiResponse = aiModelRouterService.executeWithFallback(message.getPromptText());
-            // Router throws if all providers fail, so reaching here means at least one succeeded.
-            modelUsed = ollamaProperties.getPrimaryModel(); // conservative: Ollama likely served it
-            tokenOutput = rawAiResponse.length() / 4;
-        } catch (Exception routerEx) {
-            // All providers failed — router already logged the full chain failure details
-            log.error("[LegacyCodeReader][Router] All providers failed: {}", routerEx.getMessage());
-            aiJobLogService.markJobAsFailed(jobLog.getId(),
-                    "[LegacyCodeReader] All AI providers failed: " + routerEx.getMessage());
-            // Re-throw as AiJsonParseException so the caller records the audit log correctly
-            throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX,
-                    "[LegacyCodeReader] All providers failed: " + routerEx.getMessage(), routerEx);
+            log.info("[LegacyCodeReader][Tier1] Calling Gemini Cloud (primary)...");
+
+            com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse geminiResponse =
+                    geminiApiClientService.getFullAiResponse(message.getPromptText());
+
+            // Extract token counts from Gemini metadata
+            if (geminiResponse.getUsageMetadata() != null) {
+                tokenInput = geminiResponse.getUsageMetadata().getPromptTokenCount() != null
+                        ? geminiResponse.getUsageMetadata().getPromptTokenCount() : 0;
+                tokenOutput = geminiResponse.getUsageMetadata().getCandidatesTokenCount() != null
+                        ? geminiResponse.getUsageMetadata().getCandidatesTokenCount() : 0;
+            }
+
+            rawAiResponse = geminiResponse.extractText();
+            modelUsed = "gemini-2.5-flash";
+            log.info("[LegacyCodeReader][Tier1] Gemini succeeded — tokenIn={}, tokenOut={}",
+                    tokenInput, tokenOutput);
+
+        } catch (Exception geminiEx) {
+            // ── TIER 2: Ollama fallback ───────────────────────────────────────
+            log.warn("[LegacyCodeReader][Tier1] Gemini failed: {}. Falling back to Ollama...",
+                    geminiEx.getMessage());
+
+            try {
+                log.info("[LegacyCodeReader][Tier2] Calling Ollama model: {}",
+                        ollamaProperties.getPrimaryModel());
+
+                rawAiResponse = ollamaApiClientService.generateText(message.getPromptText());
+                modelUsed = ollamaProperties.getPrimaryModel();
+                // Ollama does not return usageMetadata — estimate token counts from text length
+                tokenInput = message.getPromptText().length() / 4;
+                tokenOutput = rawAiResponse.length() / 4;
+                log.info("[LegacyCodeReader][Tier2] Ollama succeeded — model: {}", modelUsed);
+
+            } catch (Exception ollamaEx) {
+                // ── ALL FAILED ────────────────────────────────────────────────
+                String errorDetail = String.format(
+                        "[LegacyCodeReader] All providers failed. Gemini: %s | Ollama: %s",
+                        geminiEx.getMessage(), ollamaEx.getMessage());
+                log.error("[LegacyCodeReader] {}", errorDetail);
+                aiJobLogService.markJobAsFailed(jobLog.getId(), errorDetail);
+                throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, errorDetail, ollamaEx);
+            }
         }
 
-        // ── Update tokens immediately (before parse, so we don't lose them on parse error) ──
+        // ── Update tokens immediately (before parse — don't lose them on parse error) ──
         aiJobLogService.updateTokens(jobLog.getId(), tokenInput, tokenOutput);
-        log.info("[LegacyCodeReader] Updated tokens: input≈{}, output≈{}", tokenInput, tokenOutput);
-
-        // ── Record model used (best-effort derivation) ────────────────────────
-        // If Gemini was actually used, the router will have logged Tier3. We record
-        // primaryModel here as the initial assumption; if the parse succeeds, the
-        // job will complete correctly either way.
         aiJobLogService.updateAiModelUsed(jobLog.getId(), modelUsed);
-        log.info("[LegacyCodeReader] AI model used (estimated): {}", modelUsed);
+        log.info("[LegacyCodeReader] Provider: {}, tokenIn={}, tokenOut={}", modelUsed, tokenInput, tokenOutput);
 
         // ── Parse JSON ───────────────────────────────────────────────────────
         String cleanJson = aiJsonParserService.extractAndSanitizeJson(rawAiResponse);
@@ -307,7 +339,7 @@ public class AiTaskConsumer {
 
         // ── Mark SUCCESS ─────────────────────────────────────────────────────
         aiJobLogService.markJobAsSuccess(jobLog.getId(), tokenInput, tokenOutput);
-        log.info("[LegacyCodeReader] ✓ Job marked SUCCESS (JobId: {})", jobLog.getId());
+        log.info("[LegacyCodeReader] ✓ Job marked SUCCESS (JobId: {}), model: {}", jobLog.getId(), modelUsed);
 
         return rawAiResponse;
     }
