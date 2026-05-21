@@ -45,11 +45,12 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     private final ApiEndpointRepository apiEndpointRepository;
     private final ProjectAccessService projectAccessService;
     private final CurrentUserService currentUserService;
+    private final com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties geminiProperties;
 
     @Override
     @Transactional
     public AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
-                                                  UUID projectId, UUID sourceFileId, UUID apiEndpointId) {
+                                                   UUID projectId, UUID sourceFileId, UUID apiEndpointId) {
         projectAccessService.requireCanTriggerAiJob(projectId);
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
@@ -78,7 +79,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .executionStatus(ExecutionStatus.PENDING)
                 .startedAt(LocalDateTime.now())
                 .jobType(jobType)
-                .modelName("gemini-1.5-flash")
+                .modelName(geminiProperties.getModel())
                 .sourceProject(projectRef)
                 .aiSkill(aiSkill)
                 .build();
@@ -88,8 +89,8 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         }
 
         AiJobLog savedJob = aiJobLogRepository.save(jobLog);
-        log.info("Đã tạo AiJobLog ID: [{}] trạng thái PENDING cho Project: [{}]",
-                 savedJob.getId(), projectId);
+        log.info("Đã tạo AiJobLog ID: [{}] trạng thái PENDING cho Project: [{}] với model: [{}]",
+                 savedJob.getId(), projectId, geminiProperties.getModel());
 
         AiTaskMessage message = AiTaskMessage.builder()
                 .jobId(savedJob.getId().toString())
@@ -105,7 +106,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 @Override
                 public void afterCommit() {
                     aiTaskProducer.sendAiTask(message);
-                    log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}]", savedJob.getId());
+                    log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}], sourceFileId: [{}]", savedJob.getId(), message.getSourceFileId());
                 }
             }
         );
@@ -133,7 +134,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                     endpoint.getId(),
                     JobType.DOCUMENT_ENRICHMENT,
                     aiSkill.getId(),
-                    "gemini-1.5-flash",
+                    geminiProperties.getModel(),
                     false
             );
 

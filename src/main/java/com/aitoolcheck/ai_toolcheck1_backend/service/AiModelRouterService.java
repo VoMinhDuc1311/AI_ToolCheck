@@ -7,6 +7,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.Erro
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
 
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
 import java.util.UUID;
 
 import lombok.RequiredArgsConstructor;
@@ -48,6 +49,7 @@ public class AiModelRouterService {
     private final AiJobLogService aiJobLogService;
     private final AiOptimizationProperties aiOptimizationProperties;
     private final AiPayloadOptimizerService aiPayloadOptimizerService;
+    private final GeminiProperties geminiProperties;
 
     /**
      * Thực thi prompt qua chuỗi fallback 3 tầng và trả về raw text từ LLM đầu tiên
@@ -170,12 +172,12 @@ public class AiModelRouterService {
                 tryOllama = false;
             }
         }
-
+ 
         if (!tryOllama) {
             // FALLBACK LOGIC: Chuyển sang Tier 2 (Gemini Cloud)
             try {
-                modelName = "gemini-1.5-flash";
-                log.info("[Router][Tier2] Đang gọi Gemini Cloud...");
+                modelName = geminiProperties.getModel();
+                log.info("[Router][Tier2] Đang gọi Gemini Cloud với model: {}...", modelName);
 
                 // Tránh rate limit
                 try {
