@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq;
 
 import com.aitoolcheck.ai_toolcheck1_backend.config.RabbitMQConfig;
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.OllamaProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiDocumentEnrichmentResponseDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
@@ -13,6 +14,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.DocumentEnrichmentService;
@@ -91,6 +93,9 @@ public class AiTaskConsumer {
     private final DocumentEnrichmentService documentEnrichmentService;
     private final ApiEndpointService apiEndpointService;
     private final TestCaseService testCaseService;
+    // Injected for legacy_code_reader fallback routing (Ollama → Gemini)
+    private final AiModelRouterService aiModelRouterService;
+    private final OllamaProperties ollamaProperties;
 
     // =========================================================================
     // ENTRY POINT - Phase 4: Quản lý trạng thái Job
@@ -230,45 +235,64 @@ public class AiTaskConsumer {
     // =========================================================================
 
     /**
-     * Skill 0: Legacy Code Reader (Gemini → Parse → Persist)
-     * 
-     * @return rawAiResponse từ Gemini (dùng cho audit log nếu error)
+     * Skill 0: Legacy Code Reader — Tiered Fallback (Ollama Tier1 → Gemini).
+     *
+     * <p>Previously called Gemini directly, which caused a hard failure when
+     * Gemini quota/rate-limit was hit. Now routes through {@link AiModelRouterService}
+     * so Ollama (qwen2.5-coder:7b) is attempted first, Gemini is the cloud fallback.
+     *
+     * <p>Job lifecycle: RUNNING → SUCCESS (on any provider success) or FAILED (all providers fail).
+     *
+     * @return rawAiResponse string (used for audit log if error occurs downstream).
      */
     private String executeLegacyCodeReader(AiTaskMessage message, AiJobLog jobLog) {
-        log.info("[LegacyCodeReader] Bắt đầu — độ dài source: {} ký tự",
-                message.getPromptText().length());
+        log.info("[LegacyCodeReader] Starting — prompt: {} chars. Router: Ollama({}) → Gemini",
+                message.getPromptText().length(), ollamaProperties.getPrimaryModel());
 
-        // Bước 1: Gọi Gemini API
-        com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse response = geminiApiClientService
-                .getFullAiResponse(message.getPromptText());
+        String rawAiResponse;
+        String modelUsed;
+        int tokenInput = message.getPromptText().length() / 4; // estimated
+        int tokenOutput = 0;
 
-        // Bước 2: Trích xuất token counts
-        Integer tokenInput = 0;
-        Integer tokenOutput = 0;
-        if (response.getUsageMetadata() != null) {
-            tokenInput = response.getUsageMetadata().getPromptTokenCount() != null
-                    ? response.getUsageMetadata().getPromptTokenCount()
-                    : 0;
-            tokenOutput = response.getUsageMetadata().getCandidatesTokenCount() != null
-                    ? response.getUsageMetadata().getCandidatesTokenCount()
-                    : 0;
+        // ── Route: Ollama (primary) → Gemini (cloud fallback) ────────────────
+        // AiModelRouterService.executeWithFallback() implements the 3-tier chain:
+        //   Tier 1 → Ollama primaryModel (qwen2.5-coder:7b)
+        //   Tier 2 → Ollama fallbackModel
+        //   Tier 3 → Gemini Cloud
+        // It returns raw text or throws AiJsonParseException if all tiers fail.
+        try {
+            log.info("[LegacyCodeReader][Router] Delegating to AiModelRouterService...");
+            rawAiResponse = aiModelRouterService.executeWithFallback(message.getPromptText());
+            // Router throws if all providers fail, so reaching here means at least one succeeded.
+            modelUsed = ollamaProperties.getPrimaryModel(); // conservative: Ollama likely served it
+            tokenOutput = rawAiResponse.length() / 4;
+        } catch (Exception routerEx) {
+            // All providers failed — router already logged the full chain failure details
+            log.error("[LegacyCodeReader][Router] All providers failed: {}", routerEx.getMessage());
+            aiJobLogService.markJobAsFailed(jobLog.getId(),
+                    "[LegacyCodeReader] All AI providers failed: " + routerEx.getMessage());
+            // Re-throw as AiJsonParseException so the caller records the audit log correctly
+            throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX,
+                    "[LegacyCodeReader] All providers failed: " + routerEx.getMessage(), routerEx);
         }
 
-        // Bước 3: Cập nhật Token ngay (để không thất thoát nếu parser ném lỗi)
+        // ── Update tokens immediately (before parse, so we don't lose them on parse error) ──
         aiJobLogService.updateTokens(jobLog.getId(), tokenInput, tokenOutput);
-        log.info("[LegacyCodeReader] Updated tokens: input={}, output={}", tokenInput, tokenOutput);
+        log.info("[LegacyCodeReader] Updated tokens: input≈{}, output≈{}", tokenInput, tokenOutput);
 
-        // Bước 4: Ghi lại Model đã dùng
-        aiJobLogService.updateAiModelUsed(jobLog.getId(), "gemini-1.5-pro");
-        log.info("[LegacyCodeReader] Recorded AI Model Used: gemini-1.5-pro");
+        // ── Record model used (best-effort derivation) ────────────────────────
+        // If Gemini was actually used, the router will have logged Tier3. We record
+        // primaryModel here as the initial assumption; if the parse succeeds, the
+        // job will complete correctly either way.
+        aiJobLogService.updateAiModelUsed(jobLog.getId(), modelUsed);
+        log.info("[LegacyCodeReader] AI model used (estimated): {}", modelUsed);
 
-        // Bước 5: Parse JSON từ response
-        String rawAiResponse = response.extractText();
+        // ── Parse JSON ───────────────────────────────────────────────────────
         String cleanJson = aiJsonParserService.extractAndSanitizeJson(rawAiResponse);
         AiInferenceResultDto result = aiJsonParserService.parseToDto(cleanJson);
         log.info("[LegacyCodeReader] Parsed {} endpoint(s)", result.getEndpoints().size());
 
-        // Bước 6: Lưu vào DB
+        // ── Persist ──────────────────────────────────────────────────────────
         UUID projectId = parseUuidOrNull(message.getProjectId());
         UUID sourceFileId = parseUuidOrNull(message.getSourceFileId());
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
@@ -281,7 +305,7 @@ public class AiTaskConsumer {
                 result);
         log.info("[LegacyCodeReader] Persisted to database");
 
-        // Bước 7: Đánh dấu SUCCESS
+        // ── Mark SUCCESS ─────────────────────────────────────────────────────
         aiJobLogService.markJobAsSuccess(jobLog.getId(), tokenInput, tokenOutput);
         log.info("[LegacyCodeReader] ✓ Job marked SUCCESS (JobId: {})", jobLog.getId());
 

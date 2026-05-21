@@ -42,8 +42,10 @@ public class OllamaWebClientConfig {
      */
     @Bean(name = "ollamaWebClient")
     public WebClient ollamaWebClient() {
-        log.info("[OllamaWebClientConfig] Initializing OllamaWebClient with base URL: {}",
-                ollamaProperties.getBaseUrl());
+        log.info("[OllamaWebClientConfig] Initializing OllamaWebClient — baseUrl: {}, primaryModel: {}, embedModel: {}",
+                ollamaProperties.getBaseUrl(),
+                ollamaProperties.getPrimaryModel(),
+                ollamaProperties.getEmbedModel());
 
         ConnectionProvider connectionProvider = ConnectionProvider.builder("ollama-pool")
                 .maxConnections(20)

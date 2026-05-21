@@ -8,8 +8,74 @@ networks:
 volumes:
   rabbitmq-data:
     name: ai-toolcheck-rabbitmq-data
+  # Reuse the existing Ollama model volume from the old docker-compose.yml stack.
+  # Using `external: true` ensures Docker does NOT delete models on `docker compose down`.
+  ollama_data:
+    external: true
+    name: ollama_data_volume
 
 services:
+  # ---------------------------------------------------------
+  # OLLAMA SERVER — CPU-only (EC2 t3.micro has no GPU)
+  # ---------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    # No NVIDIA / GPU config — EC2 t3.micro is CPU-only
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - ai-toolcheck-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:11434/ | grep -q 'Ollama is running'"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+
+  # ---------------------------------------------------------
+  # OLLAMA MODEL PULLER — Pulls required models once on startup
+  # ---------------------------------------------------------
+  ollama-pull-models:
+    image: curlimages/curl:latest
+    container_name: ollama-pull-models
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: "no"
+    networks:
+      - ai-toolcheck-network
+    command: >
+      sh -c "
+        echo '=== Waiting for Ollama to be ready ==='
+        while ! curl -sf http://ollama:11434/ | grep -q 'Ollama is running'; do
+          echo 'Ollama not ready yet, waiting 5s...'
+          sleep 5
+        done
+
+        echo '=== Pulling qwen2.5-coder:7b ==='
+        curl -X POST http://ollama:11434/api/pull \
+          -H 'Content-Type: application/json' \
+          -d '{\"name\":\"qwen2.5-coder:7b\"}' \
+          --no-buffer
+
+        echo ''
+        echo '=== Pulling mxbai-embed-large ==='
+        curl -X POST http://ollama:11434/api/pull \
+          -H 'Content-Type: application/json' \
+          -d '{\"name\":\"mxbai-embed-large\"}' \
+          --no-buffer
+
+        echo ''
+        echo '=== Model pull complete ==='
+      "
+
+  # ---------------------------------------------------------
+  # RABBITMQ
+  # ---------------------------------------------------------
   ai-toolcheck-rabbitmq:
     image: rabbitmq:3-management
     container_name: ai-toolcheck-rabbitmq
@@ -31,6 +97,9 @@ services:
     networks:
       - ai-toolcheck-network
 
+  # ---------------------------------------------------------
+  # BACKEND
+  # ---------------------------------------------------------
   ai-toolcheck-backend:
     container_name: ai-toolcheck-backend
     image: ${BACKEND_IMAGE:-ghcr.io/vominhduc1311/ai-toolcheck-backend:dev}
@@ -48,6 +117,8 @@ services:
       - "127.0.0.1:8080:8080"
     depends_on:
       ai-toolcheck-rabbitmq:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     networks:
       - ai-toolcheck-network
