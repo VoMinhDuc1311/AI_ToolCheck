@@ -10,8 +10,10 @@ public class SourceAnalysisSummaryBuilder {
         if (sourceStyle == SourceStyle.MODERN && parserRecommended && !aiRecommended) {
             return "Modern Spring project. Parser recommended because annotation and structure scores are high.";
         }
-        if (sourceStyle == SourceStyle.MODERN && parserRecommended) {
-            return "Modern Spring project with mixed parse confidence. Parser can be used, but AI fallback is also recommended.";
+        if (sourceStyle == SourceStyle.MODERN) {
+            // Covers: parserRecommended=true+aiRecommended=true  OR  parserRecommended=false+aiRecommended=true
+            // Both are "mixed confidence" — modern architecture but some files had parse issues.
+            return "Modern Spring project with mixed parse confidence. AI fallback may be used for weak or unparseable files.";
         }
         return "Legacy or weakly structured project. AI fallback recommended because parse success rate or scores are low.";
     }

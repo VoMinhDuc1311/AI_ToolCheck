@@ -22,8 +22,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.EndpointSchemaMapReposit
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataParserService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.JavaParserSupport;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
-import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.body.ClassOrInterfaceDeclaration;
 import com.github.javaparser.ast.body.FieldDeclaration;
@@ -87,7 +87,7 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
         List<SourceFile> springCandidateFiles = controllerFiles.isEmpty() ? sourceFiles : controllerFiles;
         for (SourceFile controllerFile : springCandidateFiles) {
             try {
-                CompilationUnit compilationUnit = StaticJavaParser.parse(controllerFile.getSourceContent());
+                CompilationUnit compilationUnit = JavaParserSupport.parse(controllerFile.getSourceContent());
                 parseControllerFile(sourceProject, controllerFile, sourceFiles, compilationUnit, schemaCache, schemaFieldsCreated, parsedEndpointIds, counters);
                 if (counters.lastFileEndpointCount > 0) {
                     counters.parsedControllerFiles++;
@@ -278,7 +278,7 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
                 continue;
             }
             try {
-                CompilationUnit compilationUnit = StaticJavaParser.parse(sourceFile.getSourceContent());
+                CompilationUnit compilationUnit = JavaParserSupport.parse(sourceFile.getSourceContent());
                 parseLegacyCompilationUnit(sourceProject, sourceFile, compilationUnit, parsedEndpointIds, counters);
             } catch (Exception e) {
                 log.warn(
@@ -565,7 +565,7 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
 
         findSchemaSourceFile(projectId, schemaName, allFiles).ifPresent(sourceFile -> {
             try {
-                CompilationUnit compilationUnit = StaticJavaParser.parse(sourceFile.getSourceContent());
+                CompilationUnit compilationUnit = JavaParserSupport.parse(sourceFile.getSourceContent());
                 List<ApiSchemaField> fields = new ArrayList<>();
 
                 for (ClassOrInterfaceDeclaration declaration : compilationUnit.findAll(ClassOrInterfaceDeclaration.class)) {
