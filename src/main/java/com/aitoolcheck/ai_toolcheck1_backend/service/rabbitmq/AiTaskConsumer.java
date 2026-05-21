@@ -21,6 +21,10 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.DocumentEnrichmentService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiEndpointService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
+import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 
 import com.rabbitmq.client.Channel;
 import lombok.RequiredArgsConstructor;
@@ -98,6 +102,8 @@ public class AiTaskConsumer {
     private final AiModelRouterService aiModelRouterService;
     private final OllamaProperties ollamaProperties;
     private final OllamaApiClientService ollamaApiClientService;
+    private final GeminiProperties geminiProperties;
+    private final SourceFileRepository sourceFileRepository;
 
     // =========================================================================
     // ENTRY POINT - Phase 4: Quản lý trạng thái Job
@@ -237,42 +243,123 @@ public class AiTaskConsumer {
     // =========================================================================
 
     /**
-     * Skill 0: Legacy Code Reader — Gemini primary → Ollama fallback.
-     *
-     * <p><b>Fallback order (business requirement):</b>
-     * <ol>
-     *   <li><b>Gemini Cloud (primary):</b> gemini-2.5-flash via {@code getFullAiResponse()}.
-     *       Preferred because it produces structured JSON with usageMetadata and
-     *       enforces the responseSchema defined in {@code GeminiApiClientServiceImpl}.</li>
-     *   <li><b>Ollama (fallback):</b> qwen2.5-coder:7b. Only invoked when Gemini fails
-     *       due to quota exhaustion, rate-limit (429), network error, or any exception.
-     *       Ollama does not return usageMetadata, so token counts are estimated.</li>
-     *   <li><b>All failed:</b> Job marked FAILED with provider error details.</li>
-     * </ol>
-     *
-     * <p>Note: {@link AiModelRouterService#executeWithFallback(String)} is Ollama-first
-     * and is intentionally NOT used here. {@code enrich_api_doc} and
-     * {@code generate_testcases} use the router because Ollama is their preferred
-     * low-cost provider. {@code legacy_code_reader} requires Gemini's structured JSON
-     * schema enforcement as the primary path.
-     *
-     * @return rawAiResponse string (used for audit log if parse error occurs downstream).
+     * Helper to build the legacy code reader prompt containing instructions, file metadata, and the raw code.
      */
-    private String executeLegacyCodeReader(AiTaskMessage message, AiJobLog jobLog) {
-        log.info("[LegacyCodeReader] Starting — prompt: {} chars. Order: Gemini → Ollama fallback",
-                message.getPromptText().length());
+    private String buildLegacyCodeReaderPrompt(String promptText, SourceFile sourceFile) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Role/Task Instruction:\n");
+        sb.append(promptText).append("\n\n");
+        sb.append("Source File Metadata:\n");
+        sb.append("- Source File ID: ").append(sourceFile.getId()).append("\n");
+        sb.append("- File Name: ").append(sourceFile.getFileName()).append("\n");
+        sb.append("- File Path: ").append(sourceFile.getFilePath()).append("\n");
+        sb.append("- File Type: ").append(sourceFile.getFileType()).append("\n");
+        sb.append("- Project ID: ").append(sourceFile.getSourceProject().getId()).append("\n\n");
+        sb.append("Source Code to Analyze:\n");
+        sb.append("```java\n");
+        sb.append(sourceFile.getSourceContent()).append("\n");
+        sb.append("```\n\n");
+        sb.append("Strict Extraction Rules:\n");
+        sb.append("1. Detect servlet/controller-style endpoints.\n");
+        sb.append("2. Detect `@Controller`, `@RestController`, or `@RequestMapping` annotations if present.\n");
+        sb.append("3. Detect legacy route patterns if applicable.\n");
+        sb.append("4. Extract HTTP method, request path, parameters, and inferred request/response structures when inferable.\n");
+        sb.append("5. Strict output format: Return ONLY valid JSON matching the required schema. The `endpoints` list must contain all extracted endpoints. Do not include any explanation or markdown outside of the JSON block.\n");
+        return sb.toString();
+    }
 
-        String rawAiResponse;
-        String modelUsed;
+    private String executeLegacyCodeReader(AiTaskMessage message, AiJobLog jobLog) {
+        log.info("[LegacyCodeReader] Starting. Message jobId: [{}], sourceFileId: [{}]",
+                message.getJobId(), message.getSourceFileId());
+
+        // 1. Validate sourceFileId is actually present in message
+        if (message.getSourceFileId() == null || message.getSourceFileId().trim().isEmpty()) {
+            String errorMsg = "Missing required parameter 'sourceFileId' in the task message.";
+            log.error("[LegacyCodeReader] ❌ {}", errorMsg);
+            aiJobLogService.markJobAsFailed(jobLog.getId(), errorMsg);
+            throw new IllegalArgumentException(errorMsg);
+        }
+
+        UUID sourceFileId;
+        try {
+            sourceFileId = UUID.fromString(message.getSourceFileId());
+        } catch (IllegalArgumentException e) {
+            String errorMsg = "Invalid UUID format for 'sourceFileId': " + message.getSourceFileId();
+            log.error("[LegacyCodeReader] ❌ {}", errorMsg);
+            aiJobLogService.markJobAsFailed(jobLog.getId(), errorMsg);
+            throw e;
+        }
+
+        // 2. Retrieve SourceFile from database
+        SourceFile sourceFile = sourceFileRepository.findById(sourceFileId)
+                .orElse(null);
+        if (sourceFile == null) {
+            String errorMsg = "SourceFile not found with ID: " + sourceFileId;
+            log.error("[LegacyCodeReader] ❌ {}", errorMsg);
+            aiJobLogService.markJobAsFailed(jobLog.getId(), errorMsg);
+            throw new ResourceNotFoundException(errorMsg);
+        }
+
+        // Validate activeFlag & deletedFlag
+        if (Boolean.FALSE.equals(sourceFile.getActiveFlag()) || Boolean.TRUE.equals(sourceFile.getDeletedFlag())) {
+            String errorMsg = String.format("SourceFile is inactive or deleted. ActiveFlag: %s, DeletedFlag: %s",
+                    sourceFile.getActiveFlag(), sourceFile.getDeletedFlag());
+            log.error("[LegacyCodeReader] ❌ {}", errorMsg);
+            aiJobLogService.markJobAsFailed(jobLog.getId(), errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+
+        // Validate Project match
+        UUID messageProjectId = parseUuidOrNull(message.getProjectId());
+        if (sourceFile.getSourceProject() == null || !sourceFile.getSourceProject().getId().equals(messageProjectId)) {
+            String errorMsg = String.format("SourceFile project ID mismatch. Expected project: %s, got: %s",
+                    messageProjectId, sourceFile.getSourceProject() != null ? sourceFile.getSourceProject().getId() : null);
+            log.error("[LegacyCodeReader] ❌ {}", errorMsg);
+            aiJobLogService.markJobAsFailed(jobLog.getId(), errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+
+        // Validate content
+        String sourceContent = sourceFile.getSourceContent();
+        if (sourceContent == null || sourceContent.trim().isEmpty()) {
+            String errorMsg = "SourceFile content is empty for ID: " + sourceFileId;
+            log.error("[LegacyCodeReader] ❌ {}", errorMsg);
+            aiJobLogService.markJobAsFailed(jobLog.getId(), errorMsg);
+            throw new IllegalStateException(errorMsg);
+        }
+
+        // 3. Build Final Prompt
+        String finalPrompt = buildLegacyCodeReaderPrompt(message.getPromptText(), sourceFile);
+
+        // Add focused logs for verification:
+        int promptTextLength = message.getPromptText() != null ? message.getPromptText().length() : 0;
+        int sourceContentLength = sourceContent.length();
+        int finalPromptLength = finalPrompt.length();
+        log.info("[LegacyCodeReader] Prompt metadata verification:");
+        log.info("  ├─ sourceFileId: {}", sourceFileId);
+        log.info("  ├─ filePath: {}", sourceFile.getFilePath());
+        log.info("  ├─ fileName: {}", sourceFile.getFileName());
+        log.info("  ├─ promptTextLength: {}", promptTextLength);
+        log.info("  ├─ sourceContentLength: {}", sourceContentLength);
+        log.info("  └─ finalPromptLength: {}", finalPromptLength);
+
+        String rawAiResponse = null;
+        String modelUsed = null;
         int tokenInput = 0;
         int tokenOutput = 0;
+        AiInferenceResultDto result = null;
+        String cleanJson = null;
+
+        String geminiErrorSummary = null;
+        String ollamaErrorSummary = null;
 
         // ── TIER 1: Gemini Cloud (primary) ───────────────────────────────────
         try {
-            log.info("[LegacyCodeReader][Tier1] Calling Gemini Cloud (primary)...");
+            log.info("[LegacyCodeReader][Tier1] Calling Gemini Cloud (primary)... Model: {}", geminiProperties.getModel());
+            modelUsed = geminiProperties.getModel();
 
             com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse geminiResponse =
-                    geminiApiClientService.getFullAiResponse(message.getPromptText());
+                    geminiApiClientService.getFullAiResponse(finalPrompt);
 
             // Extract token counts from Gemini metadata
             if (geminiResponse.getUsageMetadata() != null) {
@@ -280,53 +367,73 @@ public class AiTaskConsumer {
                         ? geminiResponse.getUsageMetadata().getPromptTokenCount() : 0;
                 tokenOutput = geminiResponse.getUsageMetadata().getCandidatesTokenCount() != null
                         ? geminiResponse.getUsageMetadata().getCandidatesTokenCount() : 0;
+            } else {
+                tokenInput = finalPrompt.length() / 4;
+                tokenOutput = geminiResponse.extractText().length() / 4;
             }
 
             rawAiResponse = geminiResponse.extractText();
-            modelUsed = "gemini-2.5-flash";
-            log.info("[LegacyCodeReader][Tier1] Gemini succeeded — tokenIn={}, tokenOut={}",
-                    tokenInput, tokenOutput);
+            log.info("[LegacyCodeReader][Tier1] Gemini API response succeeded. Length: {} chars.", rawAiResponse.length());
+
+            // Validate and parse Gemini response
+            cleanJson = aiJsonParserService.extractAndSanitizeJson(rawAiResponse);
+            result = aiJsonParserService.parseToDto(cleanJson);
+
+            log.info("[LegacyCodeReader][Tier1] Gemini parsed and validated successfully. extracted endpoints: {}", result.getEndpoints().size());
 
         } catch (Exception geminiEx) {
-            // ── TIER 2: Ollama fallback ───────────────────────────────────────
-            log.warn("[LegacyCodeReader][Tier1] Gemini failed: {}. Falling back to Ollama...",
+            // Either provider call failed, OR parse / validation failed
+            geminiErrorSummary = geminiEx.getMessage();
+            log.warn("[LegacyCodeReader][Tier1] Gemini failed (Provider or Parser validation exception): {}. Falling back to Ollama...",
                     geminiEx.getMessage());
 
+            // ── TIER 2: Ollama fallback ───────────────────────────────────────
             try {
-                log.info("[LegacyCodeReader][Tier2] Calling Ollama model: {}",
-                        ollamaProperties.getPrimaryModel());
-
-                rawAiResponse = ollamaApiClientService.generateText(message.getPromptText());
                 modelUsed = ollamaProperties.getPrimaryModel();
-                // Ollama does not return usageMetadata — estimate token counts from text length
-                tokenInput = message.getPromptText().length() / 4;
+                log.info("[LegacyCodeReader][Tier2] Calling Ollama model: {}", modelUsed);
+
+                rawAiResponse = ollamaApiClientService.generateText(finalPrompt);
+                tokenInput = finalPrompt.length() / 4;
                 tokenOutput = rawAiResponse.length() / 4;
-                log.info("[LegacyCodeReader][Tier2] Ollama succeeded — model: {}", modelUsed);
+
+                log.info("[LegacyCodeReader][Tier2] Ollama API response succeeded. Length: {} chars.", rawAiResponse.length());
+
+                // Validate and parse Ollama response
+                cleanJson = aiJsonParserService.extractAndSanitizeJson(rawAiResponse);
+                result = aiJsonParserService.parseToDto(cleanJson);
+
+                log.info("[LegacyCodeReader][Tier2] Ollama parsed and validated successfully. extracted endpoints: {}", result.getEndpoints().size());
 
             } catch (Exception ollamaEx) {
-                // ── ALL FAILED ────────────────────────────────────────────────
-                String errorDetail = String.format(
-                        "[LegacyCodeReader] All providers failed. Gemini: %s | Ollama: %s",
-                        geminiEx.getMessage(), ollamaEx.getMessage());
-                log.error("[LegacyCodeReader] {}", errorDetail);
+                ollamaErrorSummary = ollamaEx.getMessage();
+                log.error("[LegacyCodeReader][Tier2] Ollama also failed: {}", ollamaEx.getMessage());
+
+                // Check if the reason was empty endpoints (DTO validation failure)
+                boolean geminiNoEndpoints = geminiErrorSummary != null && geminiErrorSummary.contains("endpoints must not be empty");
+                boolean ollamaNoEndpoints = ollamaErrorSummary != null && ollamaErrorSummary.contains("endpoints must not be empty");
+
+                String errorDetail;
+                if (geminiNoEndpoints || ollamaNoEndpoints) {
+                    errorDetail = String.format("No endpoints extracted from selected source file [ID: %s, Path: %s]",
+                            sourceFileId, sourceFile.getFilePath());
+                } else {
+                    errorDetail = String.format(
+                            "[LegacyCodeReader] All providers failed. Gemini: %s | Ollama: %s",
+                            geminiErrorSummary, ollamaErrorSummary);
+                }
+
                 aiJobLogService.markJobAsFailed(jobLog.getId(), errorDetail);
-                throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, errorDetail, ollamaEx);
+                throw new AiJsonParseException(ErrorType.DTO_VALIDATION_FAILED, errorDetail, ollamaEx);
             }
         }
 
-        // ── Update tokens immediately (before parse — don't lose them on parse error) ──
+        // ── Update tokens and model used immediately ──
         aiJobLogService.updateTokens(jobLog.getId(), tokenInput, tokenOutput);
         aiJobLogService.updateAiModelUsed(jobLog.getId(), modelUsed);
-        log.info("[LegacyCodeReader] Provider: {}, tokenIn={}, tokenOut={}", modelUsed, tokenInput, tokenOutput);
-
-        // ── Parse JSON ───────────────────────────────────────────────────────
-        String cleanJson = aiJsonParserService.extractAndSanitizeJson(rawAiResponse);
-        AiInferenceResultDto result = aiJsonParserService.parseToDto(cleanJson);
-        log.info("[LegacyCodeReader] Parsed {} endpoint(s)", result.getEndpoints().size());
+        log.info("[LegacyCodeReader] Model used: {}, tokenIn={}, tokenOut={}", modelUsed, tokenInput, tokenOutput);
 
         // ── Persist ──────────────────────────────────────────────────────────
         UUID projectId = parseUuidOrNull(message.getProjectId());
-        UUID sourceFileId = parseUuidOrNull(message.getSourceFileId());
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
         persistenceService.persistLegacyInference(
@@ -335,10 +442,10 @@ public class AiTaskConsumer {
                 rawAiResponse,
                 cleanJson,
                 result);
-        log.info("[LegacyCodeReader] Persisted to database");
+        log.info("[LegacyCodeReader] Persisted inference data to database");
 
         // ── Mark SUCCESS ─────────────────────────────────────────────────────
-        aiJobLogService.markJobAsSuccess(jobLog.getId(), tokenInput, tokenOutput);
+        aiJobLogService.markJobAsSuccess(jobLog.getId(), tokenInput, tokenOutput, modelUsed);
         log.info("[LegacyCodeReader] ✓ Job marked SUCCESS (JobId: {}), model: {}", jobLog.getId(), modelUsed);
 
         return rawAiResponse;
