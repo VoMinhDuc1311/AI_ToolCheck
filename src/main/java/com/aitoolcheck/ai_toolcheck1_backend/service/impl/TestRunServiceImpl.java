@@ -9,6 +9,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.PreparedHttpRequest
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrunitem.res.TestRunItemResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
@@ -202,15 +203,34 @@ public class TestRunServiceImpl implements TestRunService {
             runCode = generateRunCode();
         }
 
+        String runName = normalizeOptionalText(request.getRunName());
+        if (!hasText(runName)) {
+            runName = runCode;
+        } else if (runName.length() > 150) {
+            runName = runName.substring(0, 150);
+        }
+
+        String description = normalizeOptionalText(request.getDescription());
+        if (description != null && description.length() > 2000) {
+            description = description.substring(0, 2000);
+        }
+
+        ExecutionMode executionMode = request.getExecutionMode();
+        if (executionMode == null) {
+            executionMode = ExecutionMode.READ_ONLY;
+        }
+
         log.debug("Generated/assigned runCode={}", runCode);
 
         // Create TestRun entity
         TestRun testRun = TestRun.builder()
                 .sourceProject(sourceProject)
                 .runCode(runCode)
-                .runName(runCode) // Use runCode as runName since ExecuteTestRunRequest doesn't have runName
+                .runName(runName)
+                .description(description)
                 .baseUrl(baseUrl)
                 .environmentName(request.getEnvironmentName())
+                .executionMode(executionMode)
                 .runStatus(RunStatus.RUNNING) // Set to RUNNING as per requirement
                 .testRunItems(testRunItems)
                 .build();
