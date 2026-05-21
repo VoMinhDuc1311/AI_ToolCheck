@@ -1,49 +1,53 @@
 version: '3.8'
 
+# ============================================================
+# LOCAL DEVELOPMENT ONLY — Ollama services for local dev/testing
+#
+# This file is NOT used by GitHub Actions production deployment.
+# Production deployment uses docker-compose.prod.yml exclusively.
+#
+# Usage (local):
+#   docker compose up -d
+# ============================================================
+
 services:
   # ---------------------------------------------------------
-  # OLLAMA SERVER
+  # OLLAMA SERVER — CPU-only (no NVIDIA/GPU for local dev)
   # ---------------------------------------------------------
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
+    # No NVIDIA / GPU config — CPU-only for compatibility with EC2 t3.micro
+    # and developer machines without NVIDIA GPU.
     ports:
       - "11434:11434"
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
-    # Cấu hình sử dụng GPU NVIDIA để chạy nhanh hơn
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [ gpu ]
 
   # ---------------------------------------------------------
-  # OLLAMA MODEL PULLER (Tự động tải model)
+  # OLLAMA MODEL PULLER — Pulls required models once on startup
   # ---------------------------------------------------------
   ollama-pull-models:
     image: curlimages/curl:latest
     container_name: ollama-pull-models
     depends_on:
       - ollama
-    restart: "no" # Chỉ chạy 1 lần khi khởi động
+    restart: "no"
     command: >
       sh -c "
-        echo 'Đang chờ Ollama khởi động...'
-        while ! curl -s http://ollama:11434/api/tags > /dev/null; do 
-          sleep 3; 
-        done;
-        
-        echo 'Ollama đã sẵn sàng! Đang tải model qwen2.5-coder:7b...'
+        echo 'Waiting for Ollama to start...'
+        while ! curl -sf http://ollama:11434/ | grep -q 'Ollama is running'; do
+          sleep 3
+        done
+
+        echo 'Ollama ready! Pulling qwen2.5-coder:7b...'
         curl -X POST http://ollama:11434/api/pull -d '{\"name\":\"qwen2.5-coder:7b\"}'
-        
-        echo '\nĐang tải model mxbai-embed-large...'
+
+        echo 'Pulling mxbai-embed-large...'
         curl -X POST http://ollama:11434/api/pull -d '{\"name\":\"mxbai-embed-large\"}'
-        
-        echo '\n✅ Tải model hoàn tất! Bạn có thể bắt đầu sử dụng.'
+
+        echo 'Model pull complete!'
       "
 
 volumes:
