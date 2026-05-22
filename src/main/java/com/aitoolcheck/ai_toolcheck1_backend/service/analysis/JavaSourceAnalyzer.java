@@ -2,7 +2,6 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.analysis;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.FileType;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
-import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
 import com.github.javaparser.ast.expr.AnnotationExpr;
 import lombok.RequiredArgsConstructor;
@@ -26,13 +25,14 @@ public class JavaSourceAnalyzer {
 
         for (SourceFile sourceFile : analyzableFiles) {
             try {
-                CompilationUnit compilationUnit = StaticJavaParser.parse(sourceFile.getSourceContent());
-                List<String> annotationNames = compilationUnit.findAll(AnnotationExpr.class)
-                        .stream()
+                CompilationUnit compilationUnit = JavaParserSupport.parse(sourceFile.getSourceContent());
+                List<AnnotationExpr> annotations = compilationUnit.findAll(AnnotationExpr.class);
+                List<String> annotationNames = annotations.stream()
                         .map(AnnotationExpr::getNameAsString)
                         .toList();
 
-                signals.accept(annotationNames);
+                // Pass AnnotationExpr list so member-value pairs can be inspected (e.g. @RequestMapping(method=...)).
+                signals.accept(annotations);
 
                 FileType detectedType = sourceFileClassificationService.detectFileType(sourceFile, compilationUnit, annotationNames);
                 if (detectedType != FileType.UNKNOWN) {

@@ -27,14 +27,12 @@ public class ProjectAccessService {
 
     private static final Set<ProjectMemberRole> MANAGE_ROLES = Set.of(
             ProjectMemberRole.MAINTAINER,
-            ProjectMemberRole.EDITOR
-    );
+            ProjectMemberRole.EDITOR);
 
     private static final Set<ProjectMemberRole> TEST_RUN_PREPARE_ROLES = Set.of(
             ProjectMemberRole.MAINTAINER,
             ProjectMemberRole.EDITOR,
-            ProjectMemberRole.VIEWER
-    );
+            ProjectMemberRole.VIEWER);
 
     private static final Set<ProjectMemberRole> MAINTAINER_ONLY = Set.of(ProjectMemberRole.MAINTAINER);
 
@@ -102,6 +100,49 @@ public class ProjectAccessService {
     @Transactional(readOnly = true)
     public SourceProject requireCanDeleteTestCase(UUID projectId) {
         return requireMemberRoleOrOwnerAdmin(projectId, MAINTAINER_ONLY);
+    }
+
+    /**
+     * Archive permission: OWNER or ADMIN only.
+     * MAINTAINER / EDITOR / VIEWER are explicitly denied.
+     */
+    @Transactional(readOnly = true)
+    public SourceProject requireCanArchiveProject(UUID projectId) {
+        SourceProject project = requireCanViewProject(projectId);
+        AppUser user = currentUserService.getCurrentUser();
+        if (!isAdmin(user) && !isOwner(project, user)) {
+            throw forbidden();
+        }
+        return project;
+    }
+
+    /**
+     * Restore permission: OWNER or ADMIN only.
+     * Identical guard to archive — kept separate for semantic clarity.
+     */
+    @Transactional(readOnly = true)
+    public SourceProject requireCanRestoreProject(UUID projectId) {
+        SourceProject project = findProjectOrThrow(projectId);
+        AppUser user = currentUserService.getCurrentUser();
+        if (!isAdmin(user) && !isOwner(project, user)) {
+            throw forbidden();
+        }
+        return project;
+    }
+
+    /**
+     * Permanent delete permission: OWNER or ADMIN only.
+     * This is the most destructive operation — same guard, explicit separate
+     * method.
+     */
+    @Transactional(readOnly = true)
+    public SourceProject requireCanPermanentDeleteProject(UUID projectId) {
+        SourceProject project = findProjectOrThrow(projectId);
+        AppUser user = currentUserService.getCurrentUser();
+        if (!isAdmin(user) && !isOwner(project, user)) {
+            throw forbidden();
+        }
+        return project;
     }
 
     @Transactional(readOnly = true)
@@ -182,7 +223,6 @@ public class ProjectAccessService {
                 && projectMemberRepository.existsBySourceProject_IdAndUser_Id(project.getId(), user.getId());
     }
 
-
     @Transactional(readOnly = true)
     public ProjectMemberRole getCurrentUserProjectRole(SourceProject project, AppUser user) {
         if (project == null || user == null || project.getId() == null || user.getId() == null) {
@@ -198,29 +238,29 @@ public class ProjectAccessService {
                 .orElse(null);
     }
 
-
     @Transactional(readOnly = true)
     public ProjectPermissionResponse buildPermissions(SourceProject project, AppUser user) {
         if (project == null || user == null) {
             return allDenied();
         }
 
-        boolean admin        = isAdmin(user);
-        boolean owner        = isOwner(project, user);
-        boolean publicRead   = isPublicRead(project);
-        UUID    projectId    = project.getId();
-        UUID    userId       = user.getId();
+        boolean admin = isAdmin(user);
+        boolean owner = isOwner(project, user);
+        boolean publicRead = isPublicRead(project);
+        UUID projectId = project.getId();
+        UUID userId = user.getId();
 
         // Derive member-role booleans from existing set constants
         boolean isMaintainer = projectId != null && hasMemberRole(projectId, userId, MAINTAINER_ONLY);
-        boolean isEditor     = projectId != null && hasMemberRole(projectId, userId, Set.of(ProjectMemberRole.EDITOR));
-        boolean isViewer     = projectId != null && hasMemberRole(projectId, userId, Set.of(ProjectMemberRole.VIEWER));
-        boolean isAnyMember  = isMaintainer || isEditor || isViewer;
+        boolean isEditor = projectId != null && hasMemberRole(projectId, userId, Set.of(ProjectMemberRole.EDITOR));
+        boolean isViewer = projectId != null && hasMemberRole(projectId, userId, Set.of(ProjectMemberRole.VIEWER));
+        boolean isAnyMember = isMaintainer || isEditor || isViewer;
 
         // canViewProject: admin | owner | publicRead | anyMember
         boolean canView = admin || owner || publicRead || isAnyMember;
 
-        // canViewSourceFileContent: must be direct member / owner / admin (NOT via publicRead alone)
+        // canViewSourceFileContent: must be direct member / owner / admin (NOT via
+        // publicRead alone)
         boolean canViewSourceContent = admin || owner || isAnyMember;
 
         // canManageProject: admin | owner | MANAGE_ROLES (MAINTAINER | EDITOR)
@@ -253,7 +293,10 @@ public class ProjectAccessService {
                 .build();
     }
 
-    /** Returns a fully-denied permissions object for unauthenticated / null contexts. */
+    /**
+     * Returns a fully-denied permissions object for unauthenticated / null
+     * contexts.
+     */
     private ProjectPermissionResponse allDenied() {
         return ProjectPermissionResponse.builder().build(); // all booleans default to false
     }

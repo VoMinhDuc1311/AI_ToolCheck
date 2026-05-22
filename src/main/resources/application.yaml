@@ -1,6 +1,10 @@
 spring:
   application:
     name: ai_toolcheck1_backend
+  servlet:
+    multipart:
+      max-file-size: 70MB
+      max-request-size: 70MB
   profiles:
     active: dev
   rabbitmq:

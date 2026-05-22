@@ -32,7 +32,11 @@ public class SourceProjectResponse {
     private ProjectVisibility visibility;
     private LocalDateTime createdAt;
 
-    // ── Current-user access context ──────────────────────────────────────────
+    // ── Archive lifecycle ──────────────────────────────────────────────────────
+    private Boolean archivedFlag;
+    private LocalDateTime archivedAt;
+
+    // ── Current-user access context ───────────────────────────────────────────
     /** The authenticated user's explicit member role, or null for ADMIN / project OWNER. */
     private ProjectMemberRole currentUserRole;
     /** Fine-grained capability flags derived from ProjectAccessService rules. */

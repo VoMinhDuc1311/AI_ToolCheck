@@ -16,6 +16,12 @@ public interface ApiEndpointRepository extends JpaRepository<ApiEndpoint, UUID> 
 
     List<ApiEndpoint> findBySourceProjectIdAndActiveFlagTrue(UUID projectId);
 
+    /**
+     * Enrich-trigger candidate query: active (not deleted/inactive) and not stale.
+     * Used by triggerEnrichmentForProject to find endpoints eligible for AI enrichment.
+     */
+    List<ApiEndpoint> findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(UUID projectId);
+
     @Query("select e from ApiEndpoint e where e.sourceProject.id = :projectId and e.sourceFile.id in :sourceFileIds")
     List<ApiEndpoint> findByProjectIdAndSourceFileIdIn(@Param("projectId") UUID projectId, @Param("sourceFileIds") List<UUID> sourceFileIds);
 

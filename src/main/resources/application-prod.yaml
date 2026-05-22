@@ -34,12 +34,20 @@ server:
 springdoc:
   api-docs:
     path: /api-docs
+    enabled: ${SPRINGDOC_API_DOCS_ENABLED:false}
   swagger-ui:
-    enabled: false
+    enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:false}
 
 ai:
   gemini:
     api-key: ${AI_GEMINI_API_KEY}
+    base-url: ${AI_GEMINI_BASE_URL:https://generativelanguage.googleapis.com/v1beta/models}
+    model: ${AI_GEMINI_MODEL:gemini-2.5-flash}
+  ollama:
+    base-url: ${OLLAMA_BASE_URL:http://ollama:11434}
+    primary-model: ${OLLAMA_PRIMARY_MODEL:qwen2.5-coder:7b}
+    fallback-model: ${OLLAMA_FALLBACK_MODEL:qwen2.5-coder:7b}
+    embed-model: ${OLLAMA_EMBED_MODEL:mxbai-embed-large}
 
 logging:
   level:
@@ -51,3 +59,12 @@ logging:
     name: logs/ai-toolcheck.log
     max-size: 10MB
     max-history: 30
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      show-details: never

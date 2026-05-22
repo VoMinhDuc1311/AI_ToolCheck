@@ -42,7 +42,11 @@ public class GeminiWebClientConfig {
          */
         @Bean(name = "geminiWebClient")
         public WebClient geminiWebClient() {
-                log.info("Initializing GeminiWebClient with base URL: {}", geminiProperties.getBaseUrl());
+                log.info("[GeminiWebClientConfig] Initializing GeminiWebClient — baseUrl: {}, model: {} (apiKey: {})",
+                        geminiProperties.getBaseUrl(),
+                        geminiProperties.getModel(),
+                        geminiProperties.getApiKey() != null && !geminiProperties.getApiKey().isBlank()
+                                ? "***SET***" : "***MISSING***");
 
                 // Configure connection provider with pooling for performance optimization
                 ConnectionProvider connectionProvider = ConnectionProvider.builder("gemini-pool")

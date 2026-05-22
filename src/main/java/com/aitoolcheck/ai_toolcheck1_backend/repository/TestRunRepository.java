@@ -2,6 +2,9 @@ package com.aitoolcheck.ai_toolcheck1_backend.repository;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRun;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -11,4 +14,11 @@ import java.util.UUID;
 public interface TestRunRepository extends JpaRepository<TestRun, UUID> {
 
     List<TestRun> findBySourceProject_IdOrderByCreatedAtDesc(UUID projectId);
+
+    // ── Permanent delete support ───────────────────────────────────────────────
+
+    /** Delete all TestRun rows for a project (after items already deleted). */
+    @Modifying
+    @Query("DELETE FROM TestRun run WHERE run.sourceProject.id = :projectId")
+    void deleteBySourceProjectId(@Param("projectId") UUID projectId);
 }

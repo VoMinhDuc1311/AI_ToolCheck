@@ -45,11 +45,12 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     private final ApiEndpointRepository apiEndpointRepository;
     private final ProjectAccessService projectAccessService;
     private final CurrentUserService currentUserService;
+    private final com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties geminiProperties;
 
     @Override
     @Transactional
     public AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
-                                                  UUID projectId, UUID sourceFileId, UUID apiEndpointId) {
+                                                   UUID projectId, UUID sourceFileId, UUID apiEndpointId) {
         projectAccessService.requireCanTriggerAiJob(projectId);
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
@@ -78,7 +79,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .executionStatus(ExecutionStatus.PENDING)
                 .startedAt(LocalDateTime.now())
                 .jobType(jobType)
-                .modelName("gemini-1.5-flash")
+                .modelName(geminiProperties.getModel())
                 .sourceProject(projectRef)
                 .aiSkill(aiSkill)
                 .build();
@@ -88,8 +89,8 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         }
 
         AiJobLog savedJob = aiJobLogRepository.save(jobLog);
-        log.info("Đã tạo AiJobLog ID: [{}] trạng thái PENDING cho Project: [{}]",
-                 savedJob.getId(), projectId);
+        log.info("Đã tạo AiJobLog ID: [{}] trạng thái PENDING cho Project: [{}] với model: [{}]",
+                 savedJob.getId(), projectId, geminiProperties.getModel());
 
         AiTaskMessage message = AiTaskMessage.builder()
                 .jobId(savedJob.getId().toString())
@@ -105,7 +106,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 @Override
                 public void afterCommit() {
                     aiTaskProducer.sendAiTask(message);
-                    log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}]", savedJob.getId());
+                    log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}], sourceFileId: [{}]", savedJob.getId(), message.getSourceFileId());
                 }
             }
         );
@@ -116,9 +117,18 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     @Override
     @Transactional
     public int triggerEnrichmentForProject(UUID projectId) {
+        log.info("[EnrichTrigger] ▶ Bắt đầu trigger enrich endpoints cho Project ID: {}", projectId);
         projectAccessService.requireCanTriggerAiJob(projectId);
-        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
+
+        // Use stale-filtered query: only activeFlag=true AND staleFlag=false endpoints
+        List<ApiEndpoint> endpoints = apiEndpointRepository
+                .findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId);
+
+        log.info("[EnrichTrigger] Project: {} → Tổng endpoint active+non-stale tìm được: {}",
+                projectId, endpoints.size());
+
         if (endpoints.isEmpty()) {
+            log.info("[EnrichTrigger] Không có endpoint hợp lệ để enrich cho project: {}", projectId);
             return 0;
         }
 
@@ -126,28 +136,64 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .orElseThrow(() -> new BadRequestException("SkillCode không hợp lệ: enrich_api_doc"));
 
         int count = 0;
-        int skippedCount = 0;
+        int skippedPendingRunning = 0;
+        int skippedAlreadySuccess = 0;
+
         for (ApiEndpoint endpoint : endpoints) {
+            UUID endpointId = endpoint.getId();
+            String endpointDesc = String.format("[%s %s id=%s]",
+                    endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name() : "?",
+                    endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/",
+                    endpointId);
+
+            // Pre-check PENDING/RUNNING to emit accurate skip reason in log
+            boolean hasPendingRunning = aiJobLogRepository
+                    .existsBySourceProject_IdAndApiEndpoint_IdAndJobTypeAndExecutionStatusIn(
+                            projectId, endpointId, JobType.DOCUMENT_ENRICHMENT,
+                            List.of(ExecutionStatus.PENDING, ExecutionStatus.RUNNING));
+            if (hasPendingRunning) {
+                log.info("[EnrichTrigger] SKIP {} — Đã có job PENDING/RUNNING", endpointDesc);
+                skippedPendingRunning++;
+                continue;
+            }
+
+            // Pre-check SUCCESS
+            var latestOpt = aiJobLogRepository
+                    .findTopBySourceProject_IdAndApiEndpoint_IdAndJobTypeOrderByStartedAtDesc(
+                            projectId, endpointId, JobType.DOCUMENT_ENRICHMENT);
+            if (latestOpt.isPresent() && latestOpt.get().getExecutionStatus() == ExecutionStatus.SUCCESS) {
+                log.info("[EnrichTrigger] SKIP {} — Job SUCCESS đã tồn tại (jobId: {}). aiEnrichedFlag={}",
+                        endpointDesc, latestOpt.get().getId(), endpoint.getAiEnrichedFlag());
+                skippedAlreadySuccess++;
+                continue;
+            }
+
+            // Create PENDING job
             AiJobLog savedJob = createPendingJobIfNotExists(
                     projectId,
-                    endpoint.getId(),
+                    endpointId,
                     JobType.DOCUMENT_ENRICHMENT,
                     aiSkill.getId(),
-                    "gemini-1.5-flash",
+                    geminiProperties.getModel(),
                     false
             );
 
             if (savedJob == null) {
-                skippedCount++;
+                // Edge case: race condition — another thread created the job between pre-check and now
+                log.warn("[EnrichTrigger] SKIP {} — createPendingJobIfNotExists trả null (race condition)",
+                        endpointDesc);
+                skippedPendingRunning++;
                 continue;
             }
 
             String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
             String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name().toLowerCase() : "get";
-            String opId = endpoint.getOperationId() != null ? endpoint.getOperationId() : (endpoint.getMethodName() != null ? endpoint.getMethodName() : "operation");
+            String opId = endpoint.getOperationId() != null ? endpoint.getOperationId()
+                    : (endpoint.getMethodName() != null ? endpoint.getMethodName() : "operation");
             String summary = endpoint.getMethodName() != null ? endpoint.getMethodName() : opId;
 
-            String promptText = String.format("{\n  \"%s\" : {\n    \"%s\" : {\n      \"operationId\" : \"%s\",\n      \"summary\" : \"%s\"\n    }\n  }\n}",
+            String promptText = String.format(
+                    "{\n  \"%s\" : {\n    \"%s\" : {\n      \"operationId\" : \"%s\",\n      \"summary\" : \"%s\"\n    }\n  }\n}",
                     path, method, opId, summary);
 
             AiTaskMessage message = AiTaskMessage.builder()
@@ -155,7 +201,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                     .promptText(promptText)
                     .skillCode("enrich_api_doc")
                     .projectId(projectId.toString())
-                    .apiEndpointId(endpoint.getId().toString())
+                    .apiEndpointId(endpointId.toString())
                     .build();
 
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
@@ -163,15 +209,18 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                     @Override
                     public void afterCommit() {
                         aiTaskProducer.sendAiTask(message);
-                        log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}]", savedJob.getId());
+                        log.info("[EnrichTrigger] ✓ RabbitMQ message đã gửi cho Job ID: [{}], Endpoint: {}",
+                                savedJob.getId(), endpointDesc);
                     }
                 }
             );
 
+            log.info("[EnrichTrigger] ENQUEUED {} → Job ID: {}", endpointDesc, savedJob.getId());
             count++;
         }
 
-        log.info("triggerEnrichmentForProject: queued={}, skipped={}", count, skippedCount);
+        log.info("[EnrichTrigger] ◀ Kết thúc. Project: {} | Total: {} | Enqueued: {} | Skip(PENDING/RUNNING): {} | Skip(SUCCESS): {}",
+                projectId, endpoints.size(), count, skippedPendingRunning, skippedAlreadySuccess);
         return count;
     }
 

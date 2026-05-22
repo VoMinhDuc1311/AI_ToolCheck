@@ -116,6 +116,14 @@ jobs:
           echo "=== [5/10] Verify required runtime env keys ==="
           sudo grep -q '^RABBITMQ_USERNAME=' "$ENV_FILE" || { echo "ERROR: RABBITMQ_USERNAME missing in $ENV_FILE"; exit 1; }
           sudo grep -q '^RABBITMQ_PASSWORD=' "$ENV_FILE" || { echo "ERROR: RABBITMQ_PASSWORD missing in $ENV_FILE"; exit 1; }
+          sudo grep -q '^AI_GEMINI_API_KEY=' "$ENV_FILE"  || { echo "ERROR: AI_GEMINI_API_KEY missing in $ENV_FILE"; exit 1; }
+          sudo grep -q '^AI_GEMINI_BASE_URL=' "$ENV_FILE" || { echo "ERROR: AI_GEMINI_BASE_URL missing in $ENV_FILE"; exit 1; }
+          sudo grep -q '^AI_GEMINI_MODEL=' "$ENV_FILE"    || { echo "ERROR: AI_GEMINI_MODEL missing in $ENV_FILE"; exit 1; }
+          sudo grep -q '^OLLAMA_BASE_URL=' "$ENV_FILE"    || { echo "ERROR: OLLAMA_BASE_URL missing in $ENV_FILE"; exit 1; }
+          sudo grep -q '^OLLAMA_PRIMARY_MODEL=' "$ENV_FILE"  || { echo "ERROR: OLLAMA_PRIMARY_MODEL missing in $ENV_FILE"; exit 1; }
+          sudo grep -q '^OLLAMA_FALLBACK_MODEL=' "$ENV_FILE" || { echo "ERROR: OLLAMA_FALLBACK_MODEL missing in $ENV_FILE"; exit 1; }
+          sudo grep -q '^OLLAMA_EMBED_MODEL=' "$ENV_FILE"    || { echo "ERROR: OLLAMA_EMBED_MODEL missing in $ENV_FILE"; exit 1; }
+          echo "All required env keys are present (values not printed for security)."
 
           echo "=== [6/10] Log in to GHCR on EC2 ==="
           printf '%s' "$GHCR_TOKEN_B64" | base64 -d | sudo docker login ghcr.io -u "$GHCR_USERNAME" --password-stdin
@@ -124,7 +132,8 @@ jobs:
           sudo systemctl stop ai-toolcheck || true
           sudo systemctl disable ai-toolcheck || true
 
-          echo "=== [8/10] Remove old standalone RabbitMQ container if not compose-managed ==="
+          echo "=== [8/10] Remove old standalone containers if not compose-managed ==="
+          # Remove old standalone RabbitMQ if it was not previously compose-managed
           if sudo docker ps -a --format '{{.Names}}' | grep -qx 'ai-toolcheck-rabbitmq'; then
             COMPOSE_SERVICE="$(sudo docker inspect ai-toolcheck-rabbitmq --format '{{ index .Config.Labels "com.docker.compose.service" }}' 2>/dev/null || true)"
             if [ "$COMPOSE_SERVICE" != "ai-toolcheck-rabbitmq" ]; then
@@ -136,6 +145,22 @@ jobs:
             fi
           fi
 
+          # Remove old standalone Ollama containers from the old docker-compose.yml stack.
+          # The ollama_data_volume is preserved (no --volumes flag used).
+          for OLD_CONTAINER in ollama ollama-pull-models; do
+            if sudo docker ps -a --format '{{.Names}}' | grep -qx "$OLD_CONTAINER"; then
+              OLD_COMPOSE_PROJECT="$(sudo docker inspect "$OLD_CONTAINER" --format '{{ index .Config.Labels "com.docker.compose.project" }}' 2>/dev/null || true)"
+              if [ "$OLD_COMPOSE_PROJECT" != "ai-toolcheck-prod" ]; then
+                echo "Removing old standalone container: $OLD_CONTAINER (was in project: $OLD_COMPOSE_PROJECT)"
+                sudo docker stop "$OLD_CONTAINER" || true
+                sudo docker rm "$OLD_CONTAINER" || true
+              else
+                echo "$OLD_CONTAINER is already part of ai-toolcheck-prod. Keeping it."
+              fi
+            fi
+          done
+          echo "Pre-cleanup complete. ollama_data_volume preserved."
+
           echo "=== [9/10] Pull image and start Docker Compose stack ==="
           sudo env BACKEND_IMAGE="$IMAGE_REF" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" pull ai-toolcheck-backend
           sudo env BACKEND_IMAGE="$IMAGE_REF" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-build
@@ -144,9 +169,10 @@ jobs:
           sudo docker ps
 
           echo "=== [10/10] Health check backend ==="
+          echo "Waiting for backend actuator health..."
           for i in $(seq 1 30); do
-            if curl -fsS http://localhost:8080/api/api-docs > /dev/null; then
-              echo "Health check PASSED"
+            if curl -fsS http://localhost:8080/api/actuator/health | grep -q '"status"[[:space:]]*:[[:space:]]*"UP"'; then
+              echo "Backend health OK"
               echo "=== AI ToolCheck Docker deploy completed successfully ==="
               exit 0
             fi
@@ -155,10 +181,10 @@ jobs:
             sleep 5
           done
 
-          echo "ERROR: Health check FAILED after 150 seconds"
+          echo "ERROR: Backend health check FAILED after 150 seconds"
 
-          echo "=== Backend logs ==="
-          sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=150 ai-toolcheck-backend || true
+          echo "=== Backend logs (last 200 lines) ==="
+          sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=200 ai-toolcheck-backend || true
 
           echo "=== RabbitMQ logs ==="
           sudo docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" logs --tail=80 ai-toolcheck-rabbitmq || true

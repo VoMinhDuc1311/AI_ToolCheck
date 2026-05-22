@@ -5,7 +5,9 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.projection.FailureAnalys
 import com.aitoolcheck.ai_toolcheck1_backend.repository.projection.FailurePriorityProjection;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -31,4 +33,25 @@ public interface TestFailureAnalysisRepository extends JpaRepository<TestFailure
     boolean existsByTestResult_Id(UUID testResultId);
 
     Optional<TestFailureAnalysis> findByAiJobLog_Id(UUID aiJobLogId);
+
+    // ── Permanent delete support ───────────────────────────────────────────────
+
+    /**
+     * Bulk delete all TestFailureAnalysis rows for a project via the chain:
+     * TestFailureAnalysis → TestResult → TestRunItem → TestRun → SourceProject
+     */
+    @Modifying
+    @Query("""
+        DELETE FROM TestFailureAnalysis tfa
+        WHERE tfa.testResult.id IN (
+            SELECT tr.id FROM TestResult tr
+            WHERE tr.testRunItem.id IN (
+                SELECT tri.id FROM TestRunItem tri
+                WHERE tri.testRun.id IN (
+                    SELECT run.id FROM TestRun run WHERE run.sourceProject.id = :projectId
+                )
+            )
+        )
+    """)
+    void deleteByTestRunProjectId(@Param("projectId") UUID projectId);
 }
