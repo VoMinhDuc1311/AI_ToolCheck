@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.repository;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceAnalysisResult;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
@@ -25,4 +26,11 @@ public interface SourceAnalysisResultRepository extends JpaRepository<SourceAnal
     List<SourceAnalysisResult> findLatestCandidatesByProjectId(@Param("projectId") UUID projectId);
 
     boolean existsBySourceProjectId(UUID projectId);
+
+    // ── Permanent delete support ───────────────────────────────────────────────
+
+    /** Delete the SourceAnalysisResult for a project. */
+    @Modifying
+    @Query("DELETE FROM SourceAnalysisResult sar WHERE sar.sourceProject.id = :projectId")
+    void deleteBySourceProjectId(@Param("projectId") UUID projectId);
 }
