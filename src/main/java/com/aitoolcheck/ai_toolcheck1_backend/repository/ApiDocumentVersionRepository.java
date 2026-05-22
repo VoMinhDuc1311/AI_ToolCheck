@@ -2,6 +2,9 @@ package com.aitoolcheck.ai_toolcheck1_backend.repository;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocumentVersion;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
@@ -26,4 +29,19 @@ public interface ApiDocumentVersionRepository extends JpaRepository<ApiDocumentV
     boolean existsByApiDocumentIdAndVersionNo(UUID apiDocumentId, Integer versionNo);
 
     long countByApiDocumentId(UUID apiDocumentId);
+
+    // ── Permanent delete support ───────────────────────────────────────────────
+
+    /**
+     * Delete all ApiDocumentVersion rows for a project.
+     * Must run before deleting ApiDocument.
+     */
+    @Modifying
+    @Query("""
+        DELETE FROM ApiDocumentVersion adv
+        WHERE adv.apiDocument.id IN (
+            SELECT ad.id FROM ApiDocument ad WHERE ad.sourceProject.id = :projectId
+        )
+    """)
+    void deleteByApiDocumentProjectId(@Param("projectId") UUID projectId);
 }

@@ -55,6 +55,39 @@ public class SourceProject {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    // ── Archive lifecycle ──────────────────────────────────────────────────────
+
+    /**
+     * true = project is archived; hidden from default active lists. Child data
+     * preserved.
+     */
+    @Column(name = "archived_flag", nullable = false)
+    private Boolean archivedFlag;
+
+    /** Timestamp when the project was archived. Null when not archived. */
+    @Column(name = "archived_at")
+    private LocalDateTime archivedAt;
+
+    /** UUID of the AppUser who archived the project (raw BINARY(16) reference). */
+    @Column(name = "archived_by")
+    private UUID archivedBy;
+
+    // ── Permanent-delete tracking ──────────────────────────────────────────────
+
+    /** true = permanent deletion in progress or completed. Used as guard flag. */
+    @Column(name = "deleted_flag", nullable = false)
+    private Boolean deletedFlag;
+
+    /** Timestamp when permanent deletion was initiated. */
+    @Column(name = "deleted_at")
+    private LocalDateTime deletedAt;
+
+    /** UUID of the AppUser who permanently deleted the project. */
+    @Column(name = "deleted_by")
+    private UUID deletedBy;
+
+    // ── Relationships ──────────────────────────────────────────────────────────
+
     @OneToOne(mappedBy = "sourceProject", fetch = FetchType.LAZY, cascade = CascadeType.ALL)
     private SourceAnalysisResult sourceAnalysisResult;
 
@@ -89,6 +122,12 @@ public class SourceProject {
         this.updatedAt = now;
         if (this.visibility == null) {
             this.visibility = ProjectVisibility.PRIVATE;
+        }
+        if (this.archivedFlag == null) {
+            this.archivedFlag = false;
+        }
+        if (this.deletedFlag == null) {
+            this.deletedFlag = false;
         }
     }
 

@@ -1,24 +1,24 @@
 package com.aitoolcheck.ai_toolcheck1_backend.repository;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.stereotype.Repository;
-
-import java.util.UUID;
-
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.projection.AiJobStatisticProjection;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.projection.TokenUsageProjection;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
+import java.util.Collection;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Repository
 public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
+
     long countByExecutionStatus(ExecutionStatus status);
 
     @Query("SELECT COALESCE(SUM(a.tokenInput), 0L) FROM AiJobLog a")
@@ -28,7 +28,7 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
     long sumTotalTokenOutput();
 
     @Query("""
-        SELECT 
+        SELECT
             COALESCE(SUM(a.tokenInput), 0) AS totalInputToken,
             COALESCE(SUM(a.tokenOutput), 0) AS totalOutputToken,
             COALESCE(SUM(a.tokenInput), 0) + COALESCE(SUM(a.tokenOutput), 0) AS totalToken
@@ -37,7 +37,7 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
     TokenUsageProjection getTokenUsageStatistics();
 
     @Query("""
-        SELECT 
+        SELECT
             a.jobType AS jobType,
             a.executionStatus AS executionStatus,
             COUNT(a) AS totalJobs,
@@ -53,12 +53,19 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
             UUID projectId,
             UUID apiEndpointId,
             JobType jobType,
-            java.util.Collection<ExecutionStatus> statuses
+            Collection<ExecutionStatus> statuses
     );
 
-    java.util.Optional<AiJobLog> findTopBySourceProject_IdAndApiEndpoint_IdAndJobTypeOrderByStartedAtDesc(
+    Optional<AiJobLog> findTopBySourceProject_IdAndApiEndpoint_IdAndJobTypeOrderByStartedAtDesc(
             UUID projectId,
             UUID apiEndpointId,
             JobType jobType
     );
+
+    // ── Permanent delete support ───────────────────────────────────────────────
+
+    /** Delete all AiJobLog rows for a project (project_id is NOT NULL in ai_job_log). */
+    @Modifying
+    @Query("DELETE FROM AiJobLog a WHERE a.sourceProject.id = :projectId")
+    void deleteBySourceProjectId(@Param("projectId") UUID projectId);
 }
