@@ -28,13 +28,39 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
     long sumTotalTokenOutput();
 
     @Query("""
+                SELECT
+                    COALESCE(SUM(a.tokenInput), 0) AS totalInputToken,
+                    COALESCE(SUM(a.tokenOutput), 0) AS totalOutputToken,
+                    COALESCE(SUM(a.tokenInput), 0) + COALESCE(SUM(a.tokenOutput), 0) AS totalToken
+                FROM AiJobLog a
+            """)
+    TokenUsageProjection getTokenUsageStatistics();
+
+    @Query("""
+                SELECT
+                    a.jobType AS jobType,
+                    a.executionStatus AS executionStatus,
+                    COUNT(a) AS totalJobs,
+                    COALESCE(SUM(a.tokenInput), 0) AS totalInputToken,
+                    COALESCE(SUM(a.tokenOutput), 0) AS totalOutputToken,
+                    COALESCE(SUM(a.tokenInput), 0) + COALESCE(SUM(a.tokenOutput), 0) AS totalToken
+                FROM AiJobLog a
+                GROUP BY a.jobType, a.executionStatus
+            """)
+    List<AiJobStatisticProjection> getAiJobStatistics();
+
+    @Query("SELECT COUNT(a) FROM AiJobLog a WHERE a.sourceProject.id IN :projectIds")
+    long countByProjectIds(@Param("projectIds") Collection<UUID> projectIds);
+
+    @Query("""
         SELECT
             COALESCE(SUM(a.tokenInput), 0) AS totalInputToken,
             COALESCE(SUM(a.tokenOutput), 0) AS totalOutputToken,
             COALESCE(SUM(a.tokenInput), 0) + COALESCE(SUM(a.tokenOutput), 0) AS totalToken
         FROM AiJobLog a
+        WHERE a.sourceProject.id IN :projectIds
     """)
-    TokenUsageProjection getTokenUsageStatistics();
+    TokenUsageProjection getTokenUsageStatisticsByProjectIds(@Param("projectIds") Collection<UUID> projectIds);
 
     @Query("""
         SELECT
@@ -45,26 +71,28 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
             COALESCE(SUM(a.tokenOutput), 0) AS totalOutputToken,
             COALESCE(SUM(a.tokenInput), 0) + COALESCE(SUM(a.tokenOutput), 0) AS totalToken
         FROM AiJobLog a
+        WHERE a.sourceProject.id IN :projectIds
         GROUP BY a.jobType, a.executionStatus
     """)
-    List<AiJobStatisticProjection> getAiJobStatistics();
+    List<AiJobStatisticProjection> getAiJobStatisticsByProjectIds(@Param("projectIds") Collection<UUID> projectIds);
 
     boolean existsBySourceProject_IdAndApiEndpoint_IdAndJobTypeAndExecutionStatusIn(
             UUID projectId,
             UUID apiEndpointId,
             JobType jobType,
-            Collection<ExecutionStatus> statuses
-    );
+            Collection<ExecutionStatus> statuses);
 
     Optional<AiJobLog> findTopBySourceProject_IdAndApiEndpoint_IdAndJobTypeOrderByStartedAtDesc(
             UUID projectId,
             UUID apiEndpointId,
-            JobType jobType
-    );
+            JobType jobType);
 
     // ── Permanent delete support ───────────────────────────────────────────────
 
-    /** Delete all AiJobLog rows for a project (project_id is NOT NULL in ai_job_log). */
+    /**
+     * Delete all AiJobLog rows for a project (project_id is NOT NULL in
+     * ai_job_log).
+     */
     @Modifying
     @Query("DELETE FROM AiJobLog a WHERE a.sourceProject.id = :projectId")
     void deleteBySourceProjectId(@Param("projectId") UUID projectId);
