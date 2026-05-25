@@ -16,6 +16,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDateTime;
+import java.util.List;
 import java.util.UUID;
 
 @Slf4j
@@ -146,4 +147,26 @@ public class AiJobLogController {
                 
         return ResponseEntity.ok(response);
     }
+
+    @GetMapping
+    @Operation(
+            summary = "Get AI job logs",
+            description = "Get a list of AI job logs, optionally filtered by project ID.",
+            operationId = "getAiJobLogs"
+    )
+    public ResponseEntity<ApiResponse<List<AiJobLogResponse>>> getJobLogs(@RequestParam(required = false) UUID projectId) {
+        log.info("Nhận yêu cầu lấy danh sách AiJobLog. projectId: {}", projectId);
+        
+        List<AiJobLogResponse> jobLogs = aiJobLogService.getJobLogs(projectId);
+        
+        ApiResponse<List<AiJobLogResponse>> response = ApiResponse.<List<AiJobLogResponse>>builder()
+                .code("200")
+                .message("Success")
+                .data(jobLogs)
+                .timestamp(LocalDateTime.now())
+                .build();
+                
+        return ResponseEntity.ok(response);
+    }
 }
+

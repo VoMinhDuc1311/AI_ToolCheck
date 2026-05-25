@@ -8,6 +8,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 @Getter
 @Setter
@@ -24,4 +25,6 @@ public class AiJobLogResponse {
     private JobType jobType;
     private String modelName;
     private ExecutionStatus executionStatus;
+    private LocalDateTime startedAt;
+    private LocalDateTime completedAt;
 }

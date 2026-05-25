@@ -6,9 +6,13 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResp
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 
+import java.util.List;
 import java.util.UUID;
 
 public interface AiJobLogService {
+
+    List<AiJobLogResponse> getJobLogs(UUID projectId);
+
 
     /**
      * Khởi tạo một Job với trạng thái PENDING và đẩy thông tin (message) vào
