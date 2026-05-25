@@ -18,6 +18,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiSchemaFieldRepository
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiSchemaRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.EndpointSchemaMapRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +48,7 @@ public class AiTaskPersistenceService {
     private final ApiSchemaFieldRepository apiSchemaFieldRepository;
     private final EndpointSchemaMapRepository endpointSchemaMapRepository;
     private final LegacyInferenceLogService legacyInferenceLogService;
+    private final ApiMetadataCleanupService apiMetadataCleanupService;
 
     @Transactional
     public void persistLegacyInference(SourceProject project,
@@ -86,7 +88,8 @@ public class AiTaskPersistenceService {
             log.debug("[Persistence] Saved endpoint: {} {}", epDto.getHttpMethod(), epDto.getPath());
         }
 
-        log.info("[Persistence] Done — {} endpoint(s) saved.", dto.getEndpoints().size());
+        apiMetadataCleanupService.cleanupProjectApiMetadata(project.getId());
+        log.info("[Persistence] Done — {} endpoint(s) saved and cleanup executed.", dto.getEndpoints().size());
     }
 
     private ApiEndpoint saveApiEndpoint(SourceProject project,
@@ -100,20 +103,53 @@ public class AiTaskPersistenceService {
     private ApiEndpoint buildApiEndpoint(SourceProject project,
                                          SourceFile sourceFileRef,
                                          AiInferenceResultDto.EndpointDto epDto) {
-        ApiEndpoint endpoint = new ApiEndpoint();
-        endpoint.setSourceProject(project);
+        String normalizedPath = normalizePath(epDto.getPath());
+        HttpMethod method = resolveHttpMethod(epDto.getHttpMethod());
+
+        ApiEndpoint endpoint = apiEndpointRepository
+                .findByStableKey(project.getId(), method, normalizedPath)
+                .orElseGet(() -> {
+                    ApiEndpoint newEp = new ApiEndpoint();
+                    newEp.setSourceProject(project);
+                    newEp.setCreatedAt(LocalDateTime.now());
+                    return newEp;
+                });
+
         endpoint.setSourceFile(sourceFileRef);
-        endpoint.setEndpointPath(epDto.getPath());
-        endpoint.setHttpMethod(resolveHttpMethod(epDto.getHttpMethod()));
+        endpoint.setEndpointPath(normalizedPath);
+        endpoint.setHttpMethod(method);
+        endpoint.setStableKey(buildStableKey(project.getId(), method, normalizedPath));
         endpoint.setDescription(epDto.getDescription());
         endpoint.setAuthRequired(Boolean.TRUE.equals(epDto.getAuthRequired()));
-        endpoint.setCreatedAt(LocalDateTime.now());
-
+        
         if (epDto.getSource() != null) {
             endpoint.setControllerName(epDto.getSource().getClassName());
             endpoint.setMethodName(epDto.getSource().getMethodName());
         }
+        
+        endpoint.setActiveFlag(true);
+        endpoint.setStaleFlag(false);
+        endpoint.setUpdatedAt(LocalDateTime.now());
+
         return endpoint;
+    }
+
+    private String normalizePath(String path) {
+        if (path == null || path.isBlank()) {
+            return "/";
+        }
+        String normalized = path.trim().replace("\\", "/").replaceAll("/+", "/");
+        if (!normalized.startsWith("/")) {
+            normalized = "/" + normalized;
+        }
+        if (normalized.length() > 1 && normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private String buildStableKey(UUID projectId, HttpMethod httpMethod, String endpointPath) {
+        return projectId + ":" + (httpMethod == null ? "UNKNOWN" : httpMethod.name()) + ":" + normalizePath(endpointPath);
     }
 
     private List<ApiParameter> buildApiParameters(ApiEndpoint endpoint,

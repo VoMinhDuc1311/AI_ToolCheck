@@ -10,6 +10,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiSkillRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataParserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiGeneratorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
@@ -58,6 +59,7 @@ public class SourceDocumentationOrchestratorServiceImpl {
     private final ProjectAccessService projectAccessService;
     private final SourceFileRepository sourceFileRepository;
     private final AiSkillRepository aiSkillRepository;
+    private final ApiMetadataCleanupService apiMetadataCleanupService;
 
     @Transactional
     public SourceDocumentationPipelineResponse generateDocsFromSource(UUID projectId) {
@@ -92,6 +94,7 @@ public class SourceDocumentationOrchestratorServiceImpl {
 
         if (aiJobIds.isEmpty() && parserExecuted) {
             try {
+                apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
                 OpenApiGenerateResponse openApiResp = openApiGeneratorService.generateAndSaveOpenApi(projectId);
                 openApiGenerated = true;
                 docVersionId = openApiResp.getApiDocumentVersionId();
