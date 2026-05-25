@@ -340,6 +340,50 @@ public class TestCaseServiceImpl implements TestCaseService {
         // Merge check: ensure project access security is enforced
         SourceProject sourceProject = projectAccessService.requireCanCreateTestCase(request.getProjectId());
 
+        if (request.getApiEndpointId() == null) {
+            List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(sourceProject.getId());
+            if (endpoints.isEmpty()) {
+                throw new BadRequestException("Không tìm thấy API Endpoint hoạt động nào trong dự án để sinh test case.");
+            }
+
+            AiSkill aiSkill = aiSkillRepository.findBySkillCode("generate_testcases").orElse(null);
+            UUID firstJobId = null;
+
+            for (ApiEndpoint apiEndpoint : endpoints) {
+                AiJobLog jobLog = AiJobLog.builder()
+                        .jobType(JobType.TEST_CASE_GENERATION)
+                        .executionStatus(ExecutionStatus.PENDING)
+                        .sourceProject(sourceProject)
+                        .apiEndpoint(apiEndpoint)
+                        .aiSkill(aiSkill)
+                        .startedAt(LocalDateTime.now())
+                        .build();
+
+                AiJobLog savedJob = aiJobLogRepository.save(jobLog);
+                if (firstJobId == null) {
+                    firstJobId = savedJob.getId();
+                }
+
+                AiTaskMessage message = AiTaskMessage.builder()
+                        .jobId(savedJob.getId().toString())
+                        .projectId(sourceProject.getId().toString())
+                        .apiEndpointId(apiEndpoint.getId().toString())
+                        .skillCode("GENERATE_TEST_CASE")
+                        .build();
+
+                org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                        new org.springframework.transaction.support.TransactionSynchronization() {
+                            @Override
+                            public void afterCommit() {
+                                aiTaskProducer.sendAiTask(message);
+                                log.info("Đã đẩy AiTaskMessage vào RabbitMQ cho Job ID: [{}] (Project-wide)", savedJob.getId());
+                            }
+                        });
+            }
+
+            return firstJobId != null ? firstJobId : UUID.randomUUID();
+        }
+
         ApiEndpoint apiEndpoint = resolveApiEndpointOrNull(request.getApiEndpointId(), sourceProject.getId());
         if (apiEndpoint == null) {
             throw new BadRequestException("ApiEndpoint is required for generating test cases");

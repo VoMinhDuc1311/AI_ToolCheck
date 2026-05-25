@@ -101,6 +101,12 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
             JobType jobType,
             Collection<ExecutionStatus> statuses);
 
+    List<AiJobLog> findBySourceProject_IdOrderByStartedAtDesc(UUID projectId);
+
+    List<AiJobLog> findAllByOrderByStartedAtDesc();
+
+    List<AiJobLog> findBySourceProject_IdInOrderByStartedAtDesc(Collection<UUID> projectIds);
+
     // ── Permanent delete support ───────────────────────────────────────────────
 
     /**
@@ -111,3 +117,4 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
     @Query("DELETE FROM AiJobLog a WHERE a.sourceProject.id = :projectId")
     void deleteBySourceProjectId(@Param("projectId") UUID projectId);
 }
+

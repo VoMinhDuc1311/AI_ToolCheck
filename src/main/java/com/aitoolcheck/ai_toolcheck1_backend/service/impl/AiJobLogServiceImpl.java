@@ -431,6 +431,35 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .build();
     }
 
+    @Override
+    @Transactional(readOnly = true)
+    public List<AiJobLogResponse> getJobLogs(UUID projectId) {
+        if (projectId != null) {
+            projectAccessService.requireCanViewProject(projectId);
+            return aiJobLogRepository.findBySourceProject_IdOrderByStartedAtDesc(projectId)
+                    .stream()
+                    .map(this::mapToResponse)
+                    .collect(java.util.stream.Collectors.toList());
+        } else {
+            if (currentUserService.isAdmin()) {
+                return aiJobLogRepository.findAllByOrderByStartedAtDesc()
+                        .stream()
+                        .map(this::mapToResponse)
+                        .collect(java.util.stream.Collectors.toList());
+            } else {
+                UUID currentUserId = currentUserService.getCurrentUser().getId();
+                List<UUID> accessibleProjectIds = sourceProjectRepository.findActiveNonArchivedOwnedOrMemberProjectIds(currentUserId);
+                if (accessibleProjectIds.isEmpty()) {
+                    return List.of();
+                }
+                return aiJobLogRepository.findBySourceProject_IdInOrderByStartedAtDesc(accessibleProjectIds)
+                        .stream()
+                        .map(this::mapToResponse)
+                        .collect(java.util.stream.Collectors.toList());
+            }
+        }
+    }
+
     private AiJobLogResponse mapToResponse(AiJobLog jobLog) {
         return AiJobLogResponse.builder()
                 .id(jobLog.getId())
@@ -441,6 +470,8 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .jobType(jobLog.getJobType())
                 .modelName(jobLog.getModelName())
                 .executionStatus(jobLog.getExecutionStatus())
+                .startedAt(jobLog.getStartedAt())
+                .completedAt(jobLog.getCompletedAt())
                 .build();
     }
-}
+}
