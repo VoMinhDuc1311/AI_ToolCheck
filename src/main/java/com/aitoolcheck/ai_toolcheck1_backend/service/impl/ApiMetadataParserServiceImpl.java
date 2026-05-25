@@ -200,12 +200,12 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
     ) {
         LocalDateTime now = LocalDateTime.now();
 
-        ApiEndpoint endpoint = apiEndpointRepository
-                .findByStableKey(sourceProject.getId(), httpMethod, endpointPath)
-                .orElseGet(() -> ApiEndpoint.builder()
-                        .createdAt(now)
-                        .sourceProject(sourceProject)
-                        .build());
+        List<ApiEndpoint> existing = apiEndpointRepository
+                .findByProjectIdAndHttpMethodAndEndpointPath(sourceProject.getId(), httpMethod, endpointPath);
+        ApiEndpoint endpoint = existing.isEmpty() ? ApiEndpoint.builder()
+                .createdAt(now)
+                .sourceProject(sourceProject)
+                .build() : existing.get(0);
 
         endpoint.setControllerName(controllerClass.getNameAsString());
         endpoint.setMethodName(method.getNameAsString());
@@ -239,12 +239,12 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
     ) {
         LocalDateTime now = LocalDateTime.now();
         String normalizedPath = normalizePath(endpointPath);
-        ApiEndpoint endpoint = apiEndpointRepository
-                .findByStableKey(sourceProject.getId(), httpMethod, normalizedPath)
-                .orElseGet(() -> ApiEndpoint.builder()
-                        .createdAt(now)
-                        .sourceProject(sourceProject)
-                        .build());
+        List<ApiEndpoint> existing = apiEndpointRepository
+                .findByProjectIdAndHttpMethodAndEndpointPath(sourceProject.getId(), httpMethod, normalizedPath);
+        ApiEndpoint endpoint = existing.isEmpty() ? ApiEndpoint.builder()
+                .createdAt(now)
+                .sourceProject(sourceProject)
+                .build() : existing.get(0);
 
         endpoint.setControllerName(controllerName);
         endpoint.setMethodName(methodName);
