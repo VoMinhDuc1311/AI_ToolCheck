@@ -106,14 +106,15 @@ public class AiTaskPersistenceService {
         String normalizedPath = normalizePath(epDto.getPath());
         HttpMethod method = resolveHttpMethod(epDto.getHttpMethod());
 
-        ApiEndpoint endpoint = apiEndpointRepository
-                .findByStableKey(project.getId(), method, normalizedPath)
-                .orElseGet(() -> {
-                    ApiEndpoint newEp = new ApiEndpoint();
-                    newEp.setSourceProject(project);
-                    newEp.setCreatedAt(LocalDateTime.now());
-                    return newEp;
-                });
+        List<ApiEndpoint> existingEndpoints = apiEndpointRepository
+                .findByProjectIdAndHttpMethodAndEndpointPath(project.getId(), method, normalizedPath);
+                
+        ApiEndpoint endpoint = existingEndpoints.isEmpty() ? new ApiEndpoint() : existingEndpoints.get(0);
+
+        if (existingEndpoints.isEmpty()) {
+            endpoint.setSourceProject(project);
+            endpoint.setCreatedAt(LocalDateTime.now());
+        }
 
         endpoint.setSourceFile(sourceFileRef);
         endpoint.setEndpointPath(normalizedPath);

@@ -26,7 +26,7 @@ public interface ApiEndpointRepository extends JpaRepository<ApiEndpoint, UUID> 
     List<ApiEndpoint> findByProjectIdAndSourceFileIdIn(@Param("projectId") UUID projectId, @Param("sourceFileIds") List<UUID> sourceFileIds);
 
     @Query("select e from ApiEndpoint e where e.sourceProject.id = :projectId and e.httpMethod = :httpMethod and e.endpointPath = :endpointPath")
-    java.util.Optional<ApiEndpoint> findByStableKey(
+    List<ApiEndpoint> findByProjectIdAndHttpMethodAndEndpointPath(
             @Param("projectId") UUID projectId,
             @Param("httpMethod") com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod httpMethod,
             @Param("endpointPath") String endpointPath

@@ -10,6 +10,9 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileUpload
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceDocumentationPipelineResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.apimetadata.res.ApiMetadataCleanupResult;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
@@ -38,6 +41,8 @@ public class SourceProjectController {
         private final SourceFileService sourceFileService;
         private final SourceAnalysisResultService sourceAnalysisResultService;
         private final SourceDocumentationOrchestratorServiceImpl documentationOrchestratorService;
+        private final ApiMetadataCleanupService apiMetadataCleanupService;
+        private final ProjectAccessService projectAccessService;
 
         @PostMapping
         @Operation(summary = "Create source project", description = "Create a new source project.", operationId = "createSourceProject")
@@ -112,6 +117,14 @@ public class SourceProjectController {
                         ? HttpStatus.ACCEPTED
                         : HttpStatus.OK;
                 return ResponseEntity.status(status).body(response);
+        }
+
+        @PostMapping("/{projectId}/cleanup-api-metadata")
+        @Operation(summary = "Cleanup API metadata manually", description = "Cleans up API metadata by marking fallback and duplicate endpoints as stale.", operationId = "cleanupApiMetadata")
+        public ResponseEntity<ApiMetadataCleanupResult> cleanupApiMetadata(@PathVariable UUID projectId) {
+                projectAccessService.requireCanGenerateDocs(projectId);
+                ApiMetadataCleanupResult result = apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
+                return ResponseEntity.ok(result);
         }
 
         @PutMapping("/{id}")

@@ -8,6 +8,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiGeneratorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -33,6 +34,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     private final ApiDocumentRepository apiDocumentRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
     private final ProjectAccessService projectAccessService;
+    private final ApiMetadataCleanupService apiMetadataCleanupService;
 
     // -------------------------------------------------------------------------
     // Public methods
@@ -47,6 +49,9 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
         SourceProject project = sourceProjectRepository.findById(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Source project not found with id: " + projectId));
+
+        // Call cleanup before querying to ensure fresh data
+        apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
 
         List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId);
         if (endpoints.isEmpty()) {
@@ -70,6 +75,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Source project not found with id: " + projectId));
 
+        apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
         List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId);
         List<ApiSchema> schemas = apiSchemaRepository.findBySourceProjectId(projectId);
 
