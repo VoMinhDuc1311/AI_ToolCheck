@@ -244,27 +244,100 @@ public class AiTaskConsumer {
 
     /**
      * Helper to build the legacy code reader prompt containing instructions, file metadata, and the raw code.
+     *
+     * <p>Fix 2: Prompt yêu cầu AI trả về requestSchema và responseSchema với danh sách fields
+     * nếu AI suy luận được. Output phải là JSON thuần túy, không markdown, không giải thích.</p>
+     *
+     * <p>Contract JSON mong muốn:
+     * <pre>
+     * {
+     *   "endpoints": [
+     *     {
+     *       "path": "/api/orders",
+     *       "httpMethod": "POST",
+     *       "description": "Create a new order",
+     *       "authRequired": true,
+     *       "source": { "className": "OrderController", "methodName": "createOrder" },
+     *       "parameters": [
+     *         { "name": "tenantId", "in": "PATH", "type": "String", "required": true, "example": "t-001" }
+     *       ],
+     *       "requestSchema": {
+     *         "schemaName": "CreateOrderRequest",
+     *         "fields": [
+     *           { "fieldName": "customerId", "dataType": "String", "required": true, "nullable": false }
+     *         ]
+     *       },
+     *       "responseSchema": {
+     *         "schemaName": "OrderResponse",
+     *         "fields": [
+     *           { "fieldName": "id", "dataType": "String", "required": true, "nullable": false },
+     *           { "fieldName": "status", "dataType": "String", "required": true, "nullable": false }
+     *         ]
+     *       }
+     *     }
+     *   ]
+     * }
+     * </pre>
+     * </p>
      */
     private String buildLegacyCodeReaderPrompt(String promptText, SourceFile sourceFile) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Role/Task Instruction:\n");
-        sb.append(promptText).append("\n\n");
+        sb.append("You are a Senior Backend Engineer analyzing Java source code to extract API metadata.\n");
+        sb.append("You MUST respond ONLY with a valid JSON object. NO markdown, NO explanation, NO text outside JSON.\n\n");
+        sb.append("Task: Analyze the provided Java source code and extract all HTTP API endpoints.\n\n");
+
+        if (promptText != null && !promptText.isBlank()) {
+            sb.append("Additional context:\n").append(promptText).append("\n\n");
+        }
+
         sb.append("Source File Metadata:\n");
-        sb.append("- Source File ID: ").append(sourceFile.getId()).append("\n");
         sb.append("- File Name: ").append(sourceFile.getFileName()).append("\n");
         sb.append("- File Path: ").append(sourceFile.getFilePath()).append("\n");
-        sb.append("- File Type: ").append(sourceFile.getFileType()).append("\n");
-        sb.append("- Project ID: ").append(sourceFile.getSourceProject().getId()).append("\n\n");
+        sb.append("- File Type: ").append(sourceFile.getFileType()).append("\n\n");
+
         sb.append("Source Code to Analyze:\n");
         sb.append("```java\n");
         sb.append(sourceFile.getSourceContent()).append("\n");
         sb.append("```\n\n");
-        sb.append("Strict Extraction Rules:\n");
-        sb.append("1. Detect servlet/controller-style endpoints.\n");
-        sb.append("2. Detect `@Controller`, `@RestController`, or `@RequestMapping` annotations if present.\n");
-        sb.append("3. Detect legacy route patterns if applicable.\n");
-        sb.append("4. Extract HTTP method, request path, parameters, and inferred request/response structures when inferable.\n");
-        sb.append("5. Strict output format: Return ONLY valid JSON matching the required schema. The `endpoints` list must contain all extracted endpoints. Do not include any explanation or markdown outside of the JSON block.\n");
+
+        sb.append("Extraction Rules:\n");
+        sb.append("1. Detect all HTTP endpoints: Spring (@RestController, @Controller, @RequestMapping, @GetMapping, @PostMapping, etc.), JAX-RS (@Path, @GET, @POST), Servlet (doGet, doPost), Struts Action, or any custom routing pattern.\n");
+        sb.append("2. For each endpoint extract: path, httpMethod (GET/POST/PUT/DELETE/PATCH), description (inferred), authRequired (inferred).\n");
+        sb.append("3. Extract parameters: name, in (PATH/QUERY/HEADER/BODY/COOKIE), type (Java type), required, example.\n");
+        sb.append("4. Extract requestSchema if you can infer the request body object: schemaName, fields (fieldName, dataType, required, nullable).\n");
+        sb.append("5. Extract responseSchema if you can infer the response object: schemaName, fields (fieldName, dataType, required, nullable).\n");
+        sb.append("6. If you cannot determine a schema, omit requestSchema and/or responseSchema entirely — do NOT fabricate.\n");
+        sb.append("7. If you cannot determine fields for a schema, return fields as empty array [].\n");
+        sb.append("8. Return ONLY JSON. No markdown fences, no preamble, no commentary.\n\n");
+
+        sb.append("Required JSON structure:\n");
+        sb.append("{\n");
+        sb.append("  \"endpoints\": [\n");
+        sb.append("    {\n");
+        sb.append("      \"path\": \"/api/resource\",\n");
+        sb.append("      \"httpMethod\": \"POST\",\n");
+        sb.append("      \"description\": \"brief description\",\n");
+        sb.append("      \"authRequired\": false,\n");
+        sb.append("      \"source\": { \"className\": \"MyController\", \"methodName\": \"myMethod\" },\n");
+        sb.append("      \"parameters\": [\n");
+        sb.append("        { \"name\": \"id\", \"in\": \"PATH\", \"type\": \"String\", \"required\": true, \"example\": \"123\" }\n");
+        sb.append("      ],\n");
+        sb.append("      \"requestSchema\": {\n");
+        sb.append("        \"schemaName\": \"MyRequestDto\",\n");
+        sb.append("        \"fields\": [\n");
+        sb.append("          { \"fieldName\": \"fieldA\", \"dataType\": \"String\", \"required\": true, \"nullable\": false }\n");
+        sb.append("        ]\n");
+        sb.append("      },\n");
+        sb.append("      \"responseSchema\": {\n");
+        sb.append("        \"schemaName\": \"MyResponseDto\",\n");
+        sb.append("        \"fields\": [\n");
+        sb.append("          { \"fieldName\": \"id\", \"dataType\": \"String\", \"required\": true, \"nullable\": false }\n");
+        sb.append("        ]\n");
+        sb.append("      }\n");
+        sb.append("    }\n");
+        sb.append("  ]\n");
+        sb.append("}\n");
+
         return sb.toString();
     }
 

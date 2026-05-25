@@ -192,8 +192,14 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
 
         operation.put("operationId", resolveUniqueOperationId(endpoint, usedOperationIds));
 
-        if (endpoint.getMethodName() != null && !endpoint.getMethodName().isBlank()) {
-            operation.put("summary", endpoint.getMethodName());
+        String summary = resolveSummary(endpoint);
+        if (summary != null) {
+            operation.put("summary", summary);
+        }
+
+        String description = resolveDescription(endpoint);
+        if (description != null && !description.isBlank()) {
+            operation.put("description", description);
         }
 
         if (Boolean.TRUE.equals(endpoint.getDeprecatedFlag())) {
@@ -212,6 +218,28 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
 
         operation.put("responses", buildResponses(endpoint));
         return operation;
+    }
+
+    // aiSummary > methodName
+    private String resolveSummary(ApiEndpoint endpoint) {
+        if (endpoint.getAiSummary() != null && !endpoint.getAiSummary().isBlank()) {
+            return endpoint.getAiSummary();
+        }
+        if (endpoint.getMethodName() != null && !endpoint.getMethodName().isBlank()) {
+            return endpoint.getMethodName();
+        }
+        return null;
+    }
+
+    // aiDescription > description
+    private String resolveDescription(ApiEndpoint endpoint) {
+        if (endpoint.getAiDescription() != null && !endpoint.getAiDescription().isBlank()) {
+            return endpoint.getAiDescription();
+        }
+        if (endpoint.getDescription() != null && !endpoint.getDescription().isBlank()) {
+            return endpoint.getDescription();
+        }
+        return null;
     }
 
     // Fallback: methodName → sanitised path+method → plain "operation"
@@ -290,19 +318,46 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     // -------------------------------------------------------------------------
 
     private Map<String, Object> buildRequestBody(ApiEndpoint endpoint) {
+        Map<String, Object> requestBody = null;
+
         for (EndpointSchemaMap map : endpointSchemaMapRepository.findByApiEndpointId(endpoint.getId())) {
             if (map.getUsageType() != UsageType.REQUEST_BODY || map.getApiSchema() == null) continue;
 
             String schemaName = map.getApiSchema().getSchemaName();
             if (schemaName == null || schemaName.isBlank()) continue;
 
-            Map<String, Object> requestBody = new LinkedHashMap<>();
+            requestBody = new LinkedHashMap<>();
             requestBody.put("required", true);
-            requestBody.put("content", jsonContent(schemaRef(schemaName)));
-            return requestBody;
+
+            Map<String, Object> mediaType = buildMediaTypeWithExample(
+                    schemaRef(schemaName),
+                    endpoint.getExampleRequestJson(),
+                    "requestBody example",
+                    endpoint.getId()
+            );
+            Map<String, Object> content = new LinkedHashMap<>();
+            content.put("application/json", mediaType);
+            requestBody.put("content", content);
+            break;
         }
 
-        return null;
+        if (requestBody == null && endpoint.getExampleRequestJson() != null
+                && !endpoint.getExampleRequestJson().isBlank()) {
+            Object parsedExample = parseJsonSafely(endpoint.getExampleRequestJson(),
+                    "exampleRequestJson", endpoint.getId());
+            if (parsedExample != null) {
+                Map<String, Object> mediaType = new LinkedHashMap<>();
+                mediaType.put("schema", objectSchema());
+                mediaType.put("example", parsedExample);
+                Map<String, Object> content = new LinkedHashMap<>();
+                content.put("application/json", mediaType);
+                requestBody = new LinkedHashMap<>();
+                requestBody.put("required", true);
+                requestBody.put("content", content);
+            }
+        }
+
+        return requestBody;
     }
 
     // -------------------------------------------------------------------------
@@ -313,13 +368,37 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
         Map<String, Object> response200 = new LinkedHashMap<>();
         response200.put("description", "OK");
 
+        boolean schemaSet = false;
         for (EndpointSchemaMap map : endpointSchemaMapRepository.findByApiEndpointId(endpoint.getId())) {
             if (map.getUsageType() != UsageType.RESPONSE_BODY || map.getApiSchema() == null) continue;
 
             String schemaName = map.getApiSchema().getSchemaName();
             if (schemaName != null && !schemaName.isBlank()) {
-                response200.put("content", jsonContent(schemaRef(schemaName)));
+                Map<String, Object> mediaType = buildMediaTypeWithExample(
+                        schemaRef(schemaName),
+                        endpoint.getExampleResponseJson(),
+                        "exampleResponseJson",
+                        endpoint.getId()
+                );
+                Map<String, Object> content = new LinkedHashMap<>();
+                content.put("application/json", mediaType);
+                response200.put("content", content);
+                schemaSet = true;
                 break;
+            }
+        }
+
+        if (!schemaSet && endpoint.getExampleResponseJson() != null
+                && !endpoint.getExampleResponseJson().isBlank()) {
+            Object parsedExample = parseJsonSafely(endpoint.getExampleResponseJson(),
+                    "exampleResponseJson", endpoint.getId());
+            if (parsedExample != null) {
+                Map<String, Object> mediaType = new LinkedHashMap<>();
+                mediaType.put("schema", objectSchema());
+                mediaType.put("example", parsedExample);
+                Map<String, Object> content = new LinkedHashMap<>();
+                content.put("application/json", mediaType);
+                response200.put("content", content);
             }
         }
 
@@ -471,6 +550,43 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("application/json", mediaType);
         return content;
+    }
+
+    // -------------------------------------------------------------------------
+    // JSON example helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Build media type map với schema ref và optional example.
+     * Nếu exampleJson không hợp lệ, log warning và bỏ qua — không crash generator.
+     */
+    private Map<String, Object> buildMediaTypeWithExample(Map<String, Object> schemaObj,
+                                                           String exampleJson,
+                                                           String fieldLabel,
+                                                           java.util.UUID endpointId) {
+        Map<String, Object> mediaType = new LinkedHashMap<>();
+        mediaType.put("schema", schemaObj);
+        if (exampleJson != null && !exampleJson.isBlank()) {
+            Object parsed = parseJsonSafely(exampleJson, fieldLabel, endpointId);
+            if (parsed != null) {
+                mediaType.put("example", parsed);
+            }
+        }
+        return mediaType;
+    }
+
+    /**
+     * Parse JSON string an toàn. Trả về Object nếu thành công, null nếu lỗi.
+     * Không throw — chỉ log warning.
+     */
+    private Object parseJsonSafely(String json, String fieldLabel, java.util.UUID endpointId) {
+        try {
+            return objectMapper.readValue(json, Object.class);
+        } catch (Exception e) {
+            log.warn("[OpenApiGenerator] Could not parse {} for endpointId={} — skipping example. Reason: {}",
+                    fieldLabel, endpointId, e.getMessage());
+            return null;
+        }
     }
 
     // -------------------------------------------------------------------------

@@ -87,6 +87,20 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
             UUID apiEndpointId,
             JobType jobType);
 
+    /**
+     * Duplicate guard for legacy_code_reader: kiểm tra đã có job nào cho cùng
+     * sourceFile + project + jobType ở trạng thái PENDING/RUNNING/SUCCESS chưa.
+     * Dùng trong SourceDocumentationOrchestratorService để tránh tạo job trùng.
+     *
+     * <p>Lưu ý: AiJobLog không có FK trực tiếp đến SourceFile — field được thêm
+     * thông qua query JPQL trên source_file_id nếu entity có field đó.
+     * Hiện tại AiJobLog không có source_file_id column → dùng heuristic qua sourceProject+jobType.</p>
+     */
+    boolean existsBySourceProject_IdAndJobTypeAndExecutionStatusIn(
+            UUID projectId,
+            JobType jobType,
+            Collection<ExecutionStatus> statuses);
+
     // ── Permanent delete support ───────────────────────────────────────────────
 
     /**
