@@ -48,7 +48,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Source project not found with id: " + projectId));
 
-        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId);
         if (endpoints.isEmpty()) {
             throw new BadRequestException("No API endpoints found for project id: " + projectId);
         }
@@ -70,7 +70,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "Source project not found with id: " + projectId));
 
-        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId);
         List<ApiSchema> schemas = apiSchemaRepository.findBySourceProjectId(projectId);
 
         String contentJson = serializeToJson(openApiMap, projectId);
