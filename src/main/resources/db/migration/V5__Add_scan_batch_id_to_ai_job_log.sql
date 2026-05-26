@@ -4,7 +4,7 @@
 -- Nullable: existing rows will have NULL (backward compatible).
 
 ALTER TABLE ai_job_log
-    ADD COLUMN IF NOT EXISTS scan_batch_id CHAR(36) NULL DEFAULT NULL
+    ADD COLUMN IF NOT EXISTS scan_batch_id BINARY(16) NULL DEFAULT NULL
         COMMENT 'UUID grouping all jobs from one generate-docs-from-source run';
 
 -- Index for efficient FE polling by batch (SELECT ... WHERE scan_batch_id = ? AND execution_status IN (...))
