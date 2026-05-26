@@ -10,6 +10,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiGeneratorService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiMetadataEnhancerService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -35,6 +36,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
     private final ProjectAccessService projectAccessService;
     private final ApiMetadataCleanupService apiMetadataCleanupService;
+    private final OpenApiMetadataEnhancerService openApiMetadataEnhancerService;
 
     // -------------------------------------------------------------------------
     // Public methods
@@ -191,28 +193,29 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
 
     private Map<String, Object> buildOperation(ApiEndpoint endpoint, Set<String> usedOperationIds) {
         Map<String, Object> operation = new LinkedHashMap<>();
+        List<ApiParameter> params = apiParameterRepository.findByApiEndpointId(endpoint.getId());
 
-        if (endpoint.getTagName() != null && !endpoint.getTagName().isBlank()) {
-            operation.put("tags", List.of(endpoint.getTagName()));
-        }
+        String tag = openApiMetadataEnhancerService.inferTag(endpoint);
+        operation.put("tags", List.of(tag));
 
-        operation.put("operationId", resolveUniqueOperationId(endpoint, usedOperationIds));
-
-        String summary = resolveSummary(endpoint);
+        String summary = openApiMetadataEnhancerService.inferSummary(endpoint, params);
         if (summary != null) {
             operation.put("summary", summary);
         }
 
-        String description = resolveDescription(endpoint);
+        String description = openApiMetadataEnhancerService.inferDescription(endpoint, summary);
         if (description != null && !description.isBlank()) {
             operation.put("description", description);
         }
+
+        String opId = openApiMetadataEnhancerService.inferOperationId(endpoint, params, usedOperationIds);
+        operation.put("operationId", opId);
 
         if (Boolean.TRUE.equals(endpoint.getDeprecatedFlag())) {
             operation.put("deprecated", true);
         }
 
-        List<Map<String, Object>> parameters = buildParameters(endpoint);
+        List<Map<String, Object>> parameters = buildParameters(endpoint, params);
         if (!parameters.isEmpty()) {
             operation.put("parameters", parameters);
         }
@@ -222,69 +225,18 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
             operation.put("requestBody", requestBody);
         }
 
-        operation.put("responses", buildResponses(endpoint));
+        operation.put("responses", buildResponses(endpoint, summary));
         return operation;
-    }
-
-    // aiSummary > methodName
-    private String resolveSummary(ApiEndpoint endpoint) {
-        if (endpoint.getAiSummary() != null && !endpoint.getAiSummary().isBlank()) {
-            return endpoint.getAiSummary();
-        }
-        if (endpoint.getMethodName() != null && !endpoint.getMethodName().isBlank()) {
-            return endpoint.getMethodName();
-        }
-        return null;
-    }
-
-    // aiDescription > description
-    private String resolveDescription(ApiEndpoint endpoint) {
-        if (endpoint.getAiDescription() != null && !endpoint.getAiDescription().isBlank()) {
-            return endpoint.getAiDescription();
-        }
-        if (endpoint.getDescription() != null && !endpoint.getDescription().isBlank()) {
-            return endpoint.getDescription();
-        }
-        return null;
-    }
-
-    // Fallback: methodName → sanitised path+method → plain "operation"
-    private String resolveUniqueOperationId(ApiEndpoint endpoint, Set<String> usedOperationIds) {
-        String base = endpoint.getOperationId();
-
-        if (base == null || base.isBlank()) {
-            if (endpoint.getMethodName() != null && !endpoint.getMethodName().isBlank()) {
-                base = endpoint.getMethodName();
-            } else {
-                String path = endpoint.getEndpointPath() != null
-                        ? endpoint.getEndpointPath().replaceAll("[^a-zA-Z0-9]", "_")
-                        : "operation";
-                base = resolveHttpMethod(endpoint) + "_" + path;
-            }
-        }
-
-        if (usedOperationIds.add(base)) {
-            return base;
-        }
-
-        // Deduplicate with numeric suffix
-        int suffix = 2;
-        String candidate;
-        do {
-            candidate = base + "_" + suffix++;
-        } while (!usedOperationIds.add(candidate));
-
-        return candidate;
     }
 
     // -------------------------------------------------------------------------
     // Parameters
     // -------------------------------------------------------------------------
 
-    private List<Map<String, Object>> buildParameters(ApiEndpoint endpoint) {
+    private List<Map<String, Object>> buildParameters(ApiEndpoint endpoint, List<ApiParameter> params) {
         List<Map<String, Object>> parameters = new ArrayList<>();
 
-        for (ApiParameter param : apiParameterRepository.findByApiEndpointId(endpoint.getId())) {
+        for (ApiParameter param : params) {
             ParamIn paramIn = param.getParamIn();
 
             // Skip BODY (represented by requestBody) and FORM (phase 1)
@@ -298,6 +250,11 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
             // PATH params are always required
             paramObj.put("required", paramIn == ParamIn.PATH || Boolean.TRUE.equals(param.getRequiredFlag()));
             paramObj.put("schema", convertJavaTypeToOpenApiSchema(param.getDataType()));
+
+            String pDesc = openApiMetadataEnhancerService.enrichParameterDescription(param);
+            if (pDesc != null && !pDesc.isBlank()) {
+                paramObj.put("description", pDesc);
+            }
 
             if (param.getExampleValue() != null && !param.getExampleValue().isBlank()) {
                 paramObj.put("example", param.getExampleValue());
@@ -370,9 +327,12 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     // Responses
     // -------------------------------------------------------------------------
 
-    private Map<String, Object> buildResponses(ApiEndpoint endpoint) {
+    private Map<String, Object> buildResponses(ApiEndpoint endpoint, String summary) {
+        Map<String, Object> responses = new LinkedHashMap<>();
+        Map<String, String> responseDescs = openApiMetadataEnhancerService.getResponseDescriptions(endpoint, summary);
+
         Map<String, Object> response200 = new LinkedHashMap<>();
-        response200.put("description", "OK");
+        response200.put("description", responseDescs.getOrDefault("200", "OK"));
 
         boolean schemaSet = false;
         for (EndpointSchemaMap map : endpointSchemaMapRepository.findByApiEndpointId(endpoint.getId())) {
@@ -408,7 +368,18 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
             }
         }
 
-        return Map.of("200", response200);
+        responses.put("200", response200);
+
+        for (Map.Entry<String, String> entry : responseDescs.entrySet()) {
+            String statusCode = entry.getKey();
+            if ("200".equals(statusCode)) continue;
+
+            Map<String, Object> errorResponse = new LinkedHashMap<>();
+            errorResponse.put("description", entry.getValue());
+            responses.put(statusCode, errorResponse);
+        }
+
+        return responses;
     }
 
     // -------------------------------------------------------------------------
