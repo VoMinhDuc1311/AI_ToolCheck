@@ -43,7 +43,7 @@ class LegacyRuleBasedEndpointExtractorServiceTest {
     }
 
     @Test
-    void strutsActionWithExecute_extractsPostWithoutActionSuffix() {
+    void strutsActionWithExecute_extractsNormalizedLegacyRoute() {
         AiInferenceResultDto result = extractor.extract(sourceFile("InventoryAction.java",
                 "public class InventoryAction {\n"
                         + "  public ActionForward execute(ActionMapping mapping, HttpServletRequest request, HttpServletResponse response) {\n"
@@ -51,7 +51,7 @@ class LegacyRuleBasedEndpointExtractorServiceTest {
                         + "  }\n"
                         + "}"));
 
-        assertEndpoints(result, Set.of("POST /Inventory"));
+        assertEndpoints(result, Set.of("POST /legacy/inventory"));
     }
 
     @Test

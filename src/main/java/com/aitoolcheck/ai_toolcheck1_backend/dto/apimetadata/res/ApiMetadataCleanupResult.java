@@ -5,6 +5,7 @@ import lombok.Builder;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.util.List;
 import java.util.UUID;
 
 @Data
@@ -17,4 +18,7 @@ public class ApiMetadataCleanupResult {
     private int fallbackMarkedStale;
     private int duplicatesMarkedStale;
     private int activeAfter;
+    private Integer rawFallbackRemaining;
+    private Integer activeCleanEndpoints;
+    private List<String> cleanupWarnings;
 }

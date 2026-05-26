@@ -41,7 +41,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     // -------------------------------------------------------------------------
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public Map<String, Object> generateOpenApiJson(UUID projectId) {
         log.info("Generating OpenAPI JSON for projectId={}", projectId);
         projectAccessService.requireCanViewProject(projectId);

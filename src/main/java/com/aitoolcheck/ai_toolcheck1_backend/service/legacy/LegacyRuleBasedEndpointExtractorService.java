@@ -54,7 +54,7 @@ public class LegacyRuleBasedEndpointExtractorService {
         }
 
         if (isActionEntrypoint(className, source)) {
-            String actionPath = "/" + stripActionSuffix(className);
+            String actionPath = "/legacy/" + toKebabCase(stripActionSuffix(className));
             addEndpoint(endpoints, className, "execute", "POST", actionPath, 0.65);
         }
 
@@ -137,8 +137,11 @@ public class LegacyRuleBasedEndpointExtractorService {
             if (action.isBlank()) {
                 continue;
             }
+            String basePath = className.endsWith("Action")
+                    ? "/legacy/" + toKebabCase(stripActionSuffix(className))
+                    : "/" + className;
             addEndpoint(endpoints, className, "dispatch" + capitalize(action), "POST",
-                    "/" + className + "/" + action, 0.6);
+                    basePath + "/" + action, 0.6);
         }
     }
 
@@ -190,5 +193,16 @@ public class LegacyRuleBasedEndpointExtractorService {
 
     private String capitalize(String value) {
         return value.isEmpty() ? value : Character.toUpperCase(value.charAt(0)) + value.substring(1);
+    }
+
+    private String toKebabCase(String value) {
+        if (value == null || value.isBlank()) {
+            return "legacy-entrypoint";
+        }
+        String withDashes = value.trim()
+                .replaceAll("([a-z0-9])([A-Z])", "$1-$2")
+                .replaceAll("[^A-Za-z0-9]+", "-")
+                .replaceAll("^-|-$", "");
+        return withDashes.toLowerCase(Locale.ROOT);
     }
 }

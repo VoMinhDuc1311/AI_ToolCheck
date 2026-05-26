@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
@@ -41,6 +42,14 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
         int activeAfter = (int) allEndpoints.stream()
                 .filter(e -> Boolean.TRUE.equals(e.getActiveFlag()) && !Boolean.TRUE.equals(e.getStaleFlag()))
                 .count();
+        int rawFallbackRemaining = (int) allEndpoints.stream()
+                .filter(e -> Boolean.TRUE.equals(e.getActiveFlag()) && !Boolean.TRUE.equals(e.getStaleFlag()))
+                .filter(e -> isFallbackClassNameEndpoint(e, e.getControllerName()))
+                .count();
+        List<String> cleanupWarnings = new ArrayList<>();
+        if (rawFallbackRemaining > 0) {
+            cleanupWarnings.add("Raw fallback endpoints remain active after cleanup: " + rawFallbackRemaining);
+        }
 
         log.info("[ApiCleanup] Completed for projectId={}. Before={}, Fallback stale={}, Duplicates stale={}, After={}",
                 projectId, activeBefore, fallbackMarkedStale, duplicatesMarkedStale, activeAfter);
@@ -51,6 +60,9 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
                 .fallbackMarkedStale(fallbackMarkedStale)
                 .duplicatesMarkedStale(duplicatesMarkedStale)
                 .activeAfter(activeAfter)
+                .rawFallbackRemaining(rawFallbackRemaining)
+                .activeCleanEndpoints(activeAfter)
+                .cleanupWarnings(cleanupWarnings)
                 .build();
     }
 
@@ -65,30 +77,16 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
             List<ApiEndpoint> group = entry.getValue();
 
             for (ApiEndpoint e : group) {
-                if (!Boolean.TRUE.equals(e.getStaleFlag()) && isFallbackClassNameEndpoint(e, controllerName)) {
-                    if (hasBetterEndpointForSameController(e, group)) {
-                        markStale(e);
-                        count++;
-                        log.debug("[ApiCleanup] Marked fallback endpoint as stale: {} {}", e.getHttpMethod(), e.getEndpointPath());
-                    }
+                if (Boolean.TRUE.equals(e.getActiveFlag())
+                        && !Boolean.TRUE.equals(e.getStaleFlag())
+                        && isFallbackClassNameEndpoint(e, controllerName)) {
+                    markStale(e);
+                    count++;
+                    log.debug("[ApiCleanup] Marked fallback endpoint as stale: {} {}", e.getHttpMethod(), e.getEndpointPath());
                 }
             }
         }
         return count;
-    }
-    
-    private boolean hasBetterEndpointForSameController(ApiEndpoint current, List<ApiEndpoint> endpoints) {
-        return endpoints.stream().anyMatch(e -> 
-                Boolean.TRUE.equals(e.getActiveFlag()) && 
-                !Boolean.TRUE.equals(e.getStaleFlag()) &&
-                !e.getId().equals(current.getId()) &&
-                !isFallbackClassNameEndpoint(e, e.getControllerName()) &&
-                (
-                    (e.getEndpointPath() != null && e.getEndpointPath().contains("/legacy/")) ||
-                    (e.getEndpointPath() != null && e.getEndpointPath().split("/").length > 2) ||
-                    (e.getTagName() == null && e.getDescription() != null)
-                )
-        );
     }
 
     private int cleanupDuplicateEndpoints(List<ApiEndpoint> endpoints) {
@@ -139,22 +137,51 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
     }
 
     private boolean isFallbackClassNameEndpoint(ApiEndpoint endpoint, String controllerName) {
-        String path = endpoint.getEndpointPath();
-        if (path == null) return false;
+        String normalizedPath = normalizePath(endpoint.getEndpointPath());
+        if (normalizedPath == null || "/".equals(normalizedPath)) return false;
 
-        String lowerFirstController = controllerName.substring(0, 1).toLowerCase() + controllerName.substring(1);
-        String removeGateway = controllerName.replaceAll("Gateway$", "");
-        String removeAction = controllerName.replaceAll("Action$", "");
+        String lastSegment = lastPathSegment(normalizedPath);
+        if (lastSegment == null || lastSegment.isBlank()) return false;
 
-        boolean isClassNamePath = path.equals("/" + controllerName) || 
-                                  path.equals("/" + lowerFirstController) ||
-                                  path.equals("/" + removeGateway) ||
-                                  path.equals("/" + removeAction);
+        String controller = controllerName == null ? "" : controllerName.trim();
+        String controllerLower = controller.toLowerCase();
+        String segmentLower = lastSegment.toLowerCase();
+        boolean singleSegment = normalizedPath.indexOf('/', 1) < 0;
+
+        if (singleSegment && !controller.isBlank()) {
+            if (segmentLower.equals(controllerLower)) {
+                return true;
+            }
+            if (controllerLower.endsWith("action")
+                    && segmentLower.equals(stripSuffix(controller, "Action").toLowerCase())) {
+                return true;
+            }
+            if (controllerLower.endsWith("gateway")
+                    && segmentLower.equals(stripSuffix(controller, "Gateway").toLowerCase())) {
+                return true;
+            }
+            if (controllerLower.endsWith("servlet")
+                    && segmentLower.equals(stripSuffix(controller, "Servlet").toLowerCase())) {
+                return true;
+            }
+            if (controllerLower.endsWith("controller")
+                    && segmentLower.equals(stripSuffix(controller, "Controller").toLowerCase())) {
+                return true;
+            }
+        }
+
+        boolean suffixLooksLikeJavaClass = segmentLower.endsWith("action")
+                || segmentLower.endsWith("gateway")
+                || segmentLower.endsWith("servlet")
+                || segmentLower.endsWith("controller");
+        boolean controllerMatchesClassSignal = !controller.isBlank()
+                && (controllerLower.equals(segmentLower)
+                    || controllerLower.startsWith(segmentLower)
+                    || segmentLower.startsWith(controllerLower));
 
         boolean isLegacyTag = "Servlet".equals(endpoint.getTagName()) || "Struts".equals(endpoint.getTagName());
-        boolean isSingleSegment = normalizePath(path).split("/").length <= 2;
-
-        return isClassNamePath || (isLegacyTag && isSingleSegment);
+        return singleSegment && (suffixLooksLikeJavaClass && (controllerMatchesClassSignal || isLegacyTag)
+                || isLegacyTag);
     }
 
     private int calculateEndpointQualityScore(ApiEndpoint endpoint) {
@@ -211,5 +238,15 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
             normalized = normalized.substring(0, normalized.length() - 1);
         }
         return normalized;
+    }
+
+    private String lastPathSegment(String path) {
+        String normalized = normalizePath(path);
+        int lastSlash = normalized.lastIndexOf('/');
+        return lastSlash >= 0 ? normalized.substring(lastSlash + 1) : normalized;
+    }
+
+    private String stripSuffix(String value, String suffix) {
+        return value.endsWith(suffix) ? value.substring(0, value.length() - suffix.length()) : value;
     }
 }
