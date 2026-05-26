@@ -56,6 +56,20 @@ public class OllamaApiClientServiceImpl implements OllamaApiClientService {
     }
 
     /**
+     * Log the effective Ollama configuration on startup so production logs confirm
+     * which timeout value is actually in use (profile-specific vs. Java class default).
+     * Does NOT log any secrets.
+     */
+    @jakarta.annotation.PostConstruct
+    public void logStartupConfig() {
+        log.info("[OllamaClient] Initialized — baseUrl={} primaryModel={} connectTimeoutSeconds={} readTimeoutSeconds={}",
+                ollamaProperties.getBaseUrl(),
+                ollamaProperties.getPrimaryModel(),
+                ollamaProperties.getConnectTimeoutSeconds(),
+                ollamaProperties.getReadTimeoutSeconds());
+    }
+
+    /**
      * Convenience method: generates text using the configured primary Ollama model.
      * Delegates to {@link #generateTextWithModel(String, String)}.
      *
