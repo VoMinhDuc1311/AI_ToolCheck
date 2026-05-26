@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.time.Clock;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -16,6 +17,8 @@ import java.util.UUID;
 @AllArgsConstructor
 @Builder
 public class ApiDocument {
+
+    private static final Clock UTC_CLOCK = Clock.systemUTC();
 
     @Id
     @GeneratedValue(strategy = GenerationType.UUID)
@@ -38,9 +41,17 @@ public class ApiDocument {
     @Column(name = "stale_flag", nullable = false)
     private Boolean staleFlag;
 
+    /**
+     * Stored in UTC.
+     * API response layer converts this value to Asia/Ho_Chi_Minh offset time.
+     */
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
+    /**
+     * Stored in UTC.
+     * API response layer converts this value to Asia/Ho_Chi_Minh offset time.
+     */
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
@@ -53,18 +64,23 @@ public class ApiDocument {
 
     @PrePersist
     public void prePersist() {
-        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime now = LocalDateTime.now(UTC_CLOCK);
+
         this.createdAt = now;
         this.updatedAt = now;
+
         if (this.currentVersionNo == null) {
             this.currentVersionNo = 0;
         }
+
         if (this.publishedFlag == null) {
             this.publishedFlag = false;
         }
+
         if (this.documentType == null) {
             this.documentType = DocumentType.OPENAPI_3;
         }
+
         if (this.staleFlag == null) {
             this.staleFlag = false;
         }
@@ -72,6 +88,6 @@ public class ApiDocument {
 
     @PreUpdate
     public void preUpdate() {
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = LocalDateTime.now(UTC_CLOCK);
     }
 }
