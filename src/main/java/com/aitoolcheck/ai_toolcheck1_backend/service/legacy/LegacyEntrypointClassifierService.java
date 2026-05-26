@@ -53,7 +53,7 @@ public class LegacyEntrypointClassifierService {
             "mixin", "interceptor", "security", "auth", "annotation", "enum", "type",
             "provider", "adapter", "wrapper", "proxy", "registry", "manager",
             "datasource", "connection", "pool", "cache", "session", "context",
-            "initializer", "init", "startup", "loader", "reader", "writer",
+            "initializer", "init", "startup", "loader", "reader",
             "extractor", "parser", "serializer", "deserializer", "codec",
             "aspect", "pointcut"
     );
