@@ -28,5 +28,6 @@ public class AiJobLogResponse {
     private LocalDateTime startedAt;
     private LocalDateTime completedAt;
     /** Nullable — only set for LEGACY_INFERENCE jobs created via generate-docs-from-source. */
+    private String errorMessage;
     private UUID scanBatchId;
 }

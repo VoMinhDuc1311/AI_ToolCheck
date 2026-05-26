@@ -376,6 +376,12 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     @Override
     @Transactional
     public void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput, String modelName) {
+        markJobAsSuccess(id, tokenInput, tokenOutput, modelName, null);
+    }
+
+    @Override
+    @Transactional
+    public void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput, String modelName, String message) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
 
@@ -387,6 +393,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         jobLog.setTokenInput(tokenInput);
         jobLog.setTokenOutput(tokenOutput);
         jobLog.setModelName(modelName);
+        jobLog.setErrorMessage(message);
         jobLog.setCompletedAt(LocalDateTime.now());
         aiJobLogRepository.save(jobLog);
         log.info("Job {} transitioned from RUNNING to SUCCESS with model: {}", id, modelName);
@@ -481,6 +488,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .startedAt(jobLog.getStartedAt())
                 .completedAt(jobLog.getCompletedAt())
                 .scanBatchId(jobLog.getScanBatchId())
+                .errorMessage(jobLog.getErrorMessage())
                 .build();
     }
-}
+}
