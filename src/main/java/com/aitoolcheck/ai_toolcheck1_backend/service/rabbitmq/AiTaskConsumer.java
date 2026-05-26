@@ -104,6 +104,8 @@ public class AiTaskConsumer {
     private final OllamaApiClientService ollamaApiClientService;
     private final GeminiProperties geminiProperties;
     private final SourceFileRepository sourceFileRepository;
+    // Context reducer for Ollama fallback — strips boilerplate before sending
+    private final com.aitoolcheck.ai_toolcheck1_backend.service.legacy.LegacySourceContextReducerService contextReducerService;
 
     // =========================================================================
     // ENTRY POINT - Phase 4: Quản lý trạng thái Job
@@ -137,6 +139,21 @@ public class AiTaskConsumer {
             jobLog = loadJobLog(message.getJobId());
             log.info("[Phase 4 - STEP 1] ✓ Loaded JobLog: {} (Status: {})", 
                     jobLog.getId(), jobLog.getExecutionStatus());
+
+            // 1b. Guard: skip CANCELLED jobs — do not call AI
+            if (jobLog.getExecutionStatus() == com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus.CANCELLED) {
+                log.info("[Phase 4] SKIP — Job {} is CANCELLED. Acknowledging without processing.", jobLog.getId());
+                successfullyProcessed = true;
+                return;
+            }
+
+            // 1c. Guard: skip non-PENDING jobs (already processed / stale message)
+            if (jobLog.getExecutionStatus() != com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus.PENDING) {
+                log.warn("[Phase 4] SKIP — Job {} is in {} state (not PENDING). Acknowledging without re-processing.",
+                        jobLog.getId(), jobLog.getExecutionStatus());
+                successfullyProcessed = true;
+                return;
+            }
 
             // 2. Cập nhật trạng thái → PROCESSING
             aiJobLogService.markJobAsRunning(jobLog.getId());
@@ -457,42 +474,61 @@ public class AiTaskConsumer {
         } catch (Exception geminiEx) {
             // Either provider call failed, OR parse / validation failed
             geminiErrorSummary = geminiEx.getMessage();
-            log.warn("[LegacyCodeReader][Tier1] Gemini failed (Provider or Parser validation exception): {}. Falling back to Ollama...",
-                    geminiEx.getMessage());
+            log.warn("[LegacyCodeReader][Tier1] Gemini failed: {}. Falling back to Ollama...",
+                    abbreviate(geminiEx.getMessage(), 200));
 
-            // ── TIER 2: Ollama fallback ───────────────────────────────────────
+            // ── TIER 2: Ollama fallback with REDUCED CONTEXT ───────────────────
             try {
                 modelUsed = ollamaProperties.getPrimaryModel();
                 log.info("[LegacyCodeReader][Tier2] Calling Ollama model: {}", modelUsed);
 
-                rawAiResponse = ollamaApiClientService.generateText(finalPrompt);
-                tokenInput = finalPrompt.length() / 4;
+                // Reduce source context to keep Ollama prompt short and fast
+                String reducedContent = contextReducerService.reduce(sourceContent, sourceFile.getFileName());
+                String ollamaPrompt = buildOllamaLegacyPrompt(sourceFile, reducedContent);
+
+                log.info("[LegacyCodeReader][Tier2] Ollama prompt chars: {} (original: {})",
+                        ollamaPrompt.length(), finalPrompt.length());
+
+                rawAiResponse = ollamaApiClientService.generateText(ollamaPrompt);
+                tokenInput = ollamaPrompt.length() / 4;
                 tokenOutput = rawAiResponse.length() / 4;
 
-                log.info("[LegacyCodeReader][Tier2] Ollama API response succeeded. Length: {} chars.", rawAiResponse.length());
+                log.info("[LegacyCodeReader][Tier2] Ollama response received. Length: {} chars.", rawAiResponse.length());
 
                 // Validate and parse Ollama response
                 cleanJson = aiJsonParserService.extractAndSanitizeJson(rawAiResponse);
                 result = aiJsonParserService.parseToDto(cleanJson);
 
-                log.info("[LegacyCodeReader][Tier2] Ollama parsed and validated successfully. extracted endpoints: {}", result.getEndpoints().size());
+                log.info("[LegacyCodeReader][Tier2] Ollama parsed successfully. Endpoints: {}", result.getEndpoints().size());
 
             } catch (Exception ollamaEx) {
                 ollamaErrorSummary = ollamaEx.getMessage();
                 log.error("[LegacyCodeReader][Tier2] Ollama also failed: {}", ollamaEx.getMessage());
 
-                // Check if the reason was empty endpoints (DTO validation failure)
-                boolean geminiNoEndpoints = geminiErrorSummary != null && geminiErrorSummary.contains("endpoints must not be empty");
-                boolean ollamaNoEndpoints = ollamaErrorSummary != null && ollamaErrorSummary.contains("endpoints must not be empty");
+                // Classify error type for structured error code
+                String geminiErrCode = classifyProviderError(geminiErrorSummary);
+                String ollamaErrCode = classifyProviderError(ollamaErrorSummary);
+
+                // Determine if this was an empty-endpoint result or a real provider failure
+                boolean geminiNoEndpoints = geminiErrorSummary != null
+                        && (geminiErrorSummary.contains("endpoints must not be empty")
+                            || geminiErrorSummary.contains("No endpoints"));
+                boolean ollamaNoEndpoints = ollamaErrorSummary != null
+                        && (ollamaErrorSummary.contains("endpoints must not be empty")
+                            || ollamaErrorSummary.contains("No endpoints"));
 
                 String errorDetail;
                 if (geminiNoEndpoints || ollamaNoEndpoints) {
-                    errorDetail = String.format("No endpoints extracted from selected source file [ID: %s, Path: %s]",
-                            sourceFileId, sourceFile.getFilePath());
-                } else {
+                    // This should now be rare since @NotEmpty was removed; treat as success-empty
                     errorDetail = String.format(
-                            "[LegacyCodeReader] All providers failed. Gemini: %s | Ollama: %s",
-                            geminiErrorSummary, ollamaErrorSummary);
+                            "[AI_NO_ENDPOINTS] No endpoints extracted for file: %s",
+                            sourceFile.getFilePath());
+                } else {
+                    // Real provider failure — log codes clearly
+                    errorDetail = String.format(
+                            "[AI_PROVIDER_FAILED] Gemini: [%s] %s | Ollama: [%s] %s",
+                            geminiErrCode, abbreviate(geminiErrorSummary, 120),
+                            ollamaErrCode, abbreviate(ollamaErrorSummary, 120));
                 }
 
                 aiJobLogService.markJobAsFailed(jobLog.getId(), errorDetail);
@@ -658,16 +694,17 @@ public class AiTaskConsumer {
     }
 
     /**
-     * Format lỗi chi tiết: Bao gồm message + stacktrace đầy đủ.
-     * Dùng để lưu vào AiJobLog.errorMessage để debug sau này.
+     * Format lỗi ngắn gọn để lưu vào AiJobLog.errorMessage.
+     * Stacktrace đầy đủ được log ra backend log — KHÔNG lưu vào DB để tránh làm nặng UI.
+     *
+     * Pattern: "[ErrorType] Short description" (max ~300 chars)
      */
     private String formatDetailedError(String message, Throwable throwable) {
-        String stackTrace = ExceptionUtils.getStackTrace(throwable);
-        // Giới hạn độ dài để không vượt quá dung lượng TEXT column (MySQL)
-        String truncatedStackTrace = stackTrace.length() > 3000
-            ? stackTrace.substring(0, 3000) + "\n... [truncated]"
-            : stackTrace;
-        return message + "\n\n--- Full Stacktrace ---\n" + truncatedStackTrace;
+        // Log full stacktrace to backend log for debugging
+        log.error("[AiTask] Full error stacktrace for debugging:", throwable);
+        // Store only a short, structured message in DB
+        String shortMsg = abbreviate(message, 300);
+        return shortMsg;
     }
 
     // =========================================================================
@@ -695,5 +732,76 @@ public class AiTaskConsumer {
             log.warn("[Utility] UUID không hợp lệ: '{}' — dùng null.", uuidStr);
             return null;
         }
+    }
+
+    // =========================================================================
+    // Ollama-specific helpers
+    // =========================================================================
+
+    /**
+     * Build a SHORT, focused prompt for Ollama fallback.
+     *
+     * <p>Ollama 7B models perform better with concise prompts.
+     * The full Gemini prompt (with schema examples) is too large and causes timeouts.
+     * This prompt contains only the essentials: task instruction + reduced source code.
+     *
+     * @param sourceFile   Source file metadata (name, path).
+     * @param reducedContent Source code after context reduction (stripped boilerplate).
+     * @return Compact prompt string safe for Ollama 7B context window.
+     */
+    private String buildOllamaLegacyPrompt(SourceFile sourceFile, String reducedContent) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("You are reading a legacy Java API entrypoint file.\n");
+        sb.append("Extract HTTP API endpoints from the source. Return ONLY valid JSON. No markdown. No explanation.\n\n");
+        sb.append("File: ").append(sourceFile.getFileName()).append("\n");
+        sb.append("Path: ").append(sourceFile.getFilePath()).append("\n\n");
+        sb.append("Source (routing skeleton):\n");
+        sb.append(reducedContent).append("\n\n");
+        sb.append("JSON schema to return:\n");
+        sb.append("{\n");
+        sb.append("  \"endpoints\": [\n");
+        sb.append("    {\n");
+        sb.append("      \"httpMethod\": \"GET|POST|PUT|DELETE|PATCH\",\n");
+        sb.append("      \"path\": \"/...\",\n");
+        sb.append("      \"description\": \"...\",\n");
+        sb.append("      \"source\": {\"className\": \"...\", \"methodName\": \"...\"},\n");
+        sb.append("      \"parameters\": [],\n");
+        sb.append("      \"responses\": [],\n");
+        sb.append("      \"confidence\": 0.8\n");
+        sb.append("    }\n");
+        sb.append("  ]\n");
+        sb.append("}\n\n");
+        sb.append("Rules:\n");
+        sb.append("- Infer path from servlet URL mapping, action dispatch, or routing logic.\n");
+        sb.append("- Infer httpMethod from doGet/doPost/execute or HTTP verb logic.\n");
+        sb.append("- If no endpoint exists, return: {\"endpoints\":[]}\n");
+        sb.append("- Return only valid JSON. Nothing else.\n");
+        return sb.toString();
+    }
+
+    /**
+     * Classify a provider error message into a structured error code.
+     * Used for DB error_message field — keeps it short and searchable.
+     */
+    private String classifyProviderError(String errorMsg) {
+        if (errorMsg == null) return "AI_UNKNOWN";
+        String lower = errorMsg.toLowerCase(java.util.Locale.ROOT);
+        if (lower.contains("timeout") || lower.contains("timed out")) return "AI_TIMEOUT";
+        if (lower.contains("429") || lower.contains("rate limit") || lower.contains("quota")) return "AI_QUOTA_EXCEEDED";
+        if (lower.contains("invalid json") || lower.contains("malformed")) return "AI_RESPONSE_INVALID";
+        if (lower.contains("no endpoint") || lower.contains("endpoints must not be empty")) return "AI_NO_ENDPOINTS";
+        if (lower.contains("dto") && lower.contains("validation")) return "AI_DTO_VALIDATION_FAILED";
+        if (lower.contains("connection refused") || lower.contains("connection reset")) return "AI_CONNECTION_FAILED";
+        if (lower.contains("5xx") || lower.contains("server error")) return "AI_SERVER_ERROR";
+        return "AI_PROVIDER_FAILED";
+    }
+
+    /**
+     * Truncate a string to at most {@code maxLen} characters.
+     * Returns an empty string if input is null.
+     */
+    private String abbreviate(String s, int maxLen) {
+        if (s == null) return "";
+        return s.length() <= maxLen ? s : s.substring(0, maxLen) + "...[truncated]";
     }
 }

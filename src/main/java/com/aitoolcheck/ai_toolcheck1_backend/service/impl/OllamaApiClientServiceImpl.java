@@ -96,9 +96,14 @@ public class OllamaApiClientServiceImpl implements OllamaApiClientService {
                 .bodyToMono(String.class)
                 // Apply reactive timeout to avoid blocking RabbitMQ threads
                 .timeout(Duration.ofSeconds(ollamaProperties.getReadTimeoutSeconds()),
-                        Mono.error(new RuntimeException(
+                        Mono.error(new java.util.concurrent.TimeoutException(
                                 "[OllamaClient] Timeout sau " + ollamaProperties.getReadTimeoutSeconds()
                                         + "s — model: " + model)))
+                // Single retry (max 1) on transient errors — NOT on timeout (model overloaded = don't retry)
+                .retryWhen(reactor.util.retry.Retry.backoff(1, Duration.ofSeconds(3))
+                        .filter(ex -> !(ex instanceof java.util.concurrent.TimeoutException))
+                        .doBeforeRetry(s -> log.warn("[OllamaClient] Retry lần {}/1 — model: {} — lý do: {}",
+                                s.totalRetries() + 1, model, s.failure().getMessage())))
                 .doOnError(ex -> log.warn("[OllamaClient] Gọi model {} thất bại: {}", model, ex.getMessage()))
                 .block();
 

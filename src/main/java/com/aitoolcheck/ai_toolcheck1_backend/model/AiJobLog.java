@@ -72,4 +72,12 @@ public class AiJobLog {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "ai_skill_id", referencedColumnName = "id")
     private AiSkill aiSkill;
+
+    /**
+     * Groups all AI jobs created in a single "generate-docs-from-source" call.
+     * Nullable — legacy jobs created before this field was added will have NULL.
+     * FE uses this to filter/monitor jobs belonging to the same scan batch.
+     */
+    @Column(name = "scan_batch_id")
+    private UUID scanBatchId;
 }
