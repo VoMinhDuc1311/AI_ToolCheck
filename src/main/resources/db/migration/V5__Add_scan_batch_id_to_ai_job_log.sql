@@ -1,3 +1,16 @@
+-- ============================================================
+-- NOTE: This file is FOR REFERENCE ONLY.
+-- This project uses Hibernate ddl-auto=update (NOT Flyway).
+-- There is NO flyway dependency in pom.xml and no flyway_schema_history table.
+-- The scan_batch_id column was added to DB automatically by Hibernate
+-- when it read the @Column(name="scan_batch_id") field on AiJobLog.java.
+--
+-- If Flyway is introduced in the future, this file must be reviewed carefully
+-- before being activated as a versioned migration, because:
+--   1. The column may already exist (IF NOT EXISTS handles this safely).
+--   2. The existing DB must be baselined first (flyway baseline).
+-- ============================================================
+
 -- V5: Add scan_batch_id to ai_job_log
 -- Purpose: Groups all AI jobs created in a single "generate-docs-from-source" scan run.
 -- FE uses this UUID to filter/poll jobs belonging to the same batch.

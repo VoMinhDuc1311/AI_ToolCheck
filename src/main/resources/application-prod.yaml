@@ -48,6 +48,10 @@ ai:
     primary-model: ${OLLAMA_PRIMARY_MODEL:qwen2.5-coder:7b}
     fallback-model: ${OLLAMA_FALLBACK_MODEL:qwen2.5-coder:7b}
     embed-model: ${OLLAMA_EMBED_MODEL:mxbai-embed-large}
+    connect-timeout-seconds: ${OLLAMA_CONNECT_TIMEOUT_SECONDS:10}
+    # 90s: enough for qwen2.5-coder:7b with LegacySourceContextReducerService reduced input.
+    # Override via env OLLAMA_READ_TIMEOUT_SECONDS if running a larger model.
+    read-timeout-seconds: ${OLLAMA_READ_TIMEOUT_SECONDS:90}
 
 logging:
   level:
