@@ -51,6 +51,13 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     @Transactional
     public AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
                                                    UUID projectId, UUID sourceFileId, UUID apiEndpointId) {
+        return createPendingJobAndTriggerAi(promptText, skillCode, projectId, sourceFileId, apiEndpointId, null);
+    }
+
+    @Override
+    @Transactional
+    public AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
+                                                   UUID projectId, UUID sourceFileId, UUID apiEndpointId, UUID scanBatchId) {
         projectAccessService.requireCanTriggerAiJob(projectId);
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
@@ -82,6 +89,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .modelName(geminiProperties.getModel())
                 .sourceProject(projectRef)
                 .aiSkill(aiSkill)
+                .scanBatchId(scanBatchId)
                 .build();
                 
         if (apiEndpointId != null) {
@@ -472,6 +480,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .executionStatus(jobLog.getExecutionStatus())
                 .startedAt(jobLog.getStartedAt())
                 .completedAt(jobLog.getCompletedAt())
+                .scanBatchId(jobLog.getScanBatchId())
                 .build();
     }
 }

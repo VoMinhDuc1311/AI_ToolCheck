@@ -24,6 +24,13 @@ public interface AiJobLogService {
     AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
             UUID projectId, UUID sourceFileId, UUID apiEndpointId);
 
+    /**
+     * Overload with scanBatchId — dùng bởi SourceDocumentationOrchestratorServiceImpl.
+     * Persists scanBatchId vào ai_job_log để FE có thể group/poll theo batch.
+     */
+    AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
+            UUID projectId, UUID sourceFileId, UUID apiEndpointId, UUID scanBatchId);
+
     int triggerEnrichmentForProject(UUID projectId);
 
     AiJobLogResponse createPendingJob(CreateAiJobLogRequest request);

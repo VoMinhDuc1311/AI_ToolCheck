@@ -19,7 +19,8 @@ import java.util.List;
 public class AiInferenceResultDto {
 
     @NotNull(message = "endpoints must not be null")
-    @NotEmpty(message = "endpoints must not be empty")
+    // NOTE: empty list is intentionally valid — helper/non-entrypoint files legitimately return
+    // {"endpoints":[]} and must NOT fail DTO validation. The consumer handles this gracefully.
     @Valid
     private List<EndpointDto> endpoints = Collections.emptyList();
 
