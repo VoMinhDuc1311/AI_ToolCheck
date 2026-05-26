@@ -7,8 +7,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDt
 import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.LogStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
-import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiPersistenceException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
@@ -25,11 +25,12 @@ import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiProviderErrorClassifier;
+import com.aitoolcheck.ai_toolcheck1_backend.service.legacy.LegacyRuleBasedEndpointExtractorService;
 
 import com.rabbitmq.client.Channel;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.springframework.amqp.rabbit.annotation.RabbitListener;
 import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.messaging.handler.annotation.Header;
@@ -106,6 +107,8 @@ public class AiTaskConsumer {
     private final SourceFileRepository sourceFileRepository;
     // Context reducer for Ollama fallback — strips boilerplate before sending
     private final com.aitoolcheck.ai_toolcheck1_backend.service.legacy.LegacySourceContextReducerService contextReducerService;
+    private final LegacyRuleBasedEndpointExtractorService ruleBasedEndpointExtractorService;
+    private final AiProviderErrorClassifier aiProviderErrorClassifier;
 
     // =========================================================================
     // ENTRY POINT - Phase 4: Quản lý trạng thái Job
@@ -186,6 +189,19 @@ public class AiTaskConsumer {
             successfullyProcessed = true;
 
             // THẤT BẠI DO AI (Lỗi Parse JSON)
+        } catch (AiProviderFailureException providerEx) {
+            log.error("[Phase 4 - ERROR] AI Provider Failure");
+            log.error("  - ErrorCode: {}", providerEx.getErrorCode());
+            log.error("  - Message: {}", providerEx.getMessage());
+            log.error("  - JobId: {}", message.getJobId());
+
+            if (jobLog != null) {
+                String errorDetail = formatDetailedError(providerEx.getMessage(), providerEx);
+                aiJobLogService.markJobAsFailed(jobLog.getId(), errorDetail);
+            }
+            recordFailedAuditLog(message, providerEx.getAuditRawResponse(), providerEx.getErrorCode());
+            successfullyProcessed = true;
+
         } catch (AiJsonParseException jsonEx) {
             log.error("[Phase 4 - ERROR] ❌ AI JSON Parse Error");
             log.error("  ├─ ErrorType: {}", jsonEx.getErrorType());
@@ -439,9 +455,16 @@ public class AiTaskConsumer {
         int tokenOutput = 0;
         AiInferenceResultDto result = null;
         String cleanJson = null;
+        String successMessage = null;
 
         String geminiErrorSummary = null;
         String ollamaErrorSummary = null;
+        Exception geminiFailure = null;
+
+        AiInferenceResultDto ruleBasedFallback = ruleBasedEndpointExtractorService.extract(sourceFile);
+        int fallbackEndpointCount = endpointCount(ruleBasedFallback);
+        log.info("[LegacyCodeReader][RuleFallback] Precomputed {} endpoint(s) for file {}",
+                fallbackEndpointCount, sourceFile.getFilePath());
 
         // ── TIER 1: Gemini Cloud (primary) ───────────────────────────────────
         try {
@@ -473,6 +496,7 @@ public class AiTaskConsumer {
 
         } catch (Exception geminiEx) {
             // Either provider call failed, OR parse / validation failed
+            geminiFailure = geminiEx;
             geminiErrorSummary = geminiEx.getMessage();
             log.warn("[LegacyCodeReader][Tier1] Gemini failed: {}. Falling back to Ollama...",
                     abbreviate(geminiEx.getMessage(), 200));
@@ -506,33 +530,29 @@ public class AiTaskConsumer {
                 log.error("[LegacyCodeReader][Tier2] Ollama also failed: {}", ollamaEx.getMessage());
 
                 // Classify error type for structured error code
-                String geminiErrCode = classifyProviderError(geminiErrorSummary);
-                String ollamaErrCode = classifyProviderError(ollamaErrorSummary);
-
-                // Determine if this was an empty-endpoint result or a real provider failure
-                boolean geminiNoEndpoints = geminiErrorSummary != null
-                        && (geminiErrorSummary.contains("endpoints must not be empty")
-                            || geminiErrorSummary.contains("No endpoints"));
-                boolean ollamaNoEndpoints = ollamaErrorSummary != null
-                        && (ollamaErrorSummary.contains("endpoints must not be empty")
-                            || ollamaErrorSummary.contains("No endpoints"));
-
-                String errorDetail;
-                if (geminiNoEndpoints || ollamaNoEndpoints) {
-                    // This should now be rare since @NotEmpty was removed; treat as success-empty
-                    errorDetail = String.format(
-                            "[AI_NO_ENDPOINTS] No endpoints extracted for file: %s",
-                            sourceFile.getFilePath());
+                String errorDetail = buildProviderFailureMessage(geminiFailure, ollamaEx);
+                if (fallbackEndpointCount > 0) {
+                    result = ruleBasedFallback;
+                    modelUsed = "rule-based-fallback";
+                    rawAiResponse = "[AI_PROVIDER_FALLBACK] AI providers failed; rule-based fallback produced "
+                            + fallbackEndpointCount + " endpoint(s).";
+                    cleanJson = null;
+                    tokenInput = 0;
+                    tokenOutput = 0;
+                    successMessage = rawAiResponse;
+                    log.warn("[LegacyCodeReader][RuleFallback] {} Provider detail: {}",
+                            successMessage, errorDetail);
                 } else {
-                    // Real provider failure — log codes clearly
-                    errorDetail = String.format(
-                            "[AI_PROVIDER_FAILED] Gemini: [%s] %s | Ollama: [%s] %s",
-                            geminiErrCode, abbreviate(geminiErrorSummary, 120),
-                            ollamaErrCode, abbreviate(ollamaErrorSummary, 120));
+                    String noFallbackMessage = errorDetail
+                            + "; rule-based fallback produced no endpoints for " + sourceFile.getFilePath();
+                    log.warn("[LegacyCodeReader][RuleFallback] No fallback metadata for file {}. Job marked FAILED.",
+                            sourceFile.getFilePath());
+                    throw new AiProviderFailureException(
+                            "AI_PROVIDER_FAILED",
+                            noFallbackMessage,
+                            noFallbackMessage,
+                            ollamaEx);
                 }
-
-                aiJobLogService.markJobAsFailed(jobLog.getId(), errorDetail);
-                throw new AiJsonParseException(ErrorType.DTO_VALIDATION_FAILED, errorDetail, ollamaEx);
             }
         }
 
@@ -554,7 +574,7 @@ public class AiTaskConsumer {
         log.info("[LegacyCodeReader] Persisted inference data to database");
 
         // ── Mark SUCCESS ─────────────────────────────────────────────────────
-        aiJobLogService.markJobAsSuccess(jobLog.getId(), tokenInput, tokenOutput, modelUsed);
+        aiJobLogService.markJobAsSuccess(jobLog.getId(), tokenInput, tokenOutput, modelUsed, successMessage);
         log.info("[LegacyCodeReader] ✓ Job marked SUCCESS (JobId: {}), model: {}", jobLog.getId(), modelUsed);
 
         return rawAiResponse;
@@ -661,6 +681,12 @@ public class AiTaskConsumer {
     private void recordFailedAuditLog(AiTaskMessage message,
             String rawAiResponse,
             AiJsonParseException jsonEx) {
+        recordFailedAuditLog(message, rawAiResponse, jsonEx.getErrorType().name());
+    }
+
+    private void recordFailedAuditLog(AiTaskMessage message,
+            String rawAiResponse,
+            String errorType) {
         if (rawAiResponse == null) {
             log.warn("[Audit] rawAiResponse=null — Gemini chưa kịp trả về. Bỏ qua Audit Log FAILED.");
             return;
@@ -683,10 +709,10 @@ public class AiTaskConsumer {
                     null, // Chưa có cleanJson
                     null, // Chưa có confidence
                     LogStatus.FAILED,
-                    jsonEx.getErrorType().name() // Ví dụ: "INVALID_JSON_SYNTAX"
+                    errorType
             );
 
-            log.info("[Audit] Audit Log FAILED recorded — ErrorType: {}", jsonEx.getErrorType());
+            log.info("[Audit] Audit Log FAILED recorded - ErrorType: {}", errorType);
 
         } catch (Exception auditEx) {
             log.error("[Audit] Không thể ghi Audit Log FAILED — Lý do: {}", auditEx.getMessage());
@@ -783,17 +809,29 @@ public class AiTaskConsumer {
      * Classify a provider error message into a structured error code.
      * Used for DB error_message field — keeps it short and searchable.
      */
-    private String classifyProviderError(String errorMsg) {
-        if (errorMsg == null) return "AI_UNKNOWN";
-        String lower = errorMsg.toLowerCase(java.util.Locale.ROOT);
-        if (lower.contains("timeout") || lower.contains("timed out")) return "AI_TIMEOUT";
-        if (lower.contains("429") || lower.contains("rate limit") || lower.contains("quota")) return "AI_QUOTA_EXCEEDED";
-        if (lower.contains("invalid json") || lower.contains("malformed")) return "AI_RESPONSE_INVALID";
-        if (lower.contains("no endpoint") || lower.contains("endpoints must not be empty")) return "AI_NO_ENDPOINTS";
-        if (lower.contains("dto") && lower.contains("validation")) return "AI_DTO_VALIDATION_FAILED";
-        if (lower.contains("connection refused") || lower.contains("connection reset")) return "AI_CONNECTION_FAILED";
-        if (lower.contains("5xx") || lower.contains("server error")) return "AI_SERVER_ERROR";
-        return "AI_PROVIDER_FAILED";
+    private String buildProviderFailureMessage(Throwable geminiFailure, Throwable ollamaFailure) {
+        String geminiCode = aiProviderErrorClassifier.classify(geminiFailure);
+        String ollamaCode = aiProviderErrorClassifier.classify(ollamaFailure);
+        return String.format("[AI_PROVIDER_FAILED] Gemini: [%s] %s | Ollama: [%s] %s",
+                geminiCode, abbreviate(rootMessage(geminiFailure), 120),
+                ollamaCode, abbreviate(rootMessage(ollamaFailure), 120));
+    }
+
+    private String rootMessage(Throwable throwable) {
+        if (throwable == null) {
+            return "";
+        }
+        Throwable current = throwable;
+        Throwable last = throwable;
+        while (current != null) {
+            last = current;
+            current = current.getCause();
+        }
+        return last.getMessage() != null ? last.getMessage() : throwable.getMessage();
+    }
+
+    private int endpointCount(AiInferenceResultDto dto) {
+        return dto == null || dto.getEndpoints() == null ? 0 : dto.getEndpoints().size();
     }
 
     /**
