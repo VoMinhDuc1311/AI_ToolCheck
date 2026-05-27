@@ -1,6 +1,9 @@
 package com.aitoolcheck.ai_toolcheck1_backend.config;
 
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.CorsProperties;
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.messaging.simp.config.ChannelRegistration;
 import org.springframework.messaging.simp.config.MessageBrokerRegistry;
 import org.springframework.web.socket.config.annotation.EnableWebSocketMessageBroker;
 import org.springframework.web.socket.config.annotation.StompEndpointRegistry;
@@ -8,27 +11,34 @@ import org.springframework.web.socket.config.annotation.WebSocketMessageBrokerCo
 
 @Configuration
 @EnableWebSocketMessageBroker
+@RequiredArgsConstructor
 public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
+
+    private final CorsProperties corsProperties;
+    private final WebSocketAuthChannelInterceptor webSocketAuthChannelInterceptor;
 
     @Override
     public void configureMessageBroker(MessageBrokerRegistry registry) {
-        registry.enableSimpleBroker("/topic");
+        // Enable simple in-memory broker for topic and user-specific queues
+        registry.enableSimpleBroker("/topic", "/queue");
         registry.setApplicationDestinationPrefixes("/app");
+        // Required for convertAndSendToUser — user-specific destination prefix
+        registry.setUserDestinationPrefix("/user");
     }
 
     @Override
     public void registerStompEndpoints(StompEndpointRegistry registry) {
-        // Local dev origins
+        // Use the same allowed-origin-patterns as the HTTP CORS config so that
+        // Vercel-deployed frontends can also establish WebSocket connections.
         registry.addEndpoint("/ws")
-                .setAllowedOrigins(
-                        "http://localhost:3000",
-                        "http://localhost:5173",
-                        "http://localhost:5500",
-                        "http://localhost:63342",
-                        "http://127.0.0.1:3000",
-                        "http://127.0.0.1:5173",
-                        "http://127.0.0.1:5500",
-                        "http://127.0.0.1:63342"
+                .setAllowedOriginPatterns(
+                        corsProperties.getAllowedOriginPatterns().toArray(String[]::new)
                 );
+    }
+
+    @Override
+    public void configureClientInboundChannel(ChannelRegistration registration) {
+        // Enforce JWT authentication on every STOMP CONNECT frame
+        registration.interceptors(webSocketAuthChannelInterceptor);
     }
 }
