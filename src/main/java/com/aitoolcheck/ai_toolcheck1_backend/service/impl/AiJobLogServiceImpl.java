@@ -5,6 +5,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobLogResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ForbiddenException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
@@ -18,6 +20,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
 import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
@@ -27,6 +30,7 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
@@ -46,6 +50,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     private final ProjectAccessService projectAccessService;
     private final CurrentUserService currentUserService;
     private final com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties geminiProperties;
+    private final ProjectNotificationEventPublisher notificationEventPublisher;
 
     @Override
     @Transactional
@@ -371,6 +376,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         jobLog.setCompletedAt(LocalDateTime.now());
         aiJobLogRepository.save(jobLog);
         log.info("Job {} transitioned from RUNNING to SUCCESS", id);
+        publishAgent1JobEvent(jobLog, NotificationType.AGENT1_SCAN_COMPLETED, NotificationSeverity.SUCCESS);
     }
 
     @Override
@@ -397,6 +403,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         jobLog.setCompletedAt(LocalDateTime.now());
         aiJobLogRepository.save(jobLog);
         log.info("Job {} transitioned from RUNNING to SUCCESS with model: {}", id, modelName);
+        publishAgent1JobEvent(jobLog, NotificationType.AGENT1_SCAN_COMPLETED, NotificationSeverity.SUCCESS);
     }
 
     @Override
@@ -410,6 +417,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
         jobLog.setCompletedAt(LocalDateTime.now());
         aiJobLogRepository.save(jobLog);
         log.info("Job {} transitioned to FAILED. Reason: {}", id, errorMessage);
+        publishAgent1JobEvent(jobLog, NotificationType.AGENT1_SCAN_FAILED, NotificationSeverity.ERROR);
     }
 
     @Override
@@ -490,5 +498,37 @@ public class AiJobLogServiceImpl implements AiJobLogService {
                 .scanBatchId(jobLog.getScanBatchId())
                 .errorMessage(jobLog.getErrorMessage())
                 .build();
+    }
+
+    private void publishAgent1JobEvent(AiJobLog jobLog, NotificationType type, NotificationSeverity severity) {
+        if (jobLog == null
+                || jobLog.getSourceProject() == null
+                || jobLog.getSourceProject().getId() == null
+                || jobLog.getJobType() != JobType.LEGACY_INFERENCE) {
+            return;
+        }
+
+        UUID projectId = jobLog.getSourceProject().getId();
+        String status = jobLog.getExecutionStatus() == null ? null : jobLog.getExecutionStatus().name();
+        String title = type == NotificationType.AGENT1_SCAN_COMPLETED
+                ? "Agent 1 scan completed"
+                : "Agent 1 scan failed";
+        String message = type == NotificationType.AGENT1_SCAN_COMPLETED
+                ? "Agent 1 source scan completed."
+                : "Agent 1 source scan failed. Check job logs for details.";
+
+        notificationEventPublisher.publishForProjectOwner(
+                projectId,
+                type,
+                severity,
+                title,
+                message,
+                "/source-projects/" + projectId + "/ai-jobs",
+                Map.of(
+                        "projectId", projectId,
+                        "jobId", jobLog.getId(),
+                        "jobType", jobLog.getJobType().name(),
+                        "status", status == null ? "" : status
+                ));
     }
 }

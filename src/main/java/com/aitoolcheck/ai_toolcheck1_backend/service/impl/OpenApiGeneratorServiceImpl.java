@@ -2,6 +2,8 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.openapi.res.OpenApiGenerateResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ParamIn;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.UsageType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
@@ -11,6 +13,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiGeneratorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import com.aitoolcheck.ai_toolcheck1_backend.service.openapi.OpenApiMetadataEnhancer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +40,7 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     private final ProjectAccessService projectAccessService;
     private final ApiMetadataCleanupService apiMetadataCleanupService;
     private final OpenApiMetadataEnhancer openApiMetadataEnhancer;
+    private final ProjectNotificationEventPublisher notificationEventPublisher;
 
     // -------------------------------------------------------------------------
     // Public methods
@@ -123,6 +127,21 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
         Map<String, Object> paths = castMap(openApiMap.get("paths"));
         int pathCount = paths.size();
         int operationCount = countOperations(paths);
+
+        notificationEventPublisher.publishForCurrentUser(
+                projectId,
+                NotificationType.OPENAPI_GENERATED,
+                NotificationSeverity.SUCCESS,
+                "OpenAPI generated",
+                "OpenAPI document generated successfully.",
+                "/source-projects/" + projectId + "/documentation",
+                Map.of(
+                        "projectId", projectId,
+                        "documentId", savedDocument.getId(),
+                        "versionId", savedVersion.getId(),
+                        "pathCount", pathCount,
+                        "operationCount", operationCount
+                ));
 
         return OpenApiGenerateResponse.builder()
                 .projectId(projectId)

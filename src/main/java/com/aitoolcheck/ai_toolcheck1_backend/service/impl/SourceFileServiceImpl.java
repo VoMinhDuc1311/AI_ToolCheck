@@ -4,6 +4,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileDetail
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileUploadResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.FileType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.SourceUploadStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
@@ -20,6 +22,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Service;
@@ -54,6 +57,7 @@ public class SourceFileServiceImpl implements SourceFileService {
     private final SourceAnalysisResultRepository sourceAnalysisResultRepository;
     private final ApiDocumentRepository apiDocumentRepository;
     private final ProjectAccessService projectAccessService;
+    private final ProjectNotificationEventPublisher notificationEventPublisher;
 
     @Override
     @Transactional
@@ -175,6 +179,19 @@ public class SourceFileServiceImpl implements SourceFileService {
                 uploadVersion.setStatus(SourceUploadStatus.COMPLETED);
                 uploadVersion.setCompletedAt(java.time.LocalDateTime.now());
                 sourceUploadVersionRepository.save(uploadVersion);
+
+                notificationEventPublisher.publishForCurrentUser(
+                        projectId,
+                        NotificationType.SOURCE_UPLOAD_COMPLETED,
+                        NotificationSeverity.SUCCESS,
+                        "Source upload completed",
+                        "Source ZIP upload completed for " + sourceProject.getProjectName() + ".",
+                        "/source-projects/" + projectId,
+                        Map.of(
+                                "projectId", projectId,
+                                "uploadVersionId", uploadVersion.getId(),
+                                "filename", originalFilename
+                        ));
 
                 return SourceFileUploadResponse.builder()
                         .projectId(sourceProject.getId())
