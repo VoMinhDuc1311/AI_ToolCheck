@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseassertion.res.TestCaseAssertionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.res.TestCaseInputResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.apiendpoint.res.ApiEndpointResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.PriorityLevel;
@@ -38,6 +39,7 @@ public class TestCaseDetailResponse {
     private Boolean cleanupRequired;
     private TestCaseInputResponse input;
     private List<TestCaseAssertionResponse> assertions;
+    private ApiEndpointResponse apiEndpoint;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
     private LocalDateTime deletedAt;

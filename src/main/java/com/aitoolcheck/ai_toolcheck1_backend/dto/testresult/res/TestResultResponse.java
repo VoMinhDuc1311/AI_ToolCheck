@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.res;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testfailureanalysis.res.TestFailureAnalysisDetailResponse;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Getter;
@@ -26,6 +27,7 @@ public class TestResultResponse {
     private String actualResponseJson;
     private String errorMessage;
     private String blockedReason;
+    private TestFailureAnalysisDetailResponse failureAnalysis;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

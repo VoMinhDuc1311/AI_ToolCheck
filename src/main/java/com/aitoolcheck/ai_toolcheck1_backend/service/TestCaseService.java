@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service;
 
+import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.PagedResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.CreateTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.GenerateTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.UpdateTestCaseRequest;
@@ -11,6 +12,28 @@ import java.util.List;
 import java.util.UUID;
 
 public interface TestCaseService {
+
+    PagedResponse<TestCaseDetailResponse> searchTestCases(
+            UUID projectId,
+            String keyword,
+            String caseType,
+            String priorityLevel,
+            String generatedBy,
+            Boolean activeFlag,
+            Boolean requiresWrite,
+            Boolean cleanupRequired,
+            String httpMethod,
+            String endpointPath,
+            UUID apiEndpointId,
+            String createdFrom,
+            String createdTo,
+            String updatedFrom,
+            String updatedTo,
+            int page,
+            int size,
+            String sortBy,
+            String sortDir
+    );
 
     TestCaseDetailResponse create(CreateTestCaseRequest request);
 
