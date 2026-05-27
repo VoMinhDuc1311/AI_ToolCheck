@@ -17,6 +17,8 @@ public interface TestCaseAssertionRepository extends JpaRepository<TestCaseAsser
 
     void deleteByTestCase_Id(UUID testCaseId);
 
+    List<TestCaseAssertion> findByTestCase_IdIn(java.util.Collection<UUID> testCaseIds);
+
     // ── Permanent delete support ───────────────────────────────────────────────
 
     /** Delete all TestCaseAssertion rows for a project. */
@@ -28,4 +30,7 @@ public interface TestCaseAssertionRepository extends JpaRepository<TestCaseAsser
         )
     """)
     void deleteByTestCaseProjectId(@Param("projectId") UUID projectId);
+
+    @Query("SELECT COUNT(tca) FROM TestCaseAssertion tca WHERE tca.testCase.sourceProject.id = :projectId AND tca.testCase.deletedFlag = false")
+    long countAssertionsByProjectId(@Param("projectId") UUID projectId);
 }

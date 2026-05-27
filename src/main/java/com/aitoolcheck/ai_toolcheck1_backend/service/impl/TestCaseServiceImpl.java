@@ -10,6 +10,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.GenerateTestCaseRe
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.UpdateTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res.TestCaseDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res.TestCaseResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.apiendpoint.res.ApiEndpointResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseassertion.req.CreateTestCaseAssertionRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseassertion.req.UpdateTestCaseAssertionRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseassertion.res.TestCaseAssertionResponse;
@@ -40,6 +41,17 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
+import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
+import jakarta.persistence.criteria.Predicate;
+import jakarta.persistence.criteria.JoinType;
+import jakarta.persistence.criteria.Join;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.PagedResponse;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
@@ -51,6 +63,7 @@ import java.util.UUID;
 public class TestCaseServiceImpl implements TestCaseService {
 
     private final TestCaseRepository testCaseRepository;
+    private final TestCaseAssertionRepository testCaseAssertionRepository;
     private final ApiEndpointRepository apiEndpointRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
     private final AiJobLogRepository aiJobLogRepository;
@@ -253,6 +266,160 @@ public class TestCaseServiceImpl implements TestCaseService {
 
         TestCase saved = testCaseRepository.save(testCase);
         return toDetailResponse(saved);
+    }
+
+    @Override
+    @Transactional(readOnly = true)
+    public PagedResponse<TestCaseDetailResponse> searchTestCases(
+            UUID projectId,
+            String keyword,
+            String caseType,
+            String priorityLevel,
+            String generatedBy,
+            Boolean activeFlag,
+            Boolean requiresWrite,
+            Boolean cleanupRequired,
+            String httpMethod,
+            String endpointPath,
+            UUID apiEndpointId,
+            String createdFrom,
+            String createdTo,
+            String updatedFrom,
+            String updatedTo,
+            int page,
+            int size,
+            String sortBy,
+            String sortDir
+    ) {
+        projectAccessService.requireCanViewProject(projectId);
+
+        // Build sorting
+        Sort sort = Sort.by(Sort.Direction.DESC, "createdAt");
+        if (sortBy != null && !sortBy.trim().isEmpty()) {
+            Sort.Direction direction = "asc".equalsIgnoreCase(sortDir) ? Sort.Direction.ASC : Sort.Direction.DESC;
+            String cleanSortBy = sortBy.trim();
+            if ("endpoint".equalsIgnoreCase(cleanSortBy)) {
+                sort = Sort.by(direction, "apiEndpoint.endpointPath");
+            } else if ("name".equalsIgnoreCase(cleanSortBy) || "caseName".equalsIgnoreCase(cleanSortBy)) {
+                sort = Sort.by(direction, "caseName");
+            } else if ("priority".equalsIgnoreCase(cleanSortBy) || "priorityLevel".equalsIgnoreCase(cleanSortBy)) {
+                sort = Sort.by(direction, "priorityLevel");
+            } else {
+                sort = Sort.by(direction, cleanSortBy);
+            }
+        }
+
+        Pageable pageable = PageRequest.of(page, size, sort);
+
+        Specification<TestCase> spec = (root, query, cb) -> {
+            List<Predicate> predicates = new ArrayList<>();
+
+            predicates.add(cb.equal(root.get("sourceProject").get("id"), projectId));
+            predicates.add(cb.equal(root.get("deletedFlag"), false));
+
+            if (keyword != null && !keyword.trim().isEmpty()) {
+                String kw = "%" + keyword.trim().toLowerCase() + "%";
+                Join<Object, Object> inputJoin = root.join("testCaseInput", JoinType.LEFT);
+                predicates.add(cb.or(
+                    cb.like(cb.lower(root.get("caseName")), kw),
+                    cb.like(cb.lower(root.get("description")), kw),
+                    cb.like(cb.lower(root.get("caseCode")), kw),
+                    cb.like(cb.lower(inputJoin.get("requestPath")), kw)
+                ));
+            }
+
+            if (caseType != null && !caseType.trim().isEmpty() && !"ALL".equalsIgnoreCase(caseType)) {
+                try {
+                    predicates.add(cb.equal(root.get("caseType"), CaseType.valueOf(caseType.trim().toUpperCase())));
+                } catch (Exception ignored) {}
+            }
+            if (priorityLevel != null && !priorityLevel.trim().isEmpty() && !"ALL".equalsIgnoreCase(priorityLevel)) {
+                try {
+                    predicates.add(cb.equal(root.get("priorityLevel"), PriorityLevel.valueOf(priorityLevel.trim().toUpperCase())));
+                } catch (Exception ignored) {}
+            }
+            if (generatedBy != null && !generatedBy.trim().isEmpty() && !"ALL".equalsIgnoreCase(generatedBy)) {
+                try {
+                    predicates.add(cb.equal(root.get("generatedBy"), GeneratedBy.valueOf(generatedBy.trim().toUpperCase())));
+                } catch (Exception ignored) {}
+            }
+
+            if (activeFlag != null) {
+                predicates.add(cb.equal(root.get("activeFlag"), activeFlag));
+            }
+            if (requiresWrite != null) {
+                predicates.add(cb.equal(root.get("requiresWrite"), requiresWrite));
+            }
+            if (cleanupRequired != null) {
+                predicates.add(cb.equal(root.get("cleanupRequired"), cleanupRequired));
+            }
+
+            if (httpMethod != null && !httpMethod.trim().isEmpty() && !"ALL".equalsIgnoreCase(httpMethod)) {
+                Join<Object, Object> inputJoin = root.join("testCaseInput", JoinType.LEFT);
+                try {
+                    predicates.add(cb.equal(inputJoin.get("httpMethod"), HttpMethod.valueOf(httpMethod.trim().toUpperCase())));
+                } catch (Exception ignored) {}
+            }
+
+            if (endpointPath != null && !endpointPath.trim().isEmpty() && !"ALL".equalsIgnoreCase(endpointPath)) {
+                Join<Object, Object> endpointJoin = root.join("apiEndpoint", JoinType.LEFT);
+                predicates.add(cb.like(cb.lower(endpointJoin.get("endpointPath")), "%" + endpointPath.trim().toLowerCase() + "%"));
+            }
+
+            if (apiEndpointId != null) {
+                predicates.add(cb.equal(root.get("apiEndpoint").get("id"), apiEndpointId));
+            }
+
+            DateTimeFormatter dateFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd");
+            if (createdFrom != null && !createdFrom.trim().isEmpty()) {
+                try {
+                    LocalDateTime start = LocalDate.parse(createdFrom.trim(), dateFormatter).atStartOfDay();
+                    predicates.add(cb.greaterThanOrEqualTo(root.get("createdAt"), start));
+                } catch (Exception ignored) {}
+            }
+            if (createdTo != null && !createdTo.trim().isEmpty()) {
+                try {
+                    LocalDateTime end = LocalDate.parse(createdTo.trim(), dateFormatter).atTime(23, 59, 59);
+                    predicates.add(cb.lessThanOrEqualTo(root.get("createdAt"), end));
+                } catch (Exception ignored) {}
+            }
+            if (updatedFrom != null && !updatedFrom.trim().isEmpty()) {
+                try {
+                    LocalDateTime start = LocalDate.parse(updatedFrom.trim(), dateFormatter).atStartOfDay();
+                    predicates.add(cb.greaterThanOrEqualTo(root.get("updatedAt"), start));
+                } catch (Exception ignored) {}
+            }
+            if (updatedTo != null && !updatedTo.trim().isEmpty()) {
+                try {
+                    LocalDateTime end = LocalDate.parse(updatedTo.trim(), dateFormatter).atTime(23, 59, 59);
+                    predicates.add(cb.lessThanOrEqualTo(root.get("updatedAt"), end));
+                } catch (Exception ignored) {}
+            }
+
+            return cb.and(predicates.toArray(new Predicate[0]));
+        };
+
+        Page<TestCase> pageResult = testCaseRepository.findAll(spec, pageable);
+
+        List<TestCase> testCases = pageResult.getContent();
+        if (!testCases.isEmpty()) {
+            List<UUID> testCaseIds = testCases.stream().map(TestCase::getId).toList();
+            testCaseAssertionRepository.findByTestCase_IdIn(testCaseIds);
+        }
+
+        List<TestCaseDetailResponse> itemResponses = testCases.stream()
+                .map(this::toDetailResponse)
+                .toList();
+
+        return PagedResponse.<TestCaseDetailResponse>builder()
+                .items(itemResponses)
+                .page(pageResult.getNumber())
+                .size(pageResult.getSize())
+                .totalElements(pageResult.getTotalElements())
+                .totalPages(pageResult.getTotalPages())
+                .hasNext(pageResult.hasNext())
+                .hasPrevious(pageResult.hasPrevious())
+                .build();
     }
 
     @Override
@@ -884,9 +1051,38 @@ public class TestCaseServiceImpl implements TestCaseService {
                 .cleanupRequired(testCase.getCleanupRequired())
                 .input(toInputResponse(testCase.getTestCaseInput()))
                 .assertions(assertionResponses)
+                .apiEndpoint(toApiEndpointResponse(testCase.getApiEndpoint()))
                 .createdAt(testCase.getCreatedAt())
                 .updatedAt(testCase.getUpdatedAt())
                 .deletedAt(testCase.getDeletedAt())
+                .build();
+    }
+
+    private ApiEndpointResponse toApiEndpointResponse(ApiEndpoint apiEndpoint) {
+        if (apiEndpoint == null) {
+            return null;
+        }
+        return ApiEndpointResponse.builder()
+                .id(apiEndpoint.getId())
+                .projectId(apiEndpoint.getSourceProject().getId())
+                .sourceFileId(apiEndpoint.getSourceFile() == null ? null : apiEndpoint.getSourceFile().getId())
+                .sourceUploadVersionId(apiEndpoint.getSourceUploadVersion() == null ? null : apiEndpoint.getSourceUploadVersion().getId())
+                .controllerName(apiEndpoint.getControllerName())
+                .methodName(apiEndpoint.getMethodName())
+                .httpMethod(apiEndpoint.getHttpMethod())
+                .endpointPath(apiEndpoint.getEndpointPath())
+                .stableKey(apiEndpoint.getStableKey())
+                .description(apiEndpoint.getDescription())
+                .operationId(apiEndpoint.getOperationId())
+                .tagName(apiEndpoint.getTagName())
+                .authRequired(apiEndpoint.getAuthRequired())
+                .deprecatedFlag(apiEndpoint.getDeprecatedFlag())
+                .activeFlag(apiEndpoint.getActiveFlag())
+                .staleFlag(apiEndpoint.getStaleFlag())
+                .aiEnrichedFlag(apiEndpoint.getAiEnrichedFlag())
+                .aiSummary(apiEndpoint.getAiSummary())
+                .aiDescription(apiEndpoint.getAiDescription())
+                .aiEnrichedAt(apiEndpoint.getAiEnrichedAt())
                 .build();
     }
 

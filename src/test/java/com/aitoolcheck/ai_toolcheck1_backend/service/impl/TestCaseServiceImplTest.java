@@ -39,6 +39,7 @@ class TestCaseServiceImplTest {
 
         TestCaseServiceImpl service = new TestCaseServiceImpl(
                 testCaseRepository,
+                mock(TestCaseAssertionRepository.class),
                 mock(ApiEndpointRepository.class),
                 mock(ApiDocumentVersionRepository.class),
                 mock(AiJobLogRepository.class),
