@@ -235,6 +235,19 @@ public class SourceFileServiceImpl implements SourceFileService {
         if (originalFilename == null || !originalFilename.toLowerCase().endsWith(".zip")) {
             throw new BadRequestException("Only .zip files are supported");
         }
+
+        // Magic-byte check: ZIP files begin with PK (0x50 0x4B)
+        try (InputStream is = file.getInputStream()) {
+            byte[] header = new byte[4];
+            int read = is.read(header, 0, 4);
+            if (read < 2 || header[0] != 0x50 || header[1] != 0x4B) {
+                throw new BadRequestException("Uploaded file is not a valid ZIP archive");
+            }
+        } catch (BadRequestException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new BadRequestException("Unable to validate uploaded file format");
+        }
     }
 
     private String sanitizeOriginalFilename(String originalFilename) {

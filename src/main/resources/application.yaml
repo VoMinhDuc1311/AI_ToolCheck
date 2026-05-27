@@ -24,6 +24,12 @@ springdoc:
   swagger-ui:
     enabled: true
 
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+
 ai:
   optimization:
     enabled: true
@@ -78,3 +84,32 @@ app:
       email: ${APP_AUTH_SEED_ADMIN_EMAIL:}
       password: ${APP_AUTH_SEED_ADMIN_PASSWORD:}
       full-name: ${APP_AUTH_SEED_ADMIN_FULL_NAME:System Admin}
+
+  # CORS allowed origins for the React/Vite frontend.
+  # Vercel preview and production deployments use dynamic *.vercel.app origins.
+  cors:
+    allowed-origin-patterns:
+      - http://localhost:5173
+      - http://localhost:4173
+      - http://localhost:3000
+      - http://localhost:5500
+      - http://localhost:63342
+      - http://127.0.0.1:5173
+      - http://127.0.0.1:4173
+      - http://127.0.0.1:3000
+      - http://127.0.0.1:5500
+      - http://127.0.0.1:63342
+      - https://*.vercel.app
+    allowed-methods:
+      - GET
+      - POST
+      - PUT
+      - PATCH
+      - DELETE
+      - OPTIONS
+    allowed-headers:
+      - Authorization
+      - Content-Type
+      - Accept
+      - Origin
+      - X-Requested-With

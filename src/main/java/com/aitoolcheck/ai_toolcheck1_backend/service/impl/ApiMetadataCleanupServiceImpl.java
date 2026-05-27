@@ -54,7 +54,7 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
         log.info("[ApiCleanup] Completed for projectId={}. Before={}, Fallback stale={}, Duplicates stale={}, After={}",
                 projectId, activeBefore, fallbackMarkedStale, duplicatesMarkedStale, activeAfter);
                 
-        return ApiMetadataCleanupResult.builder()
+        ApiMetadataCleanupResult result = ApiMetadataCleanupResult.builder()
                 .projectId(projectId)
                 .activeBefore(activeBefore)
                 .fallbackMarkedStale(fallbackMarkedStale)
@@ -64,6 +64,8 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
                 .activeCleanEndpoints(activeAfter)
                 .cleanupWarnings(cleanupWarnings)
                 .build();
+
+        return result;
     }
 
     private int cleanupLegacyFallbackEndpoints(List<ApiEndpoint> endpoints) {
