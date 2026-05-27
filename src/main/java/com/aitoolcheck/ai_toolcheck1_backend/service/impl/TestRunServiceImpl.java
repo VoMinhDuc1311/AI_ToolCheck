@@ -2,6 +2,9 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.RuleEngineResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.res.TestResultResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.TestFailureAnalysisRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestFailureAnalysis;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testfailureanalysis.res.TestFailureAnalysisDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.CreateTestRunRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.ExecuteTestRunRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.HttpActualResponseDto;
@@ -84,6 +87,7 @@ public class TestRunServiceImpl implements TestRunService {
     private final TransactionTemplate transactionTemplate;
     private final TestRunRealtimePublisher testRunRealtimePublisher;
     private final ProjectNotificationEventPublisher notificationEventPublisher;
+    private final TestFailureAnalysisRepository testFailureAnalysisRepository;
     private TestRunService self;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -960,6 +964,10 @@ public class TestRunServiceImpl implements TestRunService {
 
         String actualResponseJson = result.getActualResponseJson();
 
+        TestFailureAnalysis failureAnalysis = testFailureAnalysisRepository
+                .findFirstByTestResult_IdOrderByCreatedAtDesc(result.getId())
+                .orElse(null);
+
         return TestResultResponse.builder()
                 .id(result.getId())
                 .testRunItemId(result.getTestRunItem().getId())
@@ -969,8 +977,34 @@ public class TestRunServiceImpl implements TestRunService {
                 .actualResponseJson(actualResponseJson)
                 .errorMessage(result.getErrorMessage())
                 .blockedReason(result.getBlockedReason())
+                .failureAnalysis(toFailureAnalysisResponse(failureAnalysis))
                 .createdAt(result.getCreatedAt())
                 .updatedAt(result.getUpdatedAt())
+                .build();
+    }
+
+    private TestFailureAnalysisDetailResponse toFailureAnalysisResponse(TestFailureAnalysis tfa) {
+        if (tfa == null) {
+            return null;
+        }
+        return TestFailureAnalysisDetailResponse.builder()
+                .id(tfa.getId())
+                .testResultId(tfa.getTestResult().getId())
+                .aiJobLogId(tfa.getAiJobLog() == null ? null : tfa.getAiJobLog().getId())
+                .modelName(tfa.getModelName())
+                .failureType(tfa.getFailureType())
+                .summary(tfa.getSummary())
+                .rootCause(tfa.getRootCause())
+                .expectedBehavior(tfa.getExpectedBehavior())
+                .actualBehavior(tfa.getActualBehavior())
+                .isLikelyBackendBug(tfa.getIsLikelyBackendBug())
+                .isLikelyTestCaseBug(tfa.getIsLikelyTestCaseBug())
+                .suggestedFixesJson(tfa.getSuggestedFixesJson())
+                .recommendedNextAction(tfa.getRecommendedNextAction())
+                .confidence(tfa.getConfidence())
+                .priority(tfa.getPriority())
+                .createdAt(tfa.getCreatedAt())
+                .updatedAt(tfa.getUpdatedAt())
                 .build();
     }
 
