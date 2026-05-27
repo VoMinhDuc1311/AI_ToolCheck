@@ -1,9 +1,12 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.apimetadata.res.ApiMetadataCleanupResult;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -22,6 +25,7 @@ import java.util.stream.Collectors;
 public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService {
 
     private final ApiEndpointRepository apiEndpointRepository;
+    private final ProjectNotificationEventPublisher notificationEventPublisher;
 
     @Override
     @Transactional
@@ -64,6 +68,20 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
                 .activeCleanEndpoints(activeAfter)
                 .cleanupWarnings(cleanupWarnings)
                 .build();
+
+        notificationEventPublisher.publishForCurrentUser(
+                projectId,
+                NotificationType.METADATA_CLEANUP_COMPLETED,
+                rawFallbackRemaining > 0 ? NotificationSeverity.WARNING : NotificationSeverity.SUCCESS,
+                "API metadata cleanup completed",
+                "API metadata cleanup completed for the project.",
+                "/source-projects/" + projectId + "/documentation",
+                Map.of(
+                        "projectId", projectId,
+                        "cleanedEndpointCount", activeAfter,
+                        "staleEndpointCount", fallbackMarkedStale + duplicatesMarkedStale,
+                        "status", rawFallbackRemaining > 0 ? "COMPLETED_WITH_WARNINGS" : "COMPLETED"
+                ));
 
         return result;
     }

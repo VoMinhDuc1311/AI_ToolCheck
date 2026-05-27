@@ -11,6 +11,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,6 +41,8 @@ class SourceFileServiceImplTest {
     @Mock private SourceAnalysisResultRepository sourceAnalysisResultRepository;
     @Mock private ApiDocumentRepository apiDocumentRepository;
     @Mock private ProjectAccessService projectAccessService;
+    @Mock private ProjectNotificationEventPublisher notificationEventPublisher;
+
     private SourceFileServiceImpl service;
 
     @BeforeEach
@@ -51,7 +54,8 @@ class SourceFileServiceImplTest {
                 apiEndpointRepository,
                 sourceAnalysisResultRepository,
                 apiDocumentRepository,
-                projectAccessService);
+                projectAccessService,
+                notificationEventPublisher);
     }
 
     @Test

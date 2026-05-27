@@ -8,6 +8,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import com.aitoolcheck.ai_toolcheck1_backend.service.openapi.OpenApiMetadataEnhancer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
@@ -36,6 +37,8 @@ class OpenApiGeneratorServiceImplTest {
     @Mock private ApiDocumentVersionRepository apiDocumentVersionRepository;
     @Mock private ProjectAccessService projectAccessService;
     @Mock private ApiMetadataCleanupService apiMetadataCleanupService;
+    @Mock private ProjectNotificationEventPublisher notificationEventPublisher;
+
     private OpenApiMetadataEnhancer openApiMetadataEnhancer;
     private OpenApiGeneratorServiceImpl service;
 
@@ -54,7 +57,8 @@ class OpenApiGeneratorServiceImplTest {
                 apiDocumentVersionRepository,
                 projectAccessService,
                 apiMetadataCleanupService,
-                openApiMetadataEnhancer);
+                openApiMetadataEnhancer,
+                notificationEventPublisher);
     }
 
     @Test
