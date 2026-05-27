@@ -7,8 +7,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.ApiParameter;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
-import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiMetadataEnhancerService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.openapi.OpenApiMetadataEnhancer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -19,6 +19,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import java.util.*;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -35,13 +36,12 @@ class OpenApiGeneratorServiceImplTest {
     @Mock private ApiDocumentVersionRepository apiDocumentVersionRepository;
     @Mock private ProjectAccessService projectAccessService;
     @Mock private ApiMetadataCleanupService apiMetadataCleanupService;
-
-    private OpenApiMetadataEnhancerService openApiMetadataEnhancerService;
+    private OpenApiMetadataEnhancer openApiMetadataEnhancer;
     private OpenApiGeneratorServiceImpl service;
 
     @BeforeEach
     void setUp() {
-        openApiMetadataEnhancerService = new OpenApiMetadataEnhancerService();
+        openApiMetadataEnhancer = new OpenApiMetadataEnhancer();
         service = new OpenApiGeneratorServiceImpl(
                 new ObjectMapper(),
                 sourceProjectRepository,
@@ -54,7 +54,7 @@ class OpenApiGeneratorServiceImplTest {
                 apiDocumentVersionRepository,
                 projectAccessService,
                 apiMetadataCleanupService,
-                openApiMetadataEnhancerService);
+                openApiMetadataEnhancer);
     }
 
     @Test
@@ -85,7 +85,58 @@ class OpenApiGeneratorServiceImplTest {
 
         assertTrue(paths.containsKey("/legacy/orders"));
         assertFalse(paths.containsKey("/OrderGateway"));
+        verify(projectAccessService).requireCanViewProject(projectId);
         verify(apiEndpointRepository).findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId);
+        verify(apiMetadataCleanupService, never()).cleanupProjectApiMetadata(projectId);
+    }
+
+    @Test
+    void generateAndSaveUsesGeneratePermissionAndCleanup() {
+        UUID projectId = UUID.randomUUID();
+        UUID endpointId = UUID.randomUUID();
+        SourceProject project = new SourceProject();
+        project.setId(projectId);
+        project.setProjectName("Project");
+
+        ApiEndpoint endpoint = new ApiEndpoint();
+        endpoint.setId(endpointId);
+        endpoint.setEndpointPath("/api/items");
+        endpoint.setControllerName("ItemController");
+        endpoint.setHttpMethod(HttpMethod.GET);
+
+        com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocument document =
+                com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocument.builder()
+                        .id(UUID.randomUUID())
+                        .sourceProject(project)
+                        .documentName("Project OpenAPI")
+                        .documentType(com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType.OPENAPI_3)
+                        .currentVersionNo(0)
+                        .publishedFlag(false)
+                        .staleFlag(false)
+                        .build();
+
+        when(sourceProjectRepository.findById(projectId)).thenReturn(Optional.of(project));
+        when(apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId))
+                .thenReturn(List.of(endpoint));
+        when(apiSchemaRepository.findBySourceProjectId(projectId)).thenReturn(List.of());
+        when(apiParameterRepository.findByApiEndpointId(endpointId)).thenReturn(List.of());
+        when(endpointSchemaMapRepository.findByApiEndpointId(endpointId)).thenReturn(List.of());
+        when(apiDocumentRepository.findBySourceProjectId(projectId)).thenReturn(Optional.of(document));
+        when(apiDocumentVersionRepository.findTopByApiDocumentIdOrderByVersionNoDesc(document.getId()))
+                .thenReturn(Optional.empty());
+        when(apiDocumentVersionRepository.save(org.mockito.ArgumentMatchers.any()))
+                .thenAnswer(invocation -> {
+                    com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocumentVersion version = invocation.getArgument(0);
+                    version.setId(UUID.randomUUID());
+                    version.setVersionNo(1);
+                    return version;
+                });
+        when(apiDocumentRepository.save(document)).thenReturn(document);
+
+        service.generateAndSaveOpenApi(projectId);
+
+        verify(projectAccessService).requireCanGenerateDocs(projectId);
+        verify(apiMetadataCleanupService).cleanupProjectApiMetadata(projectId);
     }
 
     @Test
@@ -432,7 +483,7 @@ class OpenApiGeneratorServiceImplTest {
         // Force a three-way collision: same summary from three endpoints sharing the same
         // path and controller but only differing in a detail we don't capture in operationId.
         // We use pre-set operationIds to simulate a collision scenario directly via the enhancer.
-        OpenApiMetadataEnhancerService enhancer = new OpenApiMetadataEnhancerService();
+        OpenApiMetadataEnhancer enhancer = new OpenApiMetadataEnhancer();
         Set<String> used = new LinkedHashSet<>();
 
         ApiEndpoint ep = new ApiEndpoint();
@@ -467,7 +518,7 @@ class OpenApiGeneratorServiceImplTest {
     @SuppressWarnings("unchecked")
     void descriptionJunkValuesAreRejected() {
         // Build an endpoint with junk descriptions — should fall back to rule-based description.
-        OpenApiMetadataEnhancerService enhancer = new OpenApiMetadataEnhancerService();
+        OpenApiMetadataEnhancer enhancer = new OpenApiMetadataEnhancer();
 
         String[] junkValues = {"N/A", "n/a", "-", "--", "TODO", "todo", "TBD", "tbd", "placeholder", "Placeholder"};
 
@@ -491,7 +542,7 @@ class OpenApiGeneratorServiceImplTest {
     @Test
     @SuppressWarnings("unchecked")
     void descriptionTooLongIsRejected() {
-        OpenApiMetadataEnhancerService enhancer = new OpenApiMetadataEnhancerService();
+        OpenApiMetadataEnhancer enhancer = new OpenApiMetadataEnhancer();
 
         // Build a 501-char description (raw Javadoc dump simulation)
         String longDesc = "A".repeat(501);
@@ -514,7 +565,7 @@ class OpenApiGeneratorServiceImplTest {
     @Test
     @SuppressWarnings("unchecked")
     void descriptionValidConciseIsPreserved() {
-        OpenApiMetadataEnhancerService enhancer = new OpenApiMetadataEnhancerService();
+        OpenApiMetadataEnhancer enhancer = new OpenApiMetadataEnhancer();
 
         String validDesc = "Retrieves all orders for the given tenant.";
 

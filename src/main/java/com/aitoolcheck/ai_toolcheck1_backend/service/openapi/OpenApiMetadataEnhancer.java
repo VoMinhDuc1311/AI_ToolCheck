@@ -1,4 +1,4 @@
-package com.aitoolcheck.ai_toolcheck1_backend.service;
+package com.aitoolcheck.ai_toolcheck1_backend.service.openapi;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
@@ -8,7 +8,7 @@ import org.springframework.stereotype.Service;
 import java.util.*;
 
 @Service
-public class OpenApiMetadataEnhancerService {
+public class OpenApiMetadataEnhancer {
 
     // -------------------------------------------------------------------------
     // Tag Inference
@@ -113,10 +113,6 @@ public class OpenApiMetadataEnhancerService {
         return tag.toLowerCase();
     }
 
-    // -------------------------------------------------------------------------
-    // Summary Inference
-    // -------------------------------------------------------------------------
-
     public String inferSummary(ApiEndpoint endpoint, List<ApiParameter> params) {
         if (endpoint.getAiSummary() != null && !endpoint.getAiSummary().isBlank()) {
             String aiSummary = endpoint.getAiSummary().trim();
@@ -211,10 +207,6 @@ public class OpenApiMetadataEnhancerService {
         return Character.toUpperCase(text.charAt(0)) + text.substring(1);
     }
 
-    // -------------------------------------------------------------------------
-    // Description Inference
-    // -------------------------------------------------------------------------
-
     public String inferDescription(ApiEndpoint endpoint, String summary) {
         if (endpoint.getAiDescription() != null && !endpoint.getAiDescription().isBlank()) {
             String aiDesc = endpoint.getAiDescription().trim();
@@ -277,10 +269,6 @@ public class OpenApiMetadataEnhancerService {
         return true;
     }
 
-    // -------------------------------------------------------------------------
-    // OperationId Inference
-    // -------------------------------------------------------------------------
-
     public String inferOperationId(ApiEndpoint endpoint, List<ApiParameter> params, Set<String> usedOperationIds) {
         String base = null;
         if (endpoint.getOperationId() != null && !endpoint.getOperationId().isBlank()) {
@@ -295,7 +283,6 @@ public class OpenApiMetadataEnhancerService {
             base = toLowerCamelCase(summary);
         }
 
-        // Cleanup invalid characters
         base = base.replaceAll("[^a-zA-Z0-9]", "");
         if (base.isEmpty()) {
             base = "operation";
@@ -305,14 +292,12 @@ public class OpenApiMetadataEnhancerService {
             return base;
         }
 
-        // Collision handling: append method
         String method = endpoint.getHttpMethod() == null ? "GET" : endpoint.getHttpMethod().name();
         String candidate = base + capitalize(method.toLowerCase());
         if (usedOperationIds.add(candidate)) {
             return candidate;
         }
 
-        // Last resort: append numeric suffix — no underscore to preserve lowerCamelCase contract
         int suffix = 2;
         String finalCandidate;
         do {
@@ -337,10 +322,6 @@ public class OpenApiMetadataEnhancerService {
         }
         return sb.toString();
     }
-
-    // -------------------------------------------------------------------------
-    // Parameter Description Inference
-    // -------------------------------------------------------------------------
 
     public String enrichParameterDescription(ApiParameter param) {
         String name = param.getParamName();
@@ -393,14 +374,9 @@ public class OpenApiMetadataEnhancerService {
         return sb.toString();
     }
 
-    // -------------------------------------------------------------------------
-    // Response Descriptions
-    // -------------------------------------------------------------------------
-
     public Map<String, String> getResponseDescriptions(ApiEndpoint endpoint, String summary) {
         Map<String, String> descMap = new LinkedHashMap<>();
 
-        // Resolve 200 description
         String desc200 = "OK";
         if (summary != null) {
             if (summary.startsWith("List ")) {
@@ -419,7 +395,6 @@ public class OpenApiMetadataEnhancerService {
         }
         descMap.put("200", desc200);
 
-        // Resolve other status codes based on endpoint
         HttpMethod method = endpoint.getHttpMethod();
         String path = endpoint.getEndpointPath();
         boolean isDetail = path != null && path.toLowerCase().contains("/detail");
@@ -436,10 +411,6 @@ public class OpenApiMetadataEnhancerService {
 
         return descMap;
     }
-
-    // -------------------------------------------------------------------------
-    // Path normalization helper
-    // -------------------------------------------------------------------------
 
     private String normalizePath(String path) {
         if (path == null || path.isBlank()) {

@@ -16,7 +16,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
-import com.aitoolcheck.ai_toolcheck1_backend.service.impl.SourceDocumentationOrchestratorServiceImpl;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceDocumentationOrchestratorService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -40,7 +40,7 @@ public class SourceProjectController {
         private final SourceProjectService sourceProjectService;
         private final SourceFileService sourceFileService;
         private final SourceAnalysisResultService sourceAnalysisResultService;
-        private final SourceDocumentationOrchestratorServiceImpl documentationOrchestratorService;
+        private final SourceDocumentationOrchestratorService documentationOrchestratorService;
         private final ApiMetadataCleanupService apiMetadataCleanupService;
         private final ProjectAccessService projectAccessService;
 
