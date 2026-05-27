@@ -1,6 +1,8 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceanalysisresult.res.SourceAnalysisResultDetailResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.SourceStyle;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
@@ -20,11 +22,13 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.JavaSourceAnalyzer
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.SourceAnalysisDecisionService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.SourceAnalysisScoringService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.SourceAnalysisSummaryBuilder;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -40,6 +44,7 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
     private final SourceAnalysisDecisionService decisionService;
     private final SourceAnalysisSummaryBuilder summaryBuilder;
     private final ProjectAccessService projectAccessService;
+    private final ProjectNotificationEventPublisher notificationEventPublisher;
 
     @Override
     @Transactional
@@ -106,6 +111,19 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
 
         sourceProject.setStatus(ProjectStatus.ANALYZED);
         sourceProjectRepository.save(sourceProject);
+
+        notificationEventPublisher.publishForCurrentUser(
+                projectId,
+                NotificationType.SOURCE_ANALYSIS_COMPLETED,
+                NotificationSeverity.SUCCESS,
+                "Source analysis completed",
+                "Source analysis completed for " + sourceProject.getProjectName() + ".",
+                "/source-projects/" + projectId,
+                Map.of(
+                        "projectId", projectId,
+                        "analysisResultId", savedResult.getId(),
+                        "status", ProjectStatus.ANALYZED.name()
+                ));
 
         return mapToDetailResponse(savedResult);
     }

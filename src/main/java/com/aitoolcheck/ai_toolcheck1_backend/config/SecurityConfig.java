@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.config;
 
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.CorsProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.security.CustomAccessDeniedHandler;
 import com.aitoolcheck.ai_toolcheck1_backend.security.JwtAuthenticationEntryPoint;
 import com.aitoolcheck.ai_toolcheck1_backend.security.JwtAuthenticationFilter;
@@ -28,6 +29,7 @@ public class SecurityConfig {
     private final JwtAuthenticationFilter jwtAuthenticationFilter;
     private final JwtAuthenticationEntryPoint jwtAuthenticationEntryPoint;
     private final CustomAccessDeniedHandler customAccessDeniedHandler;
+    private final CorsProperties corsProperties;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
@@ -51,12 +53,13 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.GET, "/swagger-ui.html").permitAll()
                         .requestMatchers(HttpMethod.GET, "/webjars/**").permitAll()
                         .requestMatchers(HttpMethod.GET, "/actuator/health").permitAll()
-                        // Local dev WebSocket handshake. STOMP JWT auth can be added later.
+                        // WebSocket handshake is public; STOMP CONNECT/SUBSCRIBE frames are JWT-authorized.
                         .requestMatchers("/ws", "/ws/**").permitAll()
                         .requestMatchers("/v1/users/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/v1/api-documents/*/publish").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.PATCH, "/v1/api-documents/*/unpublish").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/v1/test-cases/**").hasRole("ADMIN")
+                        // DELETE test-cases: project-level guard (requireCanDeleteTestCase = MAINTAINER|OWNER|ADMIN)
+                        // is enforced at service level in TestCaseServiceImpl — no HTTP-layer role override needed.
                         .anyRequest().authenticated()
                 )
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class)
@@ -66,32 +69,21 @@ public class SecurityConfig {
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOrigins(List.of(
-                "http://localhost:3000",
-                "http://localhost:5173",
-                "http://localhost:5500",
-                "http://localhost:63342",
-                "http://127.0.0.1:3000",
-                "http://127.0.0.1:5173",
-                "http://127.0.0.1:5500",
-                "http://127.0.0.1:63342"
-        ));
-        configuration.setAllowedMethods(List.of(
-                "GET",
-                "POST",
-                "PUT",
-                "PATCH",
-                "DELETE",
-                "OPTIONS"
-        ));
-        configuration.setAllowedHeaders(List.of(
-                "Authorization",
-                "Content-Type",
-                "Accept",
-                "Origin",
-                "X-Requested-With"
-        ));
+
+        // Use setAllowedOriginPatterns instead of setAllowedOrigins so that:
+        // 1. Wildcard patterns (https://*.vercel.app) are supported.
+        // 2. allowCredentials(true) remains legal — the CORS spec forbids the literal
+        //    "*" with credentials, but named patterns are matched individually.
+        configuration.setAllowedOriginPatterns(corsProperties.getAllowedOriginPatterns());
+
+        configuration.setAllowedMethods(corsProperties.getAllowedMethods());
+        configuration.setAllowedHeaders(corsProperties.getAllowedHeaders());
         configuration.setExposedHeaders(List.of("Authorization"));
+
+        // The application uses stateless JWT authentication (Authorization header),
+        // not cookies/session. allowCredentials(true) is preserved because the
+        // original config already set it and changing it could break browser clients
+        // that rely on it for Authorization header pre-flight handling.
         configuration.setAllowCredentials(true);
         configuration.setMaxAge(3600L);
 

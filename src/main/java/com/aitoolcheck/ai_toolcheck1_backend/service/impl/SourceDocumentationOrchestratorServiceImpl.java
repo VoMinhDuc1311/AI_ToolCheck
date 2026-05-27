@@ -10,10 +10,10 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.AiSkillRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
-import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataParserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiGeneratorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceDocumentationOrchestratorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.legacy.LegacyEntrypointCandidateResult;
 import com.aitoolcheck.ai_toolcheck1_backend.service.legacy.LegacyEntrypointClassifierService;
@@ -28,19 +28,19 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * Orchestrator service cho pipeline "sinh tài liệu từ source code".
+ * Orchestrator service for the "generate documentation from source code" pipeline.
  *
- * <p>Flow: analyzeProject → parseProject (nếu parserRecommended) →
- * triggerLegacyAiJobs (nếu aiRecommended) → generateAndSaveOpenApi (nếu chỉ parse, không AI).</p>
+ * <p>Flow: analyzeProject → parseProject (if parserRecommended) →
+ * triggerLegacyAiJobs (if aiRecommended) → generateAndSaveOpenApi (if parse-only, no AI).</p>
  *
- * <p>Ràng buộc thiết kế: không gọi LLM trực tiếp, không block HTTP request,
- * không tạo duplicate job PENDING/RUNNING, không trigger AI cho file xóa/inactive/không content,
- * không trigger AI cho file helper/non-entrypoint (được phân loại bởi LegacyEntrypointClassifierService).</p>
+ * <p>Design constraints: no LLM calls, no HTTP request blocking,
+ * no duplicate PENDING/RUNNING jobs, no AI trigger for deleted/inactive/no-content files,
+ * no AI for helper/non-entrypoint files (classified by LegacyEntrypointClassifierService).</p>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
-public class SourceDocumentationOrchestratorServiceImpl {
+public class SourceDocumentationOrchestratorServiceImpl implements SourceDocumentationOrchestratorService {
 
     private static final String SKILL_CODE_LEGACY = "legacy_code_reader";
     private static final String PROVIDER_PLAN_LABEL = "GEMINI_PRIMARY_OLLAMA_FALLBACK";
@@ -63,9 +63,9 @@ public class SourceDocumentationOrchestratorServiceImpl {
     private final ProjectAccessService projectAccessService;
     private final SourceFileRepository sourceFileRepository;
     private final AiSkillRepository aiSkillRepository;
-    private final ApiMetadataCleanupService apiMetadataCleanupService;
     private final LegacyEntrypointClassifierService classifierService;
 
+    @Override
     @Transactional
     public SourceDocumentationPipelineResponse generateDocsFromSource(UUID projectId) {
         log.info("[DocOrchestrator] START generateDocsFromSource projectId={}", projectId);
@@ -114,7 +114,6 @@ public class SourceDocumentationOrchestratorServiceImpl {
 
         if (aiJobIds.isEmpty() && parserExecuted) {
             try {
-                apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
                 OpenApiGenerateResponse openApiResp = openApiGeneratorService.generateAndSaveOpenApi(projectId);
                 openApiGenerated = true;
                 docVersionId = openApiResp.getApiDocumentVersionId();

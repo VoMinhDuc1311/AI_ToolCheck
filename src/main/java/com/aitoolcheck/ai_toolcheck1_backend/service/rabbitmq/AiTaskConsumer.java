@@ -242,8 +242,6 @@ public class AiTaskConsumer {
             log.error("  ├─ Exception Type: {}", e.getClass().getName());
             log.error("  ├─ Message: {}", e.getMessage());
             log.error("  └─ JobId: {}", message.getJobId());
-            log.error("  └─ Stacktrace:", e);
-
             if (jobLog != null) {
                 String errorDetail = formatDetailedError(
                     "Lỗi hệ thống không mong muốn: " + e.getClass().getSimpleName(),
@@ -726,8 +724,9 @@ public class AiTaskConsumer {
      * Pattern: "[ErrorType] Short description" (max ~300 chars)
      */
     private String formatDetailedError(String message, Throwable throwable) {
-        // Log full stacktrace to backend log for debugging
-        log.error("[AiTask] Full error stacktrace for debugging:", throwable);
+        log.error("[AiTask] AI task failed: type={}, message={}",
+                throwable == null ? "unknown" : throwable.getClass().getSimpleName(),
+                throwable == null ? "" : abbreviate(throwable.getMessage(), 200));
         // Store only a short, structured message in DB
         String shortMsg = abbreviate(message, 300);
         return shortMsg;

@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.apimetadata.res.ApiMetadataClea
 import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -22,13 +23,14 @@ import static org.mockito.Mockito.when;
 class ApiMetadataCleanupServiceImplTest {
 
     @Mock private ApiEndpointRepository apiEndpointRepository;
+    @Mock private ProjectNotificationEventPublisher notificationEventPublisher;
 
     private ApiMetadataCleanupServiceImpl cleanupService;
     private UUID projectId;
 
     @BeforeEach
     void setUp() {
-        cleanupService = new ApiMetadataCleanupServiceImpl(apiEndpointRepository);
+        cleanupService = new ApiMetadataCleanupServiceImpl(apiEndpointRepository, notificationEventPublisher);
         projectId = UUID.randomUUID();
     }
 
