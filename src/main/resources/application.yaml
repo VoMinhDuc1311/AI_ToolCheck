@@ -113,3 +113,10 @@ app:
       - Accept
       - Origin
       - X-Requested-With
+
+github:
+  check:
+    # Connect timeout for GitHub API calls in milliseconds
+    connect-timeout-ms: 5000
+    # Read timeout for GitHub API calls in milliseconds
+    read-timeout-ms: 8000

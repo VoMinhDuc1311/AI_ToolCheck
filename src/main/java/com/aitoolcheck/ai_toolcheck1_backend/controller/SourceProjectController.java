@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.controller;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.github.GitHubRepositoryCheckResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.CreateSourceProjectRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.PermanentDeleteProjectRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateProjectVisibilityRequest;
@@ -12,6 +13,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProject
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.apimetadata.res.ApiMetadataCleanupResult;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.GitHubRepositoryCheckService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
@@ -43,6 +45,7 @@ public class SourceProjectController {
         private final SourceDocumentationOrchestratorService documentationOrchestratorService;
         private final ApiMetadataCleanupService apiMetadataCleanupService;
         private final ProjectAccessService projectAccessService;
+        private final GitHubRepositoryCheckService gitHubRepositoryCheckService;
 
         @PostMapping
         @Operation(summary = "Create source project", description = "Create a new source project.", operationId = "createSourceProject")
@@ -125,6 +128,19 @@ public class SourceProjectController {
                 projectAccessService.requireCanGenerateDocs(projectId);
                 ApiMetadataCleanupResult result = apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
                 return ResponseEntity.ok(result);
+        }
+
+        @PostMapping("/{projectId}/github/check")
+        @Operation(
+                summary = "Check GitHub repository reachability",
+                description = "Checks whether the public GitHub repository linked to this project is reachable " +
+                        "and detects basic project metadata (branch, build system). " +
+                        "Only public repositories are supported. No source files are imported.",
+                operationId = "checkGitHubRepository"
+        )
+        public ResponseEntity<GitHubRepositoryCheckResponse> checkGitHub(@PathVariable UUID projectId) {
+                GitHubRepositoryCheckResponse response = gitHubRepositoryCheckService.check(projectId);
+                return ResponseEntity.ok(response);
         }
 
         @PutMapping("/{id}")
