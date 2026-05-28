@@ -30,6 +30,11 @@ public class SourceProjectResponse {
     private BackendType backendType;
     private ProjectStatus status;
     private ProjectVisibility visibility;
+
+    // ── GitHub repository metadata (list-view subset) ───────────────────────
+    /** Normalised GitHub repository URL. Null if not configured. */
+    private String repositoryUrl;
+
     private LocalDateTime createdAt;
 
     // ── Archive lifecycle ──────────────────────────────────────────────────────

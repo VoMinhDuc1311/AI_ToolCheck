@@ -14,6 +14,14 @@ import org.springframework.stereotype.Service;
 import java.util.List;
 import java.util.UUID;
 import java.time.LocalDateTime;
+import java.util.Comparator;
+import java.util.stream.Stream;
+import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
+import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestRunItem;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
 import org.springframework.transaction.annotation.Transactional;
 import lombok.extern.slf4j.Slf4j;
 
@@ -118,6 +126,90 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
     }
 
     private ApiEndpointDetailResponse mapToDetailResponse(ApiEndpoint apiEndpoint) {
+        // Map sourceFile
+        ApiEndpointDetailResponse.SourceFileInfo sourceFileInfo = null;
+        SourceFile sf = apiEndpoint.getSourceFile();
+        if (sf != null) {
+            sourceFileInfo = ApiEndpointDetailResponse.SourceFileInfo.builder()
+                    .id(sf.getId())
+                    .fileName(sf.getFileName())
+                    .filePath(sf.getFilePath())
+                    .packageName(sf.getPackageName())
+                    .className(sf.getClassName())
+                    .build();
+        }
+
+        // Map latestAiJob
+        ApiEndpointDetailResponse.LatestAiJobInfo latestJobInfo = null;
+        if (apiEndpoint.getAiJobLogs() != null && !apiEndpoint.getAiJobLogs().isEmpty()) {
+            AiJobLog latestJob = apiEndpoint.getAiJobLogs().stream()
+                    .filter(job -> job.getStartedAt() != null)
+                    .max(Comparator.comparing(AiJobLog::getStartedAt))
+                    .orElse(null);
+            if (latestJob != null) {
+                latestJobInfo = ApiEndpointDetailResponse.LatestAiJobInfo.builder()
+                        .id(latestJob.getId())
+                        .jobType(latestJob.getJobType() != null ? latestJob.getJobType().name() : null)
+                        .executionStatus(latestJob.getExecutionStatus() != null ? latestJob.getExecutionStatus().name() : null)
+                        .errorMessage(latestJob.getErrorMessage())
+                        .startedAt(latestJob.getStartedAt())
+                        .completedAt(latestJob.getCompletedAt())
+                        .build();
+            }
+        }
+
+        // Map stats
+        List<TestCase> activeTestCases = apiEndpoint.getTestCases() != null ?
+                apiEndpoint.getTestCases().stream()
+                        .filter(tc -> tc.getDeletedFlag() == null || !tc.getDeletedFlag())
+                        .toList() : List.of();
+
+        int testCaseCount = activeTestCases.size();
+        int assertionCount = 0;
+        for (TestCase tc : activeTestCases) {
+            if (tc.getTestCaseAssertions() != null) {
+                assertionCount += tc.getTestCaseAssertions().size();
+            }
+        }
+
+        List<TestRunItem> allItems = activeTestCases.stream()
+                .flatMap(tc -> tc.getTestRunItems() != null ? tc.getTestRunItems().stream() : Stream.empty())
+                .toList();
+
+        TestRunItem latestItem = allItems.stream()
+                .filter(item -> item.getCreatedAt() != null)
+                .max(Comparator.comparing(TestRunItem::getCreatedAt))
+                .orElse(null);
+
+        String latestRunStatus = null;
+        if (latestItem != null) {
+            if (latestItem.getTestResult() != null && latestItem.getTestResult().getResultStatus() != null) {
+                latestRunStatus = latestItem.getTestResult().getResultStatus().name();
+            } else {
+                latestRunStatus = latestItem.getItemStatus() != null ? latestItem.getItemStatus().name() : null;
+            }
+        }
+
+        long failureCount = allItems.stream()
+                .filter(item -> {
+                    if (item.getItemStatus() == ExecutionStatus.FAILED) {
+                        return true;
+                    }
+                    if (item.getTestResult() != null) {
+                        ResultStatus rs = item.getTestResult().getResultStatus();
+                        return rs == ResultStatus.FAIL || rs == ResultStatus.ERROR;
+                    }
+                    return false;
+                })
+                .count();
+
+        ApiEndpointDetailResponse.EndpointStats stats = ApiEndpointDetailResponse.EndpointStats.builder()
+                .testCaseCount(testCaseCount)
+                .assertionCount(assertionCount)
+                .latestRunStatus(latestRunStatus)
+                .failureCount((int) failureCount)
+                .build();
+
         return ApiEndpointDetailResponse.builder()
                 .id(apiEndpoint.getId())
                 .projectId(apiEndpoint.getSourceProject().getId())
@@ -145,6 +237,9 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
                 .openapiFragmentJson(apiEndpoint.getOpenapiFragmentJson())
                 .aiEnrichedAt(apiEndpoint.getAiEnrichedAt())
                 .lastAiJobLogId(apiEndpoint.getLastAiJobLogId())
+                .sourceFile(sourceFileInfo)
+                .latestAiJob(latestJobInfo)
+                .stats(stats)
                 .build();
     }
 }

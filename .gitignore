@@ -95,3 +95,5 @@ backend_architecture_flow.txt
 docs/db/
 docs/rule-engine/
 docs/websocket-test.html
+
+.codegraph/
