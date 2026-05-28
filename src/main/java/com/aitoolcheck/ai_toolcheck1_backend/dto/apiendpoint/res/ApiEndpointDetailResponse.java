@@ -41,4 +41,48 @@ public class ApiEndpointDetailResponse {
     private String openapiFragmentJson;
     private LocalDateTime aiEnrichedAt;
     private UUID lastAiJobLogId;
+
+    // Added relations/stats fields
+    private SourceFileInfo sourceFile;
+    private LatestAiJobInfo latestAiJob;
+    private EndpointStats stats;
+
+    @Getter
+    @Setter
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class SourceFileInfo {
+        private UUID id;
+        private String fileName;
+        private String filePath;
+        private String packageName;
+        private String className;
+    }
+
+    @Getter
+    @Setter
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class LatestAiJobInfo {
+        private UUID id;
+        private String jobType;
+        private String executionStatus;
+        private String errorMessage;
+        private LocalDateTime startedAt;
+        private LocalDateTime completedAt;
+    }
+
+    @Getter
+    @Setter
+    @Builder
+    @AllArgsConstructor
+    @NoArgsConstructor
+    public static class EndpointStats {
+        private Integer testCaseCount;
+        private Integer assertionCount;
+        private String latestRunStatus;
+        private Integer failureCount;
+    }
 }
