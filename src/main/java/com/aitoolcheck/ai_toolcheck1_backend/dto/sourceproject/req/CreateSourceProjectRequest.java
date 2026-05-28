@@ -29,6 +29,14 @@ public class CreateSourceProjectRequest {
     @Size(max = 1000, message = "description must be at most 1000 characters")
     private String description;
 
+    /** Optional GitHub repository URL. Will be validated and normalised server-side. */
+    @Size(max = 500, message = "repositoryUrl must be at most 500 characters")
+    private String repositoryUrl;
+
+    /** Optional branch name (e.g. main, develop). Validated server-side. */
+    @Size(max = 120, message = "repositoryBranch must be at most 120 characters")
+    private String repositoryBranch;
+
     @NotNull(message = "backendType must not be null")
     private BackendType backendType;
 }
