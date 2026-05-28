@@ -17,6 +17,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.common.GitHubRepositoryUrlParser;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -71,10 +72,18 @@ public class SourceProjectServiceImpl implements SourceProjectService {
             throw new BadRequestException("Project name already exists");
         }
 
+        // Validate and normalise GitHub repository metadata
+        String normRepoUrl    = GitHubRepositoryUrlParser.normalise(request.getRepositoryUrl());
+        String normRepoBranch = normRepoUrl != null
+                ? GitHubRepositoryUrlParser.normaliseBranch(request.getRepositoryBranch())
+                : null;
+
         SourceProject saved = sourceProjectRepository.save(SourceProject.builder()
                 .projectKey(projectKey)
                 .projectName(projectName)
                 .description(trimToNull(request.getDescription()))
+                .repositoryUrl(normRepoUrl)
+                .repositoryBranch(normRepoBranch)
                 .backendType(request.getBackendType())
                 .status(ProjectStatus.NEW)
                 .ownerUser(currentUser)
@@ -168,6 +177,14 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         project.setDescription(trimToNull(request.getDescription()));
         project.setBackendType(request.getBackendType());
         project.setStatus(request.getStatus());
+
+        // Validate and normalise GitHub repository metadata
+        String normRepoUrl = GitHubRepositoryUrlParser.normalise(request.getRepositoryUrl());
+        project.setRepositoryUrl(normRepoUrl);
+        // Clear branch when URL is cleared; otherwise normalise branch
+        project.setRepositoryBranch(normRepoUrl != null
+                ? GitHubRepositoryUrlParser.normaliseBranch(request.getRepositoryBranch())
+                : null);
 
         return mapToDetailResponse(sourceProjectRepository.save(project));
     }
@@ -314,6 +331,7 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .backendType(p.getBackendType())
                 .status(p.getStatus())
                 .visibility(p.getVisibility())
+                .repositoryUrl(p.getRepositoryUrl())
                 .createdAt(p.getCreatedAt())
                 .archivedFlag(p.getArchivedFlag())
                 .archivedAt(p.getArchivedAt())
@@ -327,6 +345,7 @@ public class SourceProjectServiceImpl implements SourceProjectService {
     }
 
     private SourceProjectDetailResponse mapToDetailResponse(SourceProject p, AppUser currentUser) {
+        String repoUrl = p.getRepositoryUrl();
         return SourceProjectDetailResponse.builder()
                 .id(p.getId())
                 .name(p.getProjectName())
@@ -335,6 +354,11 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .projectKey(p.getProjectKey())
                 .projectName(p.getProjectName())
                 .description(p.getDescription())
+                .repositoryUrl(repoUrl)
+                .repositoryBranch(p.getRepositoryBranch())
+                .repositoryProvider(GitHubRepositoryUrlParser.deriveProvider(repoUrl))
+                .repositoryOwner(GitHubRepositoryUrlParser.extractOwner(repoUrl))
+                .repositoryName(GitHubRepositoryUrlParser.extractRepo(repoUrl))
                 .backendType(p.getBackendType())
                 .status(p.getStatus())
                 .visibility(p.getVisibility())

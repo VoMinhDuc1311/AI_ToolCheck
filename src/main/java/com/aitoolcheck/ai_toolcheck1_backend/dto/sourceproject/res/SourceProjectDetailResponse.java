@@ -28,6 +28,24 @@ public class SourceProjectDetailResponse {
     private String projectKey;
     private String projectName;
     private String description;
+
+    // ── GitHub repository metadata ───────────────────────────────────────────
+
+    /** Normalised GitHub repository URL. Null if not configured. */
+    private String repositoryUrl;
+
+    /** Branch name. Null if not configured. */
+    private String repositoryBranch;
+
+    /** Derived: "GITHUB" when repositoryUrl is set. Not persisted. */
+    private String repositoryProvider;
+
+    /** Derived: owner segment from the repository URL. Not persisted. */
+    private String repositoryOwner;
+
+    /** Derived: repository name segment from the repository URL. Not persisted. */
+    private String repositoryName;
+
     private BackendType backendType;
     private ProjectStatus status;
     private ProjectVisibility visibility;

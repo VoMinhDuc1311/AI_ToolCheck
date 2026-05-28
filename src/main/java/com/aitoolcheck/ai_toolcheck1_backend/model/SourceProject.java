@@ -33,6 +33,16 @@ public class SourceProject {
     @Column(name = "description")
     private String description;
 
+    // ── GitHub repository metadata (optional, MVP only stores URL + branch) ───
+
+    /** Normalised GitHub repository URL, e.g. https://github.com/owner/repo. Null if not set. */
+    @Column(name = "repository_url", length = 500)
+    private String repositoryUrl;
+
+    /** Branch name, e.g. main or develop. Null if not set. */
+    @Column(name = "repository_branch", length = 120)
+    private String repositoryBranch;
+
     @Column(name = "backend_type", length = 50)
     @Enumerated(EnumType.STRING)
     private BackendType backendType;
