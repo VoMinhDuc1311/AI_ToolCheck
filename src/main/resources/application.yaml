@@ -120,3 +120,15 @@ github:
     connect-timeout-ms: 5000
     # Read timeout for GitHub API calls in milliseconds
     read-timeout-ms: 8000
+  import:
+    # Connect timeout for GitHub ZIP download in milliseconds
+    connect-timeout-ms: 5000
+    # Read timeout for GitHub ZIP download in milliseconds
+    read-timeout-ms: 30000
+
+source:
+  upload:
+    # Maximum ZIP bytes accepted by upload/import pipeline
+    max-zip-bytes: 73400320
+    # Maximum regular files extracted from a ZIP
+    max-file-count: 10000
