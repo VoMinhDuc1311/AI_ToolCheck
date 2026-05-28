@@ -31,7 +31,7 @@ public class ApiEndpointServiceImpl implements ApiEndpointService {
     public List<ApiEndpointResponse> getByProjectId(UUID projectId) {
         projectAccessService.requireCanViewProject(projectId);
 
-        return apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId)
+        return apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId)
                 .stream()
                 .map(this::mapToResponse)
                 .toList();

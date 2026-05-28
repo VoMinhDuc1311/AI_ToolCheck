@@ -20,12 +20,18 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.LocalDateTime;
+import java.time.OffsetDateTime;
+import java.time.ZoneId;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.UUID;
 
 @Service
 @RequiredArgsConstructor
 public class ApiDocumentServiceImpl implements ApiDocumentService {
+
+    private static final ZoneId DISPLAY_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
     private final ApiDocumentRepository apiDocumentRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
@@ -68,6 +74,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     @Transactional(readOnly = true)
     public ApiDocumentDetailResponse getByProjectId(UUID projectId) {
         projectAccessService.requireCanViewProject(projectId);
+
         ApiDocument apiDocument = apiDocumentRepository.findBySourceProjectId(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException(
                         "ApiDocument not found for project id: " + projectId
@@ -81,6 +88,7 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
     public ApiDocumentDetailResponse getById(UUID id) {
         ApiDocument apiDocument = findDocumentOrThrow(id);
         projectAccessService.requireCanViewProject(apiDocument.getSourceProject().getId());
+
         return toDetailResponse(apiDocument);
     }
 
@@ -177,8 +185,8 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
                 .currentVersionNo(apiDocument.getCurrentVersionNo())
                 .publishedFlag(apiDocument.getPublishedFlag())
                 .staleFlag(apiDocument.getStaleFlag())
-                .createdAt(apiDocument.getCreatedAt())
-                .updatedAt(apiDocument.getUpdatedAt())
+                .createdAt(toVietnamOffsetDateTime(apiDocument.getCreatedAt()))
+                .updatedAt(toVietnamOffsetDateTime(apiDocument.getUpdatedAt()))
                 .build();
     }
 
@@ -194,9 +202,28 @@ public class ApiDocumentServiceImpl implements ApiDocumentService {
                 .description(version.getDescription())
                 .aiEnrichedFlag(version.getAiEnrichedFlag())
                 .contentLength(contentJson == null ? 0 : contentJson.length())
-                .createdAt(version.getCreatedAt())
-                .updatedAt(version.getUpdatedAt())
+                .createdAt(toVietnamOffsetDateTime(version.getCreatedAt()))
+                .updatedAt(toVietnamOffsetDateTime(version.getUpdatedAt()))
                 .build();
+    }
+
+    /**
+     * Database stores LocalDateTime as UTC.
+     * API response returns explicit Asia/Ho_Chi_Minh timezone offset.
+     *
+     * Example:
+     * DB: 2026-05-26 01:26:38
+     * API: 2026-05-26T08:26:38+07:00
+     */
+    private OffsetDateTime toVietnamOffsetDateTime(LocalDateTime value) {
+        if (value == null) {
+            return null;
+        }
+
+        return value
+                .atOffset(ZoneOffset.UTC)
+                .atZoneSameInstant(DISPLAY_ZONE)
+                .toOffsetDateTime();
     }
 
     private String buildDefaultDocumentName(SourceProject sourceProject) {

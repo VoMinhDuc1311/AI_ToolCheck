@@ -2,14 +2,19 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.openapi.res.OpenApiGenerateResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.DocumentType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ParamIn;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.UsageType;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OpenApiGeneratorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
+import com.aitoolcheck.ai_toolcheck1_backend.service.openapi.OpenApiMetadataEnhancer;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -33,6 +38,9 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     private final ApiDocumentRepository apiDocumentRepository;
     private final ApiDocumentVersionRepository apiDocumentVersionRepository;
     private final ProjectAccessService projectAccessService;
+    private final ApiMetadataCleanupService apiMetadataCleanupService;
+    private final OpenApiMetadataEnhancer openApiMetadataEnhancer;
+    private final ProjectNotificationEventPublisher notificationEventPublisher;
 
     // -------------------------------------------------------------------------
     // Public methods
@@ -41,14 +49,16 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     @Override
     @Transactional(readOnly = true)
     public Map<String, Object> generateOpenApiJson(UUID projectId) {
-        log.info("Generating OpenAPI JSON for projectId={}", projectId);
+        log.info("Generating read-only OpenAPI JSON preview for projectId={}", projectId);
         projectAccessService.requireCanViewProject(projectId);
 
         SourceProject project = sourceProjectRepository.findById(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException(
-                        "Source project not found with id: " + projectId));
+                        "SourceProject not found"));
 
-        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
+        // Read-only preview: query current active/non-stale endpoints only.
+        // Do NOT call cleanup here — preview must never mutate DB.
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId);
         if (endpoints.isEmpty()) {
             throw new BadRequestException("No API endpoints found for project id: " + projectId);
         }
@@ -64,15 +74,20 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
         log.info("Generating and saving OpenAPI JSON for projectId={}", projectId);
         projectAccessService.requireCanGenerateDocs(projectId);
 
-        Map<String, Object> openApiMap = generateOpenApiJson(projectId);
+        // Perform cleanup before generating — this is the mutating path
+        apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
 
         SourceProject project = sourceProjectRepository.findById(projectId)
                 .orElseThrow(() -> new ResourceNotFoundException(
-                        "Source project not found with id: " + projectId));
+                        "SourceProject not found"));
 
-        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
+        List<ApiEndpoint> endpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId);
+        if (endpoints.isEmpty()) {
+            throw new BadRequestException("No API endpoints found for project id: " + projectId);
+        }
         List<ApiSchema> schemas = apiSchemaRepository.findBySourceProjectId(projectId);
 
+        Map<String, Object> openApiMap = buildOpenApiDocument(project, endpoints, schemas);
         String contentJson = serializeToJson(openApiMap, projectId);
 
         // Find or create the project-level ApiDocument
@@ -108,6 +123,25 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
 
         log.info("Saved OpenAPI version={} for projectId={}, docId={}, versionId={}",
                 nextVersionNo, projectId, savedDocument.getId(), savedVersion.getId());
+
+        Map<String, Object> paths = castMap(openApiMap.get("paths"));
+        int pathCount = paths.size();
+        int operationCount = countOperations(paths);
+
+        notificationEventPublisher.publishForCurrentUser(
+                projectId,
+                NotificationType.OPENAPI_GENERATED,
+                NotificationSeverity.SUCCESS,
+                "OpenAPI generated",
+                "OpenAPI document generated successfully.",
+                "/source-projects/" + projectId + "/documentation",
+                Map.of(
+                        "projectId", projectId,
+                        "documentId", savedDocument.getId(),
+                        "versionId", savedVersion.getId(),
+                        "pathCount", pathCount,
+                        "operationCount", operationCount
+                ));
 
         return OpenApiGenerateResponse.builder()
                 .projectId(projectId)
@@ -185,22 +219,29 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
 
     private Map<String, Object> buildOperation(ApiEndpoint endpoint, Set<String> usedOperationIds) {
         Map<String, Object> operation = new LinkedHashMap<>();
+        List<ApiParameter> params = apiParameterRepository.findByApiEndpointId(endpoint.getId());
 
-        if (endpoint.getTagName() != null && !endpoint.getTagName().isBlank()) {
-            operation.put("tags", List.of(endpoint.getTagName()));
+        String tag = openApiMetadataEnhancer.inferTag(endpoint);
+        operation.put("tags", List.of(tag));
+
+        String summary = openApiMetadataEnhancer.inferSummary(endpoint, params);
+        if (summary != null) {
+            operation.put("summary", summary);
         }
 
-        operation.put("operationId", resolveUniqueOperationId(endpoint, usedOperationIds));
-
-        if (endpoint.getMethodName() != null && !endpoint.getMethodName().isBlank()) {
-            operation.put("summary", endpoint.getMethodName());
+        String description = openApiMetadataEnhancer.inferDescription(endpoint, summary);
+        if (description != null && !description.isBlank()) {
+            operation.put("description", description);
         }
+
+        String opId = openApiMetadataEnhancer.inferOperationId(endpoint, params, usedOperationIds);
+        operation.put("operationId", opId);
 
         if (Boolean.TRUE.equals(endpoint.getDeprecatedFlag())) {
             operation.put("deprecated", true);
         }
 
-        List<Map<String, Object>> parameters = buildParameters(endpoint);
+        List<Map<String, Object>> parameters = buildParameters(endpoint, params);
         if (!parameters.isEmpty()) {
             operation.put("parameters", parameters);
         }
@@ -210,47 +251,18 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
             operation.put("requestBody", requestBody);
         }
 
-        operation.put("responses", buildResponses(endpoint));
+        operation.put("responses", buildResponses(endpoint, summary));
         return operation;
-    }
-
-    // Fallback: methodName → sanitised path+method → plain "operation"
-    private String resolveUniqueOperationId(ApiEndpoint endpoint, Set<String> usedOperationIds) {
-        String base = endpoint.getOperationId();
-
-        if (base == null || base.isBlank()) {
-            if (endpoint.getMethodName() != null && !endpoint.getMethodName().isBlank()) {
-                base = endpoint.getMethodName();
-            } else {
-                String path = endpoint.getEndpointPath() != null
-                        ? endpoint.getEndpointPath().replaceAll("[^a-zA-Z0-9]", "_")
-                        : "operation";
-                base = resolveHttpMethod(endpoint) + "_" + path;
-            }
-        }
-
-        if (usedOperationIds.add(base)) {
-            return base;
-        }
-
-        // Deduplicate with numeric suffix
-        int suffix = 2;
-        String candidate;
-        do {
-            candidate = base + "_" + suffix++;
-        } while (!usedOperationIds.add(candidate));
-
-        return candidate;
     }
 
     // -------------------------------------------------------------------------
     // Parameters
     // -------------------------------------------------------------------------
 
-    private List<Map<String, Object>> buildParameters(ApiEndpoint endpoint) {
+    private List<Map<String, Object>> buildParameters(ApiEndpoint endpoint, List<ApiParameter> params) {
         List<Map<String, Object>> parameters = new ArrayList<>();
 
-        for (ApiParameter param : apiParameterRepository.findByApiEndpointId(endpoint.getId())) {
+        for (ApiParameter param : params) {
             ParamIn paramIn = param.getParamIn();
 
             // Skip BODY (represented by requestBody) and FORM (phase 1)
@@ -264,6 +276,11 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
             // PATH params are always required
             paramObj.put("required", paramIn == ParamIn.PATH || Boolean.TRUE.equals(param.getRequiredFlag()));
             paramObj.put("schema", convertJavaTypeToOpenApiSchema(param.getDataType()));
+
+            String pDesc = openApiMetadataEnhancer.enrichParameterDescription(param);
+            if (pDesc != null && !pDesc.isBlank()) {
+                paramObj.put("description", pDesc);
+            }
 
             if (param.getExampleValue() != null && !param.getExampleValue().isBlank()) {
                 paramObj.put("example", param.getExampleValue());
@@ -290,40 +307,105 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     // -------------------------------------------------------------------------
 
     private Map<String, Object> buildRequestBody(ApiEndpoint endpoint) {
+        Map<String, Object> requestBody = null;
+
         for (EndpointSchemaMap map : endpointSchemaMapRepository.findByApiEndpointId(endpoint.getId())) {
             if (map.getUsageType() != UsageType.REQUEST_BODY || map.getApiSchema() == null) continue;
 
             String schemaName = map.getApiSchema().getSchemaName();
             if (schemaName == null || schemaName.isBlank()) continue;
 
-            Map<String, Object> requestBody = new LinkedHashMap<>();
+            requestBody = new LinkedHashMap<>();
             requestBody.put("required", true);
-            requestBody.put("content", jsonContent(schemaRef(schemaName)));
-            return requestBody;
+
+            Map<String, Object> mediaType = buildMediaTypeWithExample(
+                    schemaRef(schemaName),
+                    endpoint.getExampleRequestJson(),
+                    "requestBody example",
+                    endpoint.getId()
+            );
+            Map<String, Object> content = new LinkedHashMap<>();
+            content.put("application/json", mediaType);
+            requestBody.put("content", content);
+            break;
         }
 
-        return null;
+        if (requestBody == null && endpoint.getExampleRequestJson() != null
+                && !endpoint.getExampleRequestJson().isBlank()) {
+            Object parsedExample = parseJsonSafely(endpoint.getExampleRequestJson(),
+                    "exampleRequestJson", endpoint.getId());
+            if (parsedExample != null) {
+                Map<String, Object> mediaType = new LinkedHashMap<>();
+                mediaType.put("schema", objectSchema());
+                mediaType.put("example", parsedExample);
+                Map<String, Object> content = new LinkedHashMap<>();
+                content.put("application/json", mediaType);
+                requestBody = new LinkedHashMap<>();
+                requestBody.put("required", true);
+                requestBody.put("content", content);
+            }
+        }
+
+        return requestBody;
     }
 
     // -------------------------------------------------------------------------
     // Responses
     // -------------------------------------------------------------------------
 
-    private Map<String, Object> buildResponses(ApiEndpoint endpoint) {
-        Map<String, Object> response200 = new LinkedHashMap<>();
-        response200.put("description", "OK");
+    private Map<String, Object> buildResponses(ApiEndpoint endpoint, String summary) {
+        Map<String, Object> responses = new LinkedHashMap<>();
+        Map<String, String> responseDescs = openApiMetadataEnhancer.getResponseDescriptions(endpoint, summary);
 
+        Map<String, Object> response200 = new LinkedHashMap<>();
+        response200.put("description", responseDescs.getOrDefault("200", "OK"));
+
+        boolean schemaSet = false;
         for (EndpointSchemaMap map : endpointSchemaMapRepository.findByApiEndpointId(endpoint.getId())) {
             if (map.getUsageType() != UsageType.RESPONSE_BODY || map.getApiSchema() == null) continue;
 
             String schemaName = map.getApiSchema().getSchemaName();
             if (schemaName != null && !schemaName.isBlank()) {
-                response200.put("content", jsonContent(schemaRef(schemaName)));
+                Map<String, Object> mediaType = buildMediaTypeWithExample(
+                        schemaRef(schemaName),
+                        endpoint.getExampleResponseJson(),
+                        "exampleResponseJson",
+                        endpoint.getId()
+                );
+                Map<String, Object> content = new LinkedHashMap<>();
+                content.put("application/json", mediaType);
+                response200.put("content", content);
+                schemaSet = true;
                 break;
             }
         }
 
-        return Map.of("200", response200);
+        if (!schemaSet && endpoint.getExampleResponseJson() != null
+                && !endpoint.getExampleResponseJson().isBlank()) {
+            Object parsedExample = parseJsonSafely(endpoint.getExampleResponseJson(),
+                    "exampleResponseJson", endpoint.getId());
+            if (parsedExample != null) {
+                Map<String, Object> mediaType = new LinkedHashMap<>();
+                mediaType.put("schema", objectSchema());
+                mediaType.put("example", parsedExample);
+                Map<String, Object> content = new LinkedHashMap<>();
+                content.put("application/json", mediaType);
+                response200.put("content", content);
+            }
+        }
+
+        responses.put("200", response200);
+
+        for (Map.Entry<String, String> entry : responseDescs.entrySet()) {
+            String statusCode = entry.getKey();
+            if ("200".equals(statusCode)) continue;
+
+            Map<String, Object> errorResponse = new LinkedHashMap<>();
+            errorResponse.put("description", entry.getValue());
+            responses.put(statusCode, errorResponse);
+        }
+
+        return responses;
     }
 
     // -------------------------------------------------------------------------
@@ -474,6 +556,43 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
     }
 
     // -------------------------------------------------------------------------
+    // JSON example helpers
+    // -------------------------------------------------------------------------
+
+    /**
+     * Build media type map với schema ref và optional example.
+     * Nếu exampleJson không hợp lệ, log warning và bỏ qua — không crash generator.
+     */
+    private Map<String, Object> buildMediaTypeWithExample(Map<String, Object> schemaObj,
+                                                           String exampleJson,
+                                                           String fieldLabel,
+                                                           java.util.UUID endpointId) {
+        Map<String, Object> mediaType = new LinkedHashMap<>();
+        mediaType.put("schema", schemaObj);
+        if (exampleJson != null && !exampleJson.isBlank()) {
+            Object parsed = parseJsonSafely(exampleJson, fieldLabel, endpointId);
+            if (parsed != null) {
+                mediaType.put("example", parsed);
+            }
+        }
+        return mediaType;
+    }
+
+    /**
+     * Parse JSON string an toàn. Trả về Object nếu thành công, null nếu lỗi.
+     * Không throw — chỉ log warning.
+     */
+    private Object parseJsonSafely(String json, String fieldLabel, java.util.UUID endpointId) {
+        try {
+            return objectMapper.readValue(json, Object.class);
+        } catch (Exception e) {
+            log.warn("[OpenApiGenerator] Could not parse {} for endpointId={} — skipping example. Reason: {}",
+                    fieldLabel, endpointId, e.getMessage());
+            return null;
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Utility
     // -------------------------------------------------------------------------
 
@@ -484,5 +603,23 @@ public class OpenApiGeneratorServiceImpl implements OpenApiGeneratorService {
             log.error("Failed to serialize OpenAPI JSON for projectId={}", projectId, e);
             throw new RuntimeException("Failed to serialize OpenAPI JSON: " + e.getMessage(), e);
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> castMap(Object value) {
+        if (value instanceof Map<?, ?> map) {
+            return (Map<String, Object>) map;
+        }
+        return Map.of();
+    }
+
+    private int countOperations(Map<String, Object> paths) {
+        int count = 0;
+        for (Object pathItem : paths.values()) {
+            if (pathItem instanceof Map<?, ?> operations) {
+                count += operations.size();
+            }
+        }
+        return count;
     }
 }

@@ -272,6 +272,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                         })
                         // Thêm cơ chế Retry (Backoff 4 lần, base delay 15 giây)
                         .retryWhen(Retry.backoff(4, Duration.ofSeconds(15))
+                                        .filter(this::isRetryableGeminiFailure)
                                         .doBeforeRetry(retrySignal -> log.warn(
                                                         "Đang thử lại lần thứ {}/4 do lỗi: {}",
                                                         retrySignal.totalRetries() + 1,
@@ -332,6 +333,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                             .flatMap(err -> Mono.error(new RuntimeException("Gemini API Error: " + err))))
                     .bodyToMono(String.class)
                     .retryWhen(Retry.backoff(4, Duration.ofSeconds(15))
+                            .filter(this::isRetryableGeminiFailure)
                             .doBeforeRetry(s -> log.warn("[GeminiClient] Retry lần {}/4 – lý do: {}",
                                     s.totalRetries() + 1, s.failure().getMessage())))
                     .block();
@@ -377,6 +379,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                             .flatMap(err -> Mono.error(new RuntimeException("Gemini API Error: " + err))))
                     .bodyToMono(String.class)
                     .retryWhen(Retry.backoff(4, Duration.ofSeconds(15))
+                            .filter(this::isRetryableGeminiFailure)
                             .doBeforeRetry(s -> log.warn("[GeminiClient] Retry lần {}/4 – lý do: {}",
                                     s.totalRetries() + 1, s.failure().getMessage())))
                     .block();
@@ -484,5 +487,19 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                         return matcher.group(1);
                 }
                 return rawText;
+        }
+        private boolean isRetryableGeminiFailure(Throwable throwable) {
+                String message = throwable == null || throwable.getMessage() == null
+                                ? ""
+                                : throwable.getMessage().toLowerCase(java.util.Locale.ROOT);
+                if (message.contains("429") || message.contains("rate limit") || message.contains("quota")
+                                || message.contains("unauthorized") || message.contains("forbidden")
+                                || message.contains("401") || message.contains("403")) {
+                        return false;
+                }
+                return message.contains("500") || message.contains("502") || message.contains("503")
+                                || message.contains("504") || message.contains("server error")
+                                || message.contains("connection") || message.contains("timeout")
+                                || message.isBlank();
         }
 }

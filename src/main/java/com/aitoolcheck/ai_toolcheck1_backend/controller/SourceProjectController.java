@@ -7,11 +7,16 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateProject
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateSourceProjectRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceanalysisresult.res.SourceAnalysisResultDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileUploadResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceDocumentationPipelineResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProjectResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.apimetadata.res.ApiMetadataCleanupResult;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceDocumentationOrchestratorService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -35,6 +40,9 @@ public class SourceProjectController {
         private final SourceProjectService sourceProjectService;
         private final SourceFileService sourceFileService;
         private final SourceAnalysisResultService sourceAnalysisResultService;
+        private final SourceDocumentationOrchestratorService documentationOrchestratorService;
+        private final ApiMetadataCleanupService apiMetadataCleanupService;
+        private final ProjectAccessService projectAccessService;
 
         @PostMapping
         @Operation(summary = "Create source project", description = "Create a new source project.", operationId = "createSourceProject")
@@ -94,6 +102,29 @@ public class SourceProjectController {
         @Operation(summary = "Analyze source project", description = "Analyze the source files for a source project.", operationId = "analyzeSourceProject")
         public ResponseEntity<SourceAnalysisResultDetailResponse> analyzeProject(@PathVariable UUID projectId) {
                 return ResponseEntity.ok(sourceAnalysisResultService.analyzeProject(projectId));
+        }
+
+        @PostMapping("/{projectId}/generate-docs-from-source")
+        @Operation(
+                summary = "Generate docs from source (orchestration)",
+                description = "One-click pipeline: Analyze source → JavaParser (modern) OR AI legacy jobs → OpenAPI. " +
+                        "Returns 202 with jobIds if AI jobs are queued, 200 if OpenAPI was generated immediately.",
+                operationId = "generateDocsFromSource"
+        )
+        public ResponseEntity<SourceDocumentationPipelineResponse> generateDocsFromSource(@PathVariable UUID projectId) {
+                SourceDocumentationPipelineResponse response = documentationOrchestratorService.generateDocsFromSource(projectId);
+                HttpStatus status = (response.getAiJobsTriggered() != null && response.getAiJobsTriggered() > 0)
+                        ? HttpStatus.ACCEPTED
+                        : HttpStatus.OK;
+                return ResponseEntity.status(status).body(response);
+        }
+
+        @PostMapping("/{projectId}/cleanup-api-metadata")
+        @Operation(summary = "Cleanup API metadata manually", description = "Cleans up API metadata by marking fallback and duplicate endpoints as stale.", operationId = "cleanupApiMetadata")
+        public ResponseEntity<ApiMetadataCleanupResult> cleanupApiMetadata(@PathVariable UUID projectId) {
+                projectAccessService.requireCanGenerateDocs(projectId);
+                ApiMetadataCleanupResult result = apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
+                return ResponseEntity.ok(result);
         }
 
         @PutMapping("/{id}")

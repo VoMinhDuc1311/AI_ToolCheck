@@ -10,25 +10,19 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * DTO mapping kết quả phân tích từ Gemini AI.
- * <p>
- * Annotated với Jakarta Validation để đảm bảo cấu trúc dữ liệu tối thiểu
- * ngay sau bước deserialization (Layer 5 – Validation).
- * {@code @JsonIgnoreProperties(ignoreUnknown = true)} cho phép LLM trả về
- * field dư thừa mà không làm crash quá trình parse.
- * </p>
+ * DTO mapping kết quả phân tích từ AI (Gemini / Ollama).
+ * {@code @JsonIgnoreProperties(ignoreUnknown = true)} cho phép LLM trả về field dư thừa
+ * mà không làm crash quá trình parse.
  */
 @Data
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class AiInferenceResultDto {
 
-    /** Danh sách endpoints bóc tách được — bắt buộc phải có ít nhất 1 phần tử. */
     @NotNull(message = "endpoints must not be null")
-    @NotEmpty(message = "endpoints must not be empty")
+    // NOTE: empty list is intentionally valid — helper/non-entrypoint files legitimately return
+    // {"endpoints":[]} and must NOT fail DTO validation. The consumer handles this gracefully.
     @Valid
     private List<EndpointDto> endpoints = Collections.emptyList();
-
-    // ─────────────────────────────────────────────────────────────────────────
 
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -41,25 +35,25 @@ public class AiInferenceResultDto {
         private String httpMethod;
 
         private String description;
-
-        /** Endpoint có yêu cầu xác thực không — fallback false nếu AI không cung cấp. */
         private Boolean authRequired;
 
         @Valid
         private SourceDto source;
 
-        /** Null-safe: nếu AI bỏ qua trường này, trả về list rỗng thay vì null. */
         @Valid
         private List<ParameterDto> parameters = Collections.emptyList();
 
-        /** Null-safe: tương tự parameters. */
         @Valid
         private List<ResponseDto> responses = Collections.emptyList();
 
+        @Valid
+        private SchemaDto requestSchema;
+
+        @Valid
+        private SchemaDto responseSchema;
+
         private Double confidence;
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
 
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -67,8 +61,6 @@ public class AiInferenceResultDto {
         private String className;
         private String methodName;
     }
-
-    // ─────────────────────────────────────────────────────────────────────────
 
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
@@ -83,12 +75,35 @@ public class AiInferenceResultDto {
         private String example;
     }
 
-    // ─────────────────────────────────────────────────────────────────────────
-
     @Data
     @JsonIgnoreProperties(ignoreUnknown = true)
     public static class ResponseDto {
         private Integer statusCode;
         private String contentType;
     }
-}
+
+    /**
+     * Schema inferred by AI cho requestBody hoặc responseBody.
+     * {@code schemaType} là chuỗi AI tự mô tả (OBJECT, ARRAY, ...) — không được dùng trong persistence.
+     */
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class SchemaDto {
+        private String schemaName;
+        private String schemaType;
+
+        @Valid
+        private List<FieldDto> fields = Collections.emptyList();
+    }
+
+    @Data
+    @JsonIgnoreProperties(ignoreUnknown = true)
+    public static class FieldDto {
+        private String fieldName;
+        private String dataType;
+        private Boolean required;
+        private Boolean nullable;
+        private String description;
+        private String exampleValue;
+    }
+}

@@ -343,7 +343,7 @@ public class ProjectAccessService {
     }
 
     private ResourceNotFoundException notFound(UUID projectId) {
-        return new ResourceNotFoundException("SourceProject not found with id: " + projectId);
+        return new ResourceNotFoundException("SourceProject not found");
     }
 
     private ForbiddenException forbidden() {

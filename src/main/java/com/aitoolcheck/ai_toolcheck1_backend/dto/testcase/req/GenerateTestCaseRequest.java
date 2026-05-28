@@ -17,7 +17,6 @@ public class GenerateTestCaseRequest {
     @NotNull(message = "projectId is required")
     private UUID projectId;
 
-    @NotNull(message = "apiEndpointId is required")
     private UUID apiEndpointId;
 
     private UUID apiDocumentVersionId;

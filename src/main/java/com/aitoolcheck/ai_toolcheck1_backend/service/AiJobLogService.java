@@ -6,9 +6,13 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.aijoblog.res.AiJobStatisticResp
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 
+import java.util.List;
 import java.util.UUID;
 
 public interface AiJobLogService {
+
+    List<AiJobLogResponse> getJobLogs(UUID projectId);
+
 
     /**
      * Khởi tạo một Job với trạng thái PENDING và đẩy thông tin (message) vào
@@ -19,6 +23,13 @@ public interface AiJobLogService {
      */
     AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
             UUID projectId, UUID sourceFileId, UUID apiEndpointId);
+
+    /**
+     * Overload with scanBatchId — dùng bởi SourceDocumentationOrchestratorServiceImpl.
+     * Persists scanBatchId vào ai_job_log để FE có thể group/poll theo batch.
+     */
+    AiJobLogResponse createPendingJobAndTriggerAi(String promptText, String skillCode,
+            UUID projectId, UUID sourceFileId, UUID apiEndpointId, UUID scanBatchId);
 
     int triggerEnrichmentForProject(UUID projectId);
 
@@ -42,6 +53,8 @@ public interface AiJobLogService {
     void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput);
 
     void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput, String modelName);
+
+    void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput, String modelName, String message);
 
     void markJobAsFailed(UUID id, String errorMessage);
 

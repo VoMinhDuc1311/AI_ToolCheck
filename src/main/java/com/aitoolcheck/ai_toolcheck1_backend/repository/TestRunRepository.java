@@ -21,4 +21,8 @@ public interface TestRunRepository extends JpaRepository<TestRun, UUID> {
     @Modifying
     @Query("DELETE FROM TestRun run WHERE run.sourceProject.id = :projectId")
     void deleteBySourceProjectId(@Param("projectId") UUID projectId);
+
+    long countBySourceProject_Id(UUID projectId);
+
+    long countBySourceProject_IdAndRunStatus(UUID projectId, com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus runStatus);
 }

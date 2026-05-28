@@ -2,6 +2,8 @@ package com.aitoolcheck.ai_toolcheck1_backend.repository;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -46,4 +48,30 @@ public interface SourceProjectRepository extends JpaRepository<SourceProject, UU
     List<SourceProject> findByVisibilityOrderByCreatedAtDesc(ProjectVisibility visibility);
 
     boolean existsByIdAndOwnerUser_Id(UUID projectId, UUID ownerUserId);
+
+    @Query("""
+        SELECT sp.id
+        FROM SourceProject sp
+        WHERE sp.deletedFlag = false
+          AND sp.archivedFlag = false
+          AND (
+              sp.ownerUser.id = :userId
+              OR EXISTS (
+                  SELECT 1 FROM ProjectMember pm
+                  WHERE pm.sourceProject.id = sp.id
+                    AND pm.user.id = :userId
+              )
+          )
+    """)
+    List<UUID> findActiveNonArchivedOwnedOrMemberProjectIds(@Param("userId") UUID userId);
+
+    @Query("""
+        SELECT COUNT(sp) > 0
+        FROM SourceProject sp
+        WHERE sp.id = :projectId
+          AND sp.ownerUser.id = :userId
+          AND sp.deletedFlag = false
+          AND sp.archivedFlag = false
+    """)
+    boolean existsActiveNonArchivedByIdAndOwnerUserId(@Param("projectId") UUID projectId, @Param("userId") UUID userId);
 }

@@ -2,6 +2,9 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.RuleEngineResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.res.TestResultResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.TestFailureAnalysisRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestFailureAnalysis;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testfailureanalysis.res.TestFailureAnalysisDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.CreateTestRunRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.ExecuteTestRunRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.HttpActualResponseDto;
@@ -11,6 +14,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrunitem.res.TestRunItemResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
@@ -31,6 +36,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.RuleEngineService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import com.aitoolcheck.ai_toolcheck1_backend.service.runner.ExecutedHttpResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.runner.TestHttpExecutor;
 import com.aitoolcheck.ai_toolcheck1_backend.service.runner.TestRequestBuilder;
@@ -80,6 +86,8 @@ public class TestRunServiceImpl implements TestRunService {
     private final RuleEngineService ruleEngineService;
     private final TransactionTemplate transactionTemplate;
     private final TestRunRealtimePublisher testRunRealtimePublisher;
+    private final ProjectNotificationEventPublisher notificationEventPublisher;
+    private final TestFailureAnalysisRepository testFailureAnalysisRepository;
     private TestRunService self;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -323,6 +331,7 @@ public class TestRunServiceImpl implements TestRunService {
 
         testRun.setRunStatus(anyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
         testRunRepository.save(testRun);
+        publishTestRunNotification(testRun);
         log.info("Finished async execution for TestRun id: {}", id);
     }
 
@@ -455,6 +464,7 @@ public class TestRunServiceImpl implements TestRunService {
         } else {
             testRunRealtimePublisher.publishRunFailed(finalRunEvent);
         }
+        publishTestRunNotification(savedRun);
 
         return transactionTemplate.execute(status -> {
             TestRun finalRun = testRunRepository.findById(savedRun.getId())
@@ -726,6 +736,27 @@ public class TestRunServiceImpl implements TestRunService {
         return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
     }
 
+    private void publishTestRunNotification(TestRun testRun) {
+        if (testRun == null || testRun.getSourceProject() == null || testRun.getSourceProject().getId() == null) {
+            return;
+        }
+
+        UUID projectId = testRun.getSourceProject().getId();
+        boolean success = testRun.getRunStatus() == RunStatus.COMPLETED;
+        notificationEventPublisher.publishForProjectOwner(
+                projectId,
+                success ? NotificationType.TEST_RUN_COMPLETED : NotificationType.TEST_RUN_FAILED,
+                success ? NotificationSeverity.SUCCESS : NotificationSeverity.ERROR,
+                success ? "Test run completed" : "Test run failed",
+                success ? "Test run completed successfully." : "Test run completed with failures.",
+                "/source-projects/" + projectId + "/test-runs/" + testRun.getId(),
+                Map.of(
+                        "projectId", projectId,
+                        "testRunId", testRun.getId(),
+                        "status", testRun.getRunStatus() == null ? "" : testRun.getRunStatus().name()
+                ));
+    }
+
     @Override
     @Transactional(readOnly = true)
     public TestRunDetailResponse getById(UUID id) {
@@ -933,6 +964,10 @@ public class TestRunServiceImpl implements TestRunService {
 
         String actualResponseJson = result.getActualResponseJson();
 
+        TestFailureAnalysis failureAnalysis = testFailureAnalysisRepository
+                .findFirstByTestResult_IdOrderByCreatedAtDesc(result.getId())
+                .orElse(null);
+
         return TestResultResponse.builder()
                 .id(result.getId())
                 .testRunItemId(result.getTestRunItem().getId())
@@ -942,8 +977,34 @@ public class TestRunServiceImpl implements TestRunService {
                 .actualResponseJson(actualResponseJson)
                 .errorMessage(result.getErrorMessage())
                 .blockedReason(result.getBlockedReason())
+                .failureAnalysis(toFailureAnalysisResponse(failureAnalysis))
                 .createdAt(result.getCreatedAt())
                 .updatedAt(result.getUpdatedAt())
+                .build();
+    }
+
+    private TestFailureAnalysisDetailResponse toFailureAnalysisResponse(TestFailureAnalysis tfa) {
+        if (tfa == null) {
+            return null;
+        }
+        return TestFailureAnalysisDetailResponse.builder()
+                .id(tfa.getId())
+                .testResultId(tfa.getTestResult().getId())
+                .aiJobLogId(tfa.getAiJobLog() == null ? null : tfa.getAiJobLog().getId())
+                .modelName(tfa.getModelName())
+                .failureType(tfa.getFailureType())
+                .summary(tfa.getSummary())
+                .rootCause(tfa.getRootCause())
+                .expectedBehavior(tfa.getExpectedBehavior())
+                .actualBehavior(tfa.getActualBehavior())
+                .isLikelyBackendBug(tfa.getIsLikelyBackendBug())
+                .isLikelyTestCaseBug(tfa.getIsLikelyTestCaseBug())
+                .suggestedFixesJson(tfa.getSuggestedFixesJson())
+                .recommendedNextAction(tfa.getRecommendedNextAction())
+                .confidence(tfa.getConfidence())
+                .priority(tfa.getPriority())
+                .createdAt(tfa.getCreatedAt())
+                .updatedAt(tfa.getUpdatedAt())
                 .build();
     }
 

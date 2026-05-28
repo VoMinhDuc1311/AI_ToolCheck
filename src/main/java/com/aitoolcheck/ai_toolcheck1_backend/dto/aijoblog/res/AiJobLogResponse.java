@@ -8,6 +8,7 @@ import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
 
+import java.time.LocalDateTime;
 import java.util.UUID;
 @Getter
 @Setter
@@ -24,4 +25,9 @@ public class AiJobLogResponse {
     private JobType jobType;
     private String modelName;
     private ExecutionStatus executionStatus;
+    private LocalDateTime startedAt;
+    private LocalDateTime completedAt;
+    /** Nullable — only set for LEGACY_INFERENCE jobs created via generate-docs-from-source. */
+    private String errorMessage;
+    private UUID scanBatchId;
 }

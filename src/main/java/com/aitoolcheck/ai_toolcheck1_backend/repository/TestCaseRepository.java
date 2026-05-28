@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.repository;
 
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
 import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
@@ -13,7 +14,7 @@ import java.util.Optional;
 import java.util.UUID;
 
 @Repository
-public interface TestCaseRepository extends JpaRepository<TestCase, UUID> {
+public interface TestCaseRepository extends JpaRepository<TestCase, UUID>, JpaSpecificationExecutor<TestCase> {
 
     List<TestCase> findBySourceProject_IdAndDeletedFlagFalseOrderByUpdatedAtDesc(UUID projectId);
 
@@ -26,6 +27,12 @@ public interface TestCaseRepository extends JpaRepository<TestCase, UUID> {
     List<TestCase> findBySourceProject_IdAndActiveFlagTrueAndDeletedFlagFalseOrderByUpdatedAtDesc(UUID projectId);
 
     List<TestCase> findByIdInAndSourceProject_IdAndActiveFlagTrueAndDeletedFlagFalse(Collection<UUID> ids, UUID projectId);
+
+    long countBySourceProject_IdAndDeletedFlagFalse(UUID projectId);
+
+    long countBySourceProject_IdAndActiveFlagTrueAndDeletedFlagFalse(UUID projectId);
+
+    long countBySourceProject_IdAndGeneratedByAndDeletedFlagFalse(UUID projectId, com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy generatedBy);
 
     // ── Permanent delete support ───────────────────────────────────────────────
 
