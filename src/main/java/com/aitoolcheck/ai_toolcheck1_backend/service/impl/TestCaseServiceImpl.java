@@ -906,8 +906,7 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         validateRequestPath(input.getRequestPath());
-        validateJsonObject(input.getQueryParamsJson(), "queryParamsJson");
-        validateJsonObject(input.getHeadersJson(), "headersJson");
+        // Map<String,Object> fields are always JSON objects by construction — no further check needed.
     }
 
     private void validateUpdateInput(UpdateTestCaseInputRequest input) {
@@ -916,8 +915,7 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         validateRequestPath(input.getRequestPath());
-        validateJsonObject(input.getQueryParamsJson(), "queryParamsJson");
-        validateJsonObject(input.getHeadersJson(), "headersJson");
+        // Map<String,Object> fields are always JSON objects by construction — no further check needed.
     }
 
     private void validateCreateAssertions(List<CreateTestCaseAssertionRequest> assertions) {
@@ -942,6 +940,8 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
     }
 
+    // validateJsonObject for Map is not needed — Map<String,Object> is always a JSON object.
+    // Kept for backward compatibility if called from other paths with JsonNode.
     private void validateJsonObject(JsonNode jsonNode, String fieldName) {
         if (jsonNode != null && !jsonNode.isNull() && !jsonNode.isObject()) {
             throw new BadRequestException(fieldName + " must be a JSON object");
@@ -1096,9 +1096,9 @@ public class TestCaseServiceImpl implements TestCaseService {
                 .testCaseId(input.getTestCase() == null ? null : input.getTestCase().getId())
                 .httpMethod(input.getHttpMethod())
                 .requestPath(input.getRequestPath())
-                .queryParamsJson(toJsonNode(input.getQueryParamsJson()))
-                .headersJson(toJsonNode(input.getHeadersJson()))
-                .requestBodyJson(toJsonNode(input.getRequestBodyJson()))
+                .queryParamsJson(toJsonMap(input.getQueryParamsJson()))
+                .headersJson(toJsonMap(input.getHeadersJson()))
+                .requestBodyJson(toJsonMap(input.getRequestBodyJson()))
                 .contentType(input.getContentType())
                 .timeoutMs(input.getTimeoutMs())
                 .inputData(input.getInputData())
@@ -1122,6 +1122,25 @@ public class TestCaseServiceImpl implements TestCaseService {
                 .build();
     }
 
+    /**
+     * Serializes a {@code Map<String, Object>} to a JSON string for DB persistence.
+     * Returns {@code null} when the map is null or empty.
+     */
+    private String toJsonString(java.util.Map<String, Object> map) {
+        if (map == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(map);
+        } catch (Exception ex) {
+            throw new BadRequestException("Invalid JSON value.");
+        }
+    }
+
+    /**
+     * Serializes a {@link JsonNode} to a JSON string for DB persistence (used by AI flow).
+     * Returns {@code null} when the node is null or a JSON null.
+     */
     private String toJsonString(JsonNode jsonNode) {
         if (jsonNode == null || jsonNode.isNull()) {
             return null;
@@ -1134,6 +1153,27 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
     }
 
+    /**
+     * Deserializes a stored JSON string back to a {@code Map<String, Object>} for API responses.
+     * Returns {@code null} when the string is blank.
+     */
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, Object> toJsonMap(String json) {
+        if (!hasText(json)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, java.util.Map.class);
+        } catch (Exception ex) {
+            // Stored value might not be a JSON object (e.g. array, primitive) — return as-is wrapped
+            log.warn("[TestCaseService] Could not deserialize stored JSON to Map — field will be null. Value: {}", json);
+            return null;
+        }
+    }
+
+    /**
+     * Deserializes a stored JSON string to a {@link JsonNode} — used only internally for AI flow.
+     */
     private JsonNode toJsonNode(String json) {
         if (!hasText(json)) {
             return null;

@@ -15,7 +15,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestWorkbenchService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
-import com.fasterxml.jackson.databind.JsonNode;
+
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -134,9 +134,9 @@ public class TestWorkbenchServiceImpl implements TestWorkbenchService {
                 .testCaseId(input.getTestCase() == null ? null : input.getTestCase().getId())
                 .httpMethod(input.getHttpMethod())
                 .requestPath(input.getRequestPath())
-                .queryParamsJson(toJsonNode(input.getQueryParamsJson()))
-                .headersJson(toJsonNode(input.getHeadersJson()))
-                .requestBodyJson(toJsonNode(input.getRequestBodyJson()))
+                .queryParamsJson(toJsonMap(input.getQueryParamsJson()))
+                .headersJson(toJsonMap(input.getHeadersJson()))
+                .requestBodyJson(toJsonMap(input.getRequestBodyJson()))
                 .contentType(input.getContentType())
                 .timeoutMs(input.getTimeoutMs())
                 .inputData(input.getInputData())
@@ -279,12 +279,13 @@ public class TestWorkbenchServiceImpl implements TestWorkbenchService {
                 .build();
     }
 
-    private JsonNode toJsonNode(String json) {
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, Object> toJsonMap(String json) {
         if (json == null || json.trim().isEmpty()) {
             return null;
         }
         try {
-            return objectMapper.readTree(json);
+            return objectMapper.readValue(json, java.util.Map.class);
         } catch (Exception ex) {
             return null;
         }

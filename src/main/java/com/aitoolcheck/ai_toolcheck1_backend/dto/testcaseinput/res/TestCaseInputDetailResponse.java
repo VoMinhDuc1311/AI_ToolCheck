@@ -6,24 +6,30 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-import com.fasterxml.jackson.databind.JsonNode;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.UUID;
+
+/**
+ * Detailed response DTO for a TestCaseInput.
+ *
+ * <p>JSON-typed fields use {@code Map<String, Object>} instead of {@code JsonNode}
+ * to guarantee clean JSON serialization in API responses. See {@link TestCaseInputResponse}.
+ */
 @Getter
 @Setter
 @NoArgsConstructor
 @Builder
 @AllArgsConstructor
-
 public class TestCaseInputDetailResponse {
     private UUID id;
     private UUID testCaseId;
     private HttpMethod httpMethod;
     private String requestPath;
-    private JsonNode queryParamsJson;
-    private JsonNode headersJson;
-    private JsonNode requestBodyJson;
+    private Map<String, Object> queryParamsJson;
+    private Map<String, Object> headersJson;
+    private Map<String, Object> requestBodyJson;
     private String contentType;
     private Integer timeoutMs;
     private String inputData;
