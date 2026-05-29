@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourcefile.res.SourceFileUploadResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceUploadVersion;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiDocumentRepository;
@@ -16,9 +17,11 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
+import org.mockito.ArgumentCaptor;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.mock.web.MockMultipartFile;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.util.List;
 import java.util.Optional;
@@ -30,6 +33,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 @ExtendWith(MockitoExtension.class)
 class SourceFileServiceImplTest {
@@ -61,22 +65,7 @@ class SourceFileServiceImplTest {
     @Test
     void validZipPasses() throws Exception {
         UUID projectId = UUID.randomUUID();
-        SourceProject project = new SourceProject();
-        project.setId(projectId);
-        project.setProjectName("Project");
-
-        when(projectAccessService.requireCanUploadSource(projectId)).thenReturn(project);
-        when(sourceUploadVersionRepository.findMaxVersionNoByProjectId(projectId)).thenReturn(0);
-        when(sourceUploadVersionRepository.save(any(SourceUploadVersion.class))).thenAnswer(invocation -> {
-            SourceUploadVersion version = invocation.getArgument(0);
-            if (version.getId() == null) {
-                version.setId(UUID.randomUUID());
-            }
-            return version;
-        });
-        when(sourceFileRepository.findBySourceProjectId(projectId)).thenReturn(List.of());
-        when(sourceAnalysisResultRepository.findBySourceProjectId(projectId)).thenReturn(Optional.empty());
-        when(apiDocumentRepository.findBySourceProjectId(projectId)).thenReturn(Optional.empty());
+        stubSuccessfulImport(projectId);
 
         MockMultipartFile file = new MockMultipartFile(
                 "file",
@@ -89,6 +78,55 @@ class SourceFileServiceImplTest {
 
         assertEquals(projectId, response.getProjectId());
         assertEquals(1, response.getSavedFiles());
+    }
+
+    @Test
+    void uploadZipKeepsSingleRootDirectoryInFilePath() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        stubSuccessfulImport(projectId);
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "source.zip",
+                "application/zip",
+                zipWithEntry("repo-main/src/main/java/com/example/App.java",
+                        "package com.example; public class App {}")
+        );
+
+        service.uploadZip(projectId, file);
+
+        ArgumentCaptor<SourceFile> captor = ArgumentCaptor.forClass(SourceFile.class);
+        verify(sourceFileRepository).save(captor.capture());
+        assertEquals("repo-main/src/main/java/com/example/App.java", captor.getValue().getFilePath());
+    }
+
+    @Test
+    void importZipStripsSingleRootDirectoryWhenRequested() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        stubSuccessfulImport(projectId);
+
+        service.importZip(projectId,
+                new ByteArrayInputStream(zipWithEntry("repo-main/src/main/java/com/example/App.java",
+                        "package com.example; public class App {}")),
+                "github.zip",
+                true);
+
+        ArgumentCaptor<SourceFile> captor = ArgumentCaptor.forClass(SourceFile.class);
+        verify(sourceFileRepository).save(captor.capture());
+        assertEquals("src/main/java/com/example/App.java", captor.getValue().getFilePath());
+    }
+
+    @Test
+    void importZipWithoutJavaFilesReturnsBadRequest() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        SourceProject project = new SourceProject();
+        project.setId(projectId);
+        when(projectAccessService.requireCanUploadSource(projectId)).thenReturn(project);
+
+        assertThrows(BadRequestException.class, () -> service.importZip(projectId,
+                new ByteArrayInputStream(zipWithEntry("repo-main/README.md", "# readme")),
+                "github.zip",
+                true));
     }
 
     @Test
@@ -129,5 +167,24 @@ class SourceFileServiceImplTest {
             zip.closeEntry();
         }
         return baos.toByteArray();
+    }
+
+    private void stubSuccessfulImport(UUID projectId) {
+        SourceProject project = new SourceProject();
+        project.setId(projectId);
+        project.setProjectName("Project");
+
+        when(projectAccessService.requireCanUploadSource(projectId)).thenReturn(project);
+        when(sourceUploadVersionRepository.findMaxVersionNoByProjectId(projectId)).thenReturn(0);
+        when(sourceUploadVersionRepository.save(any(SourceUploadVersion.class))).thenAnswer(invocation -> {
+            SourceUploadVersion version = invocation.getArgument(0);
+            if (version.getId() == null) {
+                version.setId(UUID.randomUUID());
+            }
+            return version;
+        });
+        when(sourceFileRepository.findBySourceProjectId(projectId)).thenReturn(List.of());
+        when(sourceAnalysisResultRepository.findBySourceProjectId(projectId)).thenReturn(Optional.empty());
+        when(apiDocumentRepository.findBySourceProjectId(projectId)).thenReturn(Optional.empty());
     }
 }

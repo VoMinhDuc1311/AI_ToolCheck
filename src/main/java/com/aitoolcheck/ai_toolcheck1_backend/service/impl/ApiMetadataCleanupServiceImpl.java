@@ -32,7 +32,7 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
     public ApiMetadataCleanupResult cleanupProjectApiMetadata(UUID projectId) {
         log.info("[ApiCleanup] Starting cleanup for projectId={}", projectId);
         List<ApiEndpoint> allEndpoints = apiEndpointRepository.findBySourceProjectId(projectId);
-        
+
         int activeBefore = (int) allEndpoints.stream()
                 .filter(e -> Boolean.TRUE.equals(e.getActiveFlag()) && !Boolean.TRUE.equals(e.getStaleFlag()))
                 .count();
@@ -42,13 +42,13 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
 
         apiEndpointRepository.saveAll(allEndpoints);
         apiEndpointRepository.flush();
-        
+
         int activeAfter = (int) allEndpoints.stream()
                 .filter(e -> Boolean.TRUE.equals(e.getActiveFlag()) && !Boolean.TRUE.equals(e.getStaleFlag()))
                 .count();
         int rawFallbackRemaining = (int) allEndpoints.stream()
                 .filter(e -> Boolean.TRUE.equals(e.getActiveFlag()) && !Boolean.TRUE.equals(e.getStaleFlag()))
-                .filter(e -> isFallbackClassNameEndpoint(e, e.getControllerName()))
+                .filter(this::isConfirmedLegacyFallback)
                 .count();
         List<String> cleanupWarnings = new ArrayList<>();
         if (rawFallbackRemaining > 0) {
@@ -57,7 +57,7 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
 
         log.info("[ApiCleanup] Completed for projectId={}. Before={}, Fallback stale={}, Duplicates stale={}, After={}",
                 projectId, activeBefore, fallbackMarkedStale, duplicatesMarkedStale, activeAfter);
-                
+
         ApiMetadataCleanupResult result = ApiMetadataCleanupResult.builder()
                 .projectId(projectId)
                 .activeBefore(activeBefore)
@@ -69,22 +69,33 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
                 .cleanupWarnings(cleanupWarnings)
                 .build();
 
-        notificationEventPublisher.publishForCurrentUser(
-                projectId,
-                NotificationType.METADATA_CLEANUP_COMPLETED,
-                rawFallbackRemaining > 0 ? NotificationSeverity.WARNING : NotificationSeverity.SUCCESS,
-                "API metadata cleanup completed",
-                "API metadata cleanup completed for the project.",
-                "/source-projects/" + projectId + "/documentation",
-                Map.of(
-                        "projectId", projectId,
-                        "cleanedEndpointCount", activeAfter,
-                        "staleEndpointCount", fallbackMarkedStale + duplicatesMarkedStale,
-                        "status", rawFallbackRemaining > 0 ? "COMPLETED_WITH_WARNINGS" : "COMPLETED"
-                ));
+        // FIX 3: Notification is a side effect — wrap in try/catch so that any publisher
+        // failure cannot mark the business transaction rollback-only.
+        try {
+            notificationEventPublisher.publishForCurrentUser(
+                    projectId,
+                    NotificationType.METADATA_CLEANUP_COMPLETED,
+                    rawFallbackRemaining > 0 ? NotificationSeverity.WARNING : NotificationSeverity.SUCCESS,
+                    "API metadata cleanup completed",
+                    "API metadata cleanup completed for the project.",
+                    "/source-projects/" + projectId + "/documentation",
+                    Map.of(
+                            "projectId", projectId,
+                            "cleanedEndpointCount", activeAfter,
+                            "staleEndpointCount", fallbackMarkedStale + duplicatesMarkedStale,
+                            "status", rawFallbackRemaining > 0 ? "COMPLETED_WITH_WARNINGS" : "COMPLETED"
+                    ));
+        } catch (Exception notifEx) {
+            log.warn("[ApiCleanup] Notification publish failed for projectId={} — cleanup result is still valid. Reason: {}",
+                    projectId, notifEx.getMessage());
+        }
 
         return result;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Legacy fallback cleanup
+    // ─────────────────────────────────────────────────────────────────────────
 
     private int cleanupLegacyFallbackEndpoints(List<ApiEndpoint> endpoints) {
         int count = 0;
@@ -109,54 +120,33 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
         return count;
     }
 
-    private int cleanupDuplicateEndpoints(List<ApiEndpoint> endpoints) {
-        int count = 0;
-        Map<String, List<ApiEndpoint>> byLogicalKey = endpoints.stream()
-                .filter(e -> Boolean.TRUE.equals(e.getActiveFlag()) && !Boolean.TRUE.equals(e.getStaleFlag()))
-                .collect(Collectors.groupingBy(this::logicalKey));
-
-        for (List<ApiEndpoint> group : byLogicalKey.values()) {
-            if (group.size() > 1) {
-                group.sort((e1, e2) -> {
-                    int scoreCompare = Integer.compare(calculateEndpointQualityScore(e2), calculateEndpointQualityScore(e1));
-                    if (scoreCompare != 0) return scoreCompare;
-                    
-                    int descCompare = Integer.compare(
-                        e2.getDescription() != null ? e2.getDescription().length() : 0,
-                        e1.getDescription() != null ? e1.getDescription().length() : 0
-                    );
-                    if (descCompare != 0) return descCompare;
-                    
-                    if (e1.getCreatedAt() != null && e2.getCreatedAt() != null) {
-                        return e2.getCreatedAt().compareTo(e1.getCreatedAt()); // newer first
-                    }
-                    return e1.getId().toString().compareTo(e2.getId().toString());
-                });
-
-                for (int i = 1; i < group.size(); i++) {
-                    ApiEndpoint duplicate = group.get(i);
-                    markStale(duplicate);
-                    count++;
-                    log.debug("[ApiCleanup] Marked duplicate endpoint as stale: {} {}", duplicate.getHttpMethod(), duplicate.getEndpointPath());
-                }
-            }
-        }
-        return count;
-    }
-    
-    private String logicalKey(ApiEndpoint endpoint) {
-        String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name().toUpperCase() : "GET";
-        String path = normalizePath(endpoint.getEndpointPath()).toLowerCase();
-        return method + " " + path;
-    }
-    
-    private void markStale(ApiEndpoint endpoint) {
-        endpoint.setActiveFlag(false);
-        endpoint.setStaleFlag(true);
-        endpoint.setUpdatedAt(LocalDateTime.now());
-    }
-
+    /**
+     * Determines whether an endpoint is a legacy/fallback artifact that should be cleaned up.
+     *
+     * <p><strong>Key design rule (FIX 1):</strong> A standard Spring MVC endpoint parsed by
+     * JavaParser always has both {@code sourceUploadVersion} and {@code sourceFile} set.
+     * Such endpoints must NEVER be classified as fallback merely because the last path segment
+     * happens to equal the controller name with the "Controller" suffix stripped — that is a
+     * perfectly valid REST URL convention.
+     *
+     * <p>An endpoint is only eligible for fallback classification when it has at least one
+     * explicit legacy indicator:
+     * <ul>
+     *   <li>A legacy tag name ({@code Servlet}, {@code Struts}, {@code Legacy Router}, or
+     *       {@code JAX-RS})</li>
+     *   <li>Missing {@code sourceUploadVersion} — parser-produced endpoints always carry the
+     *       upload version; absence is a reliable signal of legacy AI generation.</li>
+     *   <li>Missing {@code sourceFile} — same reasoning.</li>
+     * </ul>
+     */
     private boolean isFallbackClassNameEndpoint(ApiEndpoint endpoint, String controllerName) {
+        // FIX 1: Require at least one explicit legacy indicator.  Endpoints from the
+        // JavaParser pipeline carry both sourceUploadVersion and sourceFile and must
+        // never be classified as fallback via the path-segment heuristic alone.
+        if (!hasLegacyIndicator(endpoint)) {
+            return false;
+        }
+
         String normalizedPath = normalizePath(endpoint.getEndpointPath());
         if (normalizedPath == null || "/".equals(normalizedPath)) return false;
 
@@ -199,29 +189,131 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
                     || controllerLower.startsWith(segmentLower)
                     || segmentLower.startsWith(controllerLower));
 
-        boolean isLegacyTag = "Servlet".equals(endpoint.getTagName()) || "Struts".equals(endpoint.getTagName());
+        boolean isLegacyTag = isLegacyTagName(endpoint.getTagName());
         return singleSegment && (suffixLooksLikeJavaClass && (controllerMatchesClassSignal || isLegacyTag)
                 || isLegacyTag);
     }
+
+    /**
+     * Returns {@code true} when at least one reliable legacy indicator is present on this
+     * endpoint.  Endpoints created by the JavaParser pipeline always have both
+     * {@code sourceUploadVersion} and {@code sourceFile} set; absence of either field is a
+     * strong signal that the row was produced by the legacy AI inference path.
+     */
+    private boolean hasLegacyIndicator(ApiEndpoint endpoint) {
+        if (isLegacyTagName(endpoint.getTagName())) {
+            return true;
+        }
+        // Parser-produced endpoints always have both fields; missing either → legacy AI origin.
+        if (endpoint.getSourceFile() == null || endpoint.getSourceUploadVersion() == null) {
+            return true;
+        }
+        return false;
+    }
+
+    private boolean isLegacyTagName(String tagName) {
+        return "Servlet".equals(tagName)
+                || "Struts".equals(tagName)
+                || "Legacy Router".equals(tagName)
+                || "JAX-RS".equals(tagName);
+    }
+
+    /**
+     * Convenience predicate used only for counting remaining confirmed fallbacks after cleanup.
+     */
+    private boolean isConfirmedLegacyFallback(ApiEndpoint endpoint) {
+        if (endpoint.getControllerName() == null) return false;
+        return isFallbackClassNameEndpoint(endpoint, endpoint.getControllerName());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Duplicate cleanup
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private int cleanupDuplicateEndpoints(List<ApiEndpoint> endpoints) {
+        int count = 0;
+        Map<String, List<ApiEndpoint>> byLogicalKey = endpoints.stream()
+                .filter(e -> Boolean.TRUE.equals(e.getActiveFlag()) && !Boolean.TRUE.equals(e.getStaleFlag()))
+                .collect(Collectors.groupingBy(this::logicalKey));
+
+        for (List<ApiEndpoint> group : byLogicalKey.values()) {
+            if (group.size() > 1) {
+                // FIX 1 (duplicate priority): prefer endpoints with a sourceUploadVersion
+                // (parser-produced) and sourceFile over those without (legacy-AI-produced).
+                group.sort((e1, e2) -> {
+                    // 1. Endpoints with sourceUploadVersion beat those without
+                    boolean v1 = e1.getSourceUploadVersion() != null;
+                    boolean v2 = e2.getSourceUploadVersion() != null;
+                    if (v1 != v2) return v1 ? -1 : 1;
+
+                    // 2. Endpoints with sourceFile beat those without
+                    boolean f1 = e1.getSourceFile() != null;
+                    boolean f2 = e2.getSourceFile() != null;
+                    if (f1 != f2) return f1 ? -1 : 1;
+
+                    // 3. Higher quality score wins
+                    int scoreCompare = Integer.compare(calculateEndpointQualityScore(e2), calculateEndpointQualityScore(e1));
+                    if (scoreCompare != 0) return scoreCompare;
+
+                    // 4. Longer description preferred
+                    int descCompare = Integer.compare(
+                        e2.getDescription() != null ? e2.getDescription().length() : 0,
+                        e1.getDescription() != null ? e1.getDescription().length() : 0
+                    );
+                    if (descCompare != 0) return descCompare;
+
+                    // 5. Newer createdAt preferred
+                    if (e1.getCreatedAt() != null && e2.getCreatedAt() != null) {
+                        return e2.getCreatedAt().compareTo(e1.getCreatedAt());
+                    }
+                    return e1.getId().toString().compareTo(e2.getId().toString());
+                });
+
+                for (int i = 1; i < group.size(); i++) {
+                    ApiEndpoint duplicate = group.get(i);
+                    markStale(duplicate);
+                    count++;
+                    log.debug("[ApiCleanup] Marked duplicate endpoint as stale: {} {}", duplicate.getHttpMethod(), duplicate.getEndpointPath());
+                }
+            }
+        }
+        return count;
+    }
+
+    private String logicalKey(ApiEndpoint endpoint) {
+        String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name().toUpperCase() : "GET";
+        String path = normalizePath(endpoint.getEndpointPath()).toLowerCase();
+        return method + " " + path;
+    }
+
+    private void markStale(ApiEndpoint endpoint) {
+        endpoint.setActiveFlag(false);
+        endpoint.setStaleFlag(true);
+        endpoint.setUpdatedAt(LocalDateTime.now());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Quality scoring (used for duplicate deduplication)
+    // ─────────────────────────────────────────────────────────────────────────
 
     private int calculateEndpointQualityScore(ApiEndpoint endpoint) {
         int score = 0;
         if (endpoint.getEndpointPath() != null && endpoint.getEndpointPath().contains("/legacy/")) {
             score += 100;
         }
-        
-        if (endpoint.getControllerName() != null && !isFallbackClassNameEndpoint(endpoint, endpoint.getControllerName())) {
+
+        if (endpoint.getControllerName() != null && !isConfirmedLegacyFallback(endpoint)) {
             score += 50;
         } else if (endpoint.getControllerName() == null) {
             score += 50;
         }
-        
-        if (isFallbackClassNameEndpoint(endpoint, endpoint.getControllerName() != null ? endpoint.getControllerName() : "")) {
+
+        if (isConfirmedLegacyFallback(endpoint)) {
             score -= 200;
         }
-        
+
         String path = endpoint.getEndpointPath();
-        boolean isLegacyTag = "Servlet".equals(endpoint.getTagName()) || "Struts".equals(endpoint.getTagName());
+        boolean isLegacyTag = isLegacyTagName(endpoint.getTagName());
         if (isLegacyTag && path != null && normalizePath(path).split("/").length <= 2) {
             score -= 100;
         }
@@ -229,22 +321,26 @@ public class ApiMetadataCleanupServiceImpl implements ApiMetadataCleanupService 
         if (endpoint.getDescription() != null && !endpoint.getDescription().isBlank()) {
             score += 30;
         }
-        
-        if ((endpoint.getAiSummary() != null && !endpoint.getAiSummary().isBlank()) || 
+
+        if ((endpoint.getAiSummary() != null && !endpoint.getAiSummary().isBlank()) ||
             (endpoint.getAiDescription() != null && !endpoint.getAiDescription().isBlank())) {
             score += 20;
         }
-        
+
         if (endpoint.getStableKey() != null && !endpoint.getStableKey().isBlank()) {
             score += 10;
         }
-        
+
         if (endpoint.getOperationId() != null && !endpoint.getOperationId().isBlank()) {
             score += 10;
         }
 
         return score;
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Path utilities
+    // ─────────────────────────────────────────────────────────────────────────
 
     private String normalizePath(String path) {
         if (path == null || path.isBlank()) {
