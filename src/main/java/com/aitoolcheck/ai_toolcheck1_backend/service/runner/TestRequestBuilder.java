@@ -4,7 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.PreparedHttpRequest
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,6 +12,7 @@ import org.springframework.stereotype.Component;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -21,12 +22,17 @@ import java.util.Set;
  * <p><strong>Responsibilities (this class only):</strong></p>
  * <ul>
  *   <li>Validate and normalise baseUrl and requestPath.</li>
- *   <li>Parse headersJson / queryParamsJson / requestBodyJson into JsonNode.</li>
+ *   <li>Parse headersJson / queryParamsJson from stored JSON Strings to {@code Map<String,Object>}.</li>
+ *   <li>Parse requestBodyJson to {@code Object} (supports objects, arrays, primitives, null).</li>
  *   <li>Return a fully populated {@link PreparedHttpRequestResponse}.</li>
  * </ul>
  *
  * <p><strong>Must NOT:</strong> execute HTTP, persist data, or evaluate
  * assertions. HTTP execution is the responsibility of {@link TestHttpExecutor}.</p>
+ *
+ * <p><strong>Design note:</strong> JSON-typed fields use {@code Map<String,Object>} (not JsonNode)
+ * so that Jackson serializes them as clean JSON objects in API responses, not as JsonNode bean
+ * metadata fields ({@code nodeType}, {@code array}, etc.).</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -34,6 +40,9 @@ import java.util.Set;
 public class TestRequestBuilder {
 
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
+
+    /** TypeReference for deserializing JSON objects to Map<String,Object>. */
+    private static final TypeReference<Map<String, Object>> MAP_TYPE_REF = new TypeReference<>() {};
 
     private final ObjectMapper objectMapper;
 
@@ -57,9 +66,11 @@ public class TestRequestBuilder {
         String normalizedPath  = normalizeRequestPath(input.getRequestPath());
         String finalUrl        = buildFinalUrl(normalizedBase, normalizedPath);
 
-        JsonNode parsedHeaders     = parseJsonOrNull(input.getHeadersJson(),     "headersJson");
-        JsonNode parsedQueryParams = parseJsonOrNull(input.getQueryParamsJson(), "queryParamsJson");
-        JsonNode parsedBody        = parseJsonOrNull(input.getRequestBodyJson(), "requestBodyJson");
+        // Parse stored JSON strings to typed Map/Object — NOT to raw JsonNode,
+        // which would cause Jackson to serialize internal bean metadata in responses.
+        Map<String, Object> parsedHeaders     = parseJsonToMap(input.getHeadersJson(),     "headersJson");
+        Map<String, Object> parsedQueryParams = parseJsonToMap(input.getQueryParamsJson(), "queryParamsJson");
+        Object              parsedBody        = parseJsonToObject(input.getRequestBodyJson(), "requestBodyJson");
 
         return PreparedHttpRequestResponse.builder()
                 .method(input.getHttpMethod())
@@ -140,13 +151,37 @@ public class TestRequestBuilder {
         }
     }
 
-    private JsonNode parseJsonOrNull(String json, String fieldName) {
+    /**
+     * Parses a stored JSON String into a {@code Map<String, Object>}.
+     * Used for object-type fields: headersJson, queryParamsJson.
+     *
+     * @return parsed Map, or {@code null} if the string is blank/null
+     * @throws BadRequestException if the stored string is not valid JSON or is not a JSON object
+     */
+    private Map<String, Object> parseJsonToMap(String json, String fieldName) {
         if (!hasText(json)) {
             return null;
         }
-
         try {
-            return objectMapper.readTree(json);
+            return objectMapper.readValue(json, MAP_TYPE_REF);
+        } catch (JsonProcessingException ex) {
+            throw new BadRequestException(fieldName + " is invalid JSON or not a JSON object");
+        }
+    }
+
+    /**
+     * Parses a stored JSON String into a plain Java {@code Object}.
+     * Used for requestBodyJson which may be an object, array, primitive, or null.
+     *
+     * @return parsed value as Map, List, String, Number, Boolean, or {@code null}
+     * @throws BadRequestException if the stored string is not valid JSON
+     */
+    private Object parseJsonToObject(String json, String fieldName) {
+        if (!hasText(json)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, Object.class);
         } catch (JsonProcessingException ex) {
             throw new BadRequestException(fieldName + " is invalid JSON");
         }

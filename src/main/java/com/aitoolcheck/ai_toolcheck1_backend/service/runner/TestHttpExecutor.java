@@ -13,10 +13,9 @@ import org.springframework.stereotype.Component;
 import org.springframework.web.client.HttpStatusCodeException;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestTemplate;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Collections;
-import java.util.Iterator;
 import java.util.Map;
 
 /**
@@ -45,6 +44,7 @@ public class TestHttpExecutor {
     private static final int DEFAULT_TIMEOUT_MS = 30_000;
 
     private final RestTemplate restTemplate;
+    private final ObjectMapper objectMapper;
 
     /**
      * Execute the real HTTP call described by {@code prepared}.
@@ -142,13 +142,13 @@ public class TestHttpExecutor {
 
         headers.setAccept(Collections.singletonList(MediaType.APPLICATION_JSON));
 
-        // Apply custom headers from the prepared request (JsonNode object-map)
-        JsonNode customHeaders = prepared.getHeaders();
-        if (customHeaders != null && customHeaders.isObject()) {
-            Iterator<Map.Entry<String, JsonNode>> fields = customHeaders.fields();
-            while (fields.hasNext()) {
-                Map.Entry<String, JsonNode> entry = fields.next();
-                headers.set(entry.getKey(), entry.getValue().asText());
+        // Apply custom headers from the prepared request (Map<String,Object>)
+        Map<String, Object> customHeaders = prepared.getHeaders();
+        if (customHeaders != null) {
+            for (Map.Entry<String, Object> entry : customHeaders.entrySet()) {
+                if (entry.getValue() != null) {
+                    headers.set(entry.getKey(), String.valueOf(entry.getValue()));
+                }
             }
         }
 
@@ -163,10 +163,15 @@ public class TestHttpExecutor {
         }
 
         // For POST / PUT / PATCH / DELETE with body
+        // body is typed as Object (Map, List, primitive, or null)
         String bodyStr = null;
-        JsonNode bodyNode = prepared.getBody();
-        if (bodyNode != null && !bodyNode.isNull()) {
-            bodyStr = bodyNode.toString();
+        Object bodyObj = prepared.getBody();
+        if (bodyObj != null) {
+            try {
+                bodyStr = objectMapper.writeValueAsString(bodyObj);
+            } catch (Exception ex) {
+                log.warn("[TestHttpExecutor] Could not serialize body to JSON, using empty body");
+            }
         }
         if (!hasText(bodyStr)) {
             bodyStr = "{}"; // safe empty body default
