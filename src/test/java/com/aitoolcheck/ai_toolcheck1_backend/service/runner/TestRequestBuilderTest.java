@@ -9,6 +9,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -61,6 +62,7 @@ class TestRequestBuilderTest {
         PreparedHttpRequestResponse prepared = builder.build("http://localhost:8080/api", input);
 
         assertNotNull(prepared, "prepared must not be null");
+        assertEquals("http://localhost:8080/api/greeting?name=ChatGPT", prepared.getFinalUrl());
 
         // ── queryParams ──
         assertNotNull(prepared.getQueryParams(), "queryParams must not be null");
@@ -125,6 +127,81 @@ class TestRequestBuilderTest {
     }
 
     @Test
+    void build_withQueryParams_appendsQueryStringToFinalUrl() throws JsonProcessingException {
+        String queryParamsJson = objectMapper.writeValueAsString(Map.of("name", "ChatGPT"));
+        TestCaseInput input = buildInput(HttpMethod.GET, "/greeting", queryParamsJson, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("http://localhost:8080/api", input);
+
+        assertEquals("http://localhost:8080/api/greeting?name=ChatGPT", prepared.getFinalUrl());
+        assertThat(prepared.getQueryParams()).containsEntry("name", "ChatGPT");
+    }
+
+    @Test
+    void prepareTestRun_withManualTestCase_finalUrlContainsQueryParams() throws JsonProcessingException {
+        String queryParamsJson = objectMapper.writeValueAsString(Map.of("name", "ChatGPT"));
+        String headersJson = objectMapper.writeValueAsString(Map.of("Accept", "application/json"));
+        TestCaseInput input = buildInput(HttpMethod.GET, "/greeting", queryParamsJson, headersJson, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("https://greeting-demo.example.com", input);
+
+        assertEquals("https://greeting-demo.example.com/greeting?name=ChatGPT", prepared.getFinalUrl());
+        assertThat(prepared.getHeaders()).containsEntry("Accept", "application/json");
+        assertThat(prepared.getQueryParams()).containsEntry("name", "ChatGPT");
+        assertNull(prepared.getBody());
+    }
+
+    @Test
+    void build_withSpecialCharsInQueryParams_encodesCorrectly() throws JsonProcessingException {
+        String queryParamsJson = objectMapper.writeValueAsString(Map.of("q", "a+b & c/d"));
+        TestCaseInput input = buildInput(HttpMethod.GET, "/search", queryParamsJson, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("https://api.example.com", input);
+
+        assertThat(prepared.getFinalUrl())
+                .startsWith("https://api.example.com/search?q=")
+                .contains("a%2Bb")
+                .contains("%26")
+                .doesNotContain(" ");
+    }
+
+    @Test
+    void build_withUnicodeQueryParams_encodesCorrectly() throws JsonProcessingException {
+        String queryParamsJson = objectMapper.writeValueAsString(Map.of("name", "Jöhn Döe"));
+        TestCaseInput input = buildInput(HttpMethod.GET, "/greeting", queryParamsJson, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("https://greeting-demo.example.com", input);
+
+        assertThat(prepared.getFinalUrl())
+                .startsWith("https://greeting-demo.example.com/greeting?name=")
+                .contains("J%C3%B6hn")
+                .contains("D%C3%B6e")
+                .doesNotContain(" ");
+    }
+
+    @Test
+    void build_withListQueryParams_repeatsParamOrHandlesSafely() throws JsonProcessingException {
+        String queryParamsJson = objectMapper.writeValueAsString(Map.of("tag", List.of("a", "b")));
+        TestCaseInput input = buildInput(HttpMethod.GET, "/api/products", queryParamsJson, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("https://api.example.com", input);
+
+        assertEquals("https://api.example.com/api/products?tag=a&tag=b", prepared.getFinalUrl());
+        assertThat(prepared.getQueryParams()).containsKey("tag");
+    }
+
+    @Test
+    void build_withNullQueryParamValue_skipsParam() {
+        String queryParamsJson = "{\"name\":null,\"tag\":\"a\"}";
+        TestCaseInput input = buildInput(HttpMethod.GET, "/api/products", queryParamsJson, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("https://api.example.com", input);
+
+        assertEquals("https://api.example.com/api/products?tag=a", prepared.getFinalUrl());
+        assertThat(prepared.getQueryParams()).containsEntry("name", null);
+    }
+
+    @Test
     void build_stripsTrailingSlashFromBaseUrl() throws JsonProcessingException {
         TestCaseInput input = buildInput(HttpMethod.GET, "/greeting", null, null, null);
 
@@ -155,6 +232,8 @@ class TestRequestBuilderTest {
 
         PreparedHttpRequestResponse prepared = builder.build("http://localhost:8080/api", input);
 
+        assertEquals("http://localhost:8080/api/greeting", prepared.getFinalUrl());
+        assertThat(prepared.getFinalUrl()).doesNotContain("?");
         assertNull(prepared.getQueryParams(), "queryParams must be null when stored string is null");
         assertNull(prepared.getBody(),        "body must be null for GET with no requestBody");
     }
@@ -165,6 +244,8 @@ class TestRequestBuilderTest {
 
         PreparedHttpRequestResponse prepared = builder.build("http://localhost:8080/api", input);
 
+        assertEquals("http://localhost:8080/api/greeting", prepared.getFinalUrl());
+        assertThat(prepared.getFinalUrl()).doesNotContain("?");
         assertNotNull(prepared.getQueryParams());
         assertThat(prepared.getQueryParams()).isEmpty();
     }
