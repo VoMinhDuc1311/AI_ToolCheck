@@ -11,10 +11,19 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-import com.fasterxml.jackson.databind.JsonNode;
 
+import java.util.Map;
 import java.util.UUID;
 
+/**
+ * Request DTO for creating a TestCaseInput.
+ *
+ * <p>JSON-typed fields (queryParamsJson, headersJson, requestBodyJson) use
+ * {@code Map<String, Object>} instead of {@code JsonNode} to avoid Jackson's
+ * "Type definition error: [simple type, class JsonNode]" when deserializing
+ * nested JSON objects in a @RequestBody. The service layer serializes these
+ * maps to String before persisting and deserializes String back for responses.
+ */
 @Getter
 @Setter
 @NoArgsConstructor
@@ -31,11 +40,14 @@ public class CreateTestCaseInputRequest {
     @Size(max = 500, message = "requestPath must not exceed 500 characters")
     private String requestPath;
 
-    private JsonNode queryParamsJson;
+    /** JSON object for query parameters. Accepts {@code {"name":"value"}} or null. */
+    private Map<String, Object> queryParamsJson;
 
-    private JsonNode headersJson;
+    /** JSON object for request headers. Accepts {@code {"Accept":"application/json"}} or null. */
+    private Map<String, Object> headersJson;
 
-    private JsonNode requestBodyJson;
+    /** JSON object/array for request body. Null is valid for GET requests. */
+    private Map<String, Object> requestBodyJson;
 
     @Size(max = 100, message = "contentType must not exceed 100 characters")
     private String contentType;

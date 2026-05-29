@@ -1,8 +1,20 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.CreateTestCaseRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res.TestCaseDetailResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseassertion.req.CreateTestCaseAssertionRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.req.CreateTestCaseInputRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.AssertionType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.ComparisonOperator;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
+import com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocumentVersion;
+import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseAssertion;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
@@ -10,38 +22,51 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.context.ApplicationContext;
 
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 class TestCaseServiceImplTest {
 
-    @Test
-    void deleteUsesProjectLevelDeleteGuard() {
-        TestCaseRepository testCaseRepository = mock(TestCaseRepository.class);
-        ProjectAccessService projectAccessService = mock(ProjectAccessService.class);
-        UUID testCaseId = UUID.randomUUID();
-        UUID projectId = UUID.randomUUID();
-        SourceProject project = new SourceProject();
-        project.setId(projectId);
-        TestCase testCase = new TestCase();
-        testCase.setId(testCaseId);
-        testCase.setSourceProject(project);
-        testCase.setDeletedFlag(false);
+    private TestCaseRepository testCaseRepository;
+    private ProjectAccessService projectAccessService;
+    private ApiEndpointRepository apiEndpointRepository;
+    private ApiDocumentVersionRepository apiDocumentVersionRepository;
+    private TestCaseServiceImpl service;
 
-        when(testCaseRepository.findByIdAndDeletedFlagFalse(testCaseId)).thenReturn(Optional.of(testCase));
+    private UUID projectId;
+    private UUID endpointId;
+    private UUID docVersionId;
+    private SourceProject project;
+    private ApiEndpoint endpoint;
 
-        TestCaseServiceImpl service = new TestCaseServiceImpl(
+    @BeforeEach
+    void setUp() {
+        testCaseRepository = mock(TestCaseRepository.class);
+        projectAccessService = mock(ProjectAccessService.class);
+        apiEndpointRepository = mock(ApiEndpointRepository.class);
+        apiDocumentVersionRepository = mock(ApiDocumentVersionRepository.class);
+
+        service = new TestCaseServiceImpl(
                 testCaseRepository,
                 mock(TestCaseAssertionRepository.class),
-                mock(ApiEndpointRepository.class),
-                mock(ApiDocumentVersionRepository.class),
+                apiEndpointRepository,
+                apiDocumentVersionRepository,
                 mock(AiJobLogRepository.class),
                 mock(AiTaskProducer.class),
                 mock(AiModelRouterService.class),
@@ -53,9 +78,245 @@ class TestCaseServiceImplTest {
                 mock(AiPayloadOptimizerService.class),
                 mock(AiOptimizationProperties.class));
 
+        projectId = UUID.randomUUID();
+        endpointId = UUID.randomUUID();
+        docVersionId = UUID.randomUUID();
+
+        project = new SourceProject();
+        project.setId(projectId);
+
+        endpoint = new ApiEndpoint();
+        endpoint.setId(endpointId);
+        endpoint.setSourceProject(project);
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+        endpoint.setActiveFlag(true);
+        endpoint.setStaleFlag(false);
+
+        ApiDocumentVersion docVersion = new ApiDocumentVersion();
+        docVersion.setId(docVersionId);
+        docVersion.setVersionNo(1);
+
+        when(projectAccessService.requireCanCreateTestCase(projectId)).thenReturn(project);
+        when(apiEndpointRepository.findById(endpointId)).thenReturn(Optional.of(endpoint));
+        when(testCaseRepository.existsBySourceProject_IdAndCaseNameIgnoreCaseAndDeletedFlagFalse(any(), any()))
+                .thenReturn(false);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Existing test (regression)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void deleteUsesProjectLevelDeleteGuard() {
+        UUID testCaseId = UUID.randomUUID();
+        TestCase testCase = new TestCase();
+        testCase.setId(testCaseId);
+        testCase.setSourceProject(project);
+        testCase.setDeletedFlag(false);
+
+        when(testCaseRepository.findByIdAndDeletedFlagFalse(testCaseId)).thenReturn(Optional.of(testCase));
+
         service.delete(testCaseId);
 
         verify(projectAccessService).requireCanDeleteTestCase(projectId);
         verify(testCaseRepository).save(testCase);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // FIX — manual create test case
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /**
+     * Core regression test: manual POST /v1/test-cases with valid JSON object fields
+     * must succeed and must NOT throw a Jackson JsonNode type error.
+     */
+    @Test
+    void createManualTestCase_withQueryParamsAndHeaders_succeeds() {
+        TestCase savedTestCase = buildSavedTestCase(
+                "Manual - GET greeting",
+                Map.of("name", "ChatGPT"),
+                Map.of("Accept", "application/json"),
+                null);
+
+        when(testCaseRepository.save(any(TestCase.class))).thenReturn(savedTestCase);
+
+        CreateTestCaseRequest request = buildCreateRequest(
+                "Manual - GET greeting",
+                Map.of("name", "ChatGPT"),
+                Map.of("Accept", "application/json"),
+                null);
+
+        TestCaseDetailResponse response = assertDoesNotThrow(
+                () -> service.create(request),
+                "create() must not throw — particularly must not throw JsonNode type error");
+
+        assertNotNull(response);
+        assertNotNull(response.getInput());
+        assertEquals(HttpMethod.GET, response.getInput().getHttpMethod());
+        assertEquals("/greeting", response.getInput().getRequestPath());
+        // queryParamsJson must be returned as a real Map, not JsonNode metadata
+        assertThat(response.getInput().getQueryParamsJson()).containsEntry("name", "ChatGPT");
+        assertThat(response.getInput().getHeadersJson()).containsEntry("Accept", "application/json");
+    }
+
+    @Test
+    void createManualTestCase_withNullRequestBodyJson_succeedsForGetRequest() {
+        TestCase savedTestCase = buildSavedTestCase("Manual - GET no body", null, null, null);
+        when(testCaseRepository.save(any(TestCase.class))).thenReturn(savedTestCase);
+
+        CreateTestCaseRequest request = buildCreateRequest("Manual - GET no body", null, null, null);
+
+        TestCaseDetailResponse response = assertDoesNotThrow(() -> service.create(request));
+
+        assertNotNull(response);
+        assertNotNull(response.getInput());
+        // Null JSON fields must be returned as null (not empty Map or JsonNode metadata)
+        assertThat(response.getInput().getQueryParamsJson()).isNull();
+        assertThat(response.getInput().getRequestBodyJson()).isNull();
+    }
+
+    @Test
+    void createManualTestCase_withEmptyQueryParams_succeeds() {
+        // {} empty object must be valid
+        TestCase savedTestCase = buildSavedTestCase("Manual - empty params", Map.of(), null, null);
+        when(testCaseRepository.save(any(TestCase.class))).thenReturn(savedTestCase);
+
+        CreateTestCaseRequest request = buildCreateRequest("Manual - empty params", Map.of(), null, null);
+
+        assertDoesNotThrow(() -> service.create(request));
+    }
+
+    @Test
+    void responseSerializesQueryParamsAsRealMapNotJsonNodeMetadata() {
+        // When the service reads back a stored JSON string, it must return Map<String,Object>
+        // and NOT internal JsonNode bean fields like "array", "boolean", "nodeType", etc.
+        TestCase savedTestCase = buildSavedTestCase(
+                "Serialization check",
+                Map.of("name", "ChatGPT", "page", 1),
+                null, null);
+
+        when(testCaseRepository.save(any(TestCase.class))).thenReturn(savedTestCase);
+
+        CreateTestCaseRequest request = buildCreateRequest(
+                "Serialization check",
+                Map.of("name", "ChatGPT", "page", 1),
+                null, null);
+
+        TestCaseDetailResponse response = service.create(request);
+
+        Map<String, Object> qp = response.getInput().getQueryParamsJson();
+        assertNotNull(qp, "queryParamsJson must not be null");
+        // Must be real values, not JsonNode internal fields
+        assertThat(qp).doesNotContainKey("array");
+        assertThat(qp).doesNotContainKey("nodeType");
+        assertThat(qp).doesNotContainKey("object");
+        assertThat(qp).doesNotContainKey("boolean");
+        assertThat(qp).containsEntry("name", "ChatGPT");
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    private CreateTestCaseRequest buildCreateRequest(
+            String caseName,
+            Map<String, Object> queryParams,
+            Map<String, Object> headers,
+            Map<String, Object> requestBody) {
+
+        CreateTestCaseInputRequest input = CreateTestCaseInputRequest.builder()
+                .httpMethod(HttpMethod.GET)
+                .requestPath("/greeting")
+                .queryParamsJson(queryParams)
+                .headersJson(headers)
+                .requestBodyJson(requestBody)
+                .contentType("application/json")
+                .timeoutMs(30000)
+                .build();
+
+        CreateTestCaseAssertionRequest statusAssertion = CreateTestCaseAssertionRequest.builder()
+                .assertionType(AssertionType.STATUS_CODE)
+                .targetPath("")
+                .operator(ComparisonOperator.EQUALS)
+                .expectedValue("200")
+                .enabledFlag(true)
+                .sortOrder(1)
+                .build();
+
+        return CreateTestCaseRequest.builder()
+                .projectId(projectId)
+                .apiEndpointId(endpointId)
+                .apiDocumentVersionId(null)   // optional — skips version ownership check
+                .caseName(caseName)
+                .description("Unit test")
+                .generatedBy(GeneratedBy.USER)
+                .activeFlag(true)
+                .requiresWrite(false)
+                .cleanupRequired(false)
+                .input(input)
+                .assertions(List.of(statusAssertion))
+                .build();
+    }
+
+    private TestCase buildSavedTestCase(
+            String caseName,
+            Map<String, Object> queryParams,
+            Map<String, Object> headers,
+            Map<String, Object> requestBody) {
+
+        ObjectMapper om = new ObjectMapper();
+
+        String queryStr = null, headersStr = null, bodyStr = null;
+        try {
+            if (queryParams != null) queryStr = om.writeValueAsString(queryParams);
+            if (headers != null) headersStr = om.writeValueAsString(headers);
+            if (requestBody != null) bodyStr = om.writeValueAsString(requestBody);
+        } catch (Exception ignored) {}
+
+        TestCaseInput input = TestCaseInput.builder()
+                .id(UUID.randomUUID())
+                .httpMethod(HttpMethod.GET)
+                .requestPath("/greeting")
+                .queryParamsJson(queryStr)
+                .headersJson(headersStr)
+                .requestBodyJson(bodyStr)
+                .contentType("application/json")
+                .timeoutMs(30000)
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build();
+
+        TestCaseAssertion assertion = TestCaseAssertion.builder()
+                .id(UUID.randomUUID())
+                .assertionType(AssertionType.STATUS_CODE)
+                .operator(ComparisonOperator.EQUALS)
+                .expectedValue("200")
+                .enabledFlag(true)
+                .sortOrder(1)
+                .createdAt(LocalDateTime.now())
+                .updatedAt(LocalDateTime.now())
+                .build();
+
+        TestCase tc = new TestCase();
+        tc.setId(UUID.randomUUID());
+        tc.setCaseName(caseName);
+        tc.setSourceProject(project);
+        tc.setApiEndpoint(endpoint);
+        tc.setGeneratedBy(GeneratedBy.USER);
+        tc.setActiveFlag(true);
+        tc.setDeletedFlag(false);
+        tc.setRequiresWrite(false);
+        tc.setCleanupRequired(false);
+        tc.setCreatedAt(LocalDateTime.now());
+        tc.setUpdatedAt(LocalDateTime.now());
+        tc.assignInput(input);
+        tc.replaceAssertions(List.of(assertion));
+
+        // Wire back-references so toDetailResponse works
+        input.setTestCase(tc);
+        assertion.setTestCase(tc);
+
+        return tc;
     }
 }
