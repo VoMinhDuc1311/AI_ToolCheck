@@ -9,9 +9,16 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.UriComponentsBuilder;
 
+import java.lang.reflect.Array;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -64,13 +71,14 @@ public class TestRequestBuilder {
 
         String normalizedBase  = normalizeBaseUrl(baseUrl);
         String normalizedPath  = normalizeRequestPath(input.getRequestPath());
-        String finalUrl        = buildFinalUrl(normalizedBase, normalizedPath);
+        String finalUrl;
 
         // Parse stored JSON strings to typed Map/Object — NOT to raw JsonNode,
         // which would cause Jackson to serialize internal bean metadata in responses.
         Map<String, Object> parsedHeaders     = parseJsonToMap(input.getHeadersJson(),     "headersJson");
         Map<String, Object> parsedQueryParams = parseJsonToMap(input.getQueryParamsJson(), "queryParamsJson");
         Object              parsedBody        = parseJsonToObject(input.getRequestBodyJson(), "requestBodyJson");
+        finalUrl = buildFinalUrl(normalizedBase, normalizedPath, parsedQueryParams);
 
         return PreparedHttpRequestResponse.builder()
                 .method(input.getHttpMethod())
@@ -122,10 +130,60 @@ public class TestRequestBuilder {
         return requestPath.trim();
     }
 
-    private String buildFinalUrl(String normalizedBase, String normalizedPath) {
+    private String buildFinalUrl(String normalizedBase, String normalizedPath, Map<String, Object> queryParams) {
         // normalizedPath always starts with '/' (validated above); strip it
         // so the join produces exactly one separator between base and path.
-        return normalizedBase + "/" + normalizedPath.substring(1);
+        String baseAndPath = normalizedBase + "/" + normalizedPath.substring(1);
+
+        if (queryParams == null || queryParams.isEmpty()) {
+            return baseAndPath;
+        }
+
+        List<String> encodedPairs = new ArrayList<>();
+        queryParams.forEach((key, value) -> addQueryParam(encodedPairs, key, value));
+        if (encodedPairs.isEmpty()) {
+            return baseAndPath;
+        }
+
+        return UriComponentsBuilder.fromUriString(baseAndPath)
+                .query(String.join("&", encodedPairs))
+                .build(true)
+                .toUriString();
+    }
+
+    private void addQueryParam(List<String> encodedPairs, String key, Object value) {
+        // Null values are skipped. This avoids sending ambiguous "key" or "key="
+        // semantics to target APIs while preserving the original queryParams map for UI/debugging.
+        if (!hasText(key) || value == null) {
+            return;
+        }
+
+        if (value instanceof Collection<?> values) {
+            values.stream()
+                    .filter(v -> v != null)
+                    .forEach(v -> encodedPairs.add(encodeQueryPair(key, v)));
+            return;
+        }
+
+        Class<?> valueClass = value.getClass();
+        if (valueClass.isArray()) {
+            int length = Array.getLength(value);
+            for (int i = 0; i < length; i++) {
+                Object item = Array.get(value, i);
+                if (item != null) {
+                    encodedPairs.add(encodeQueryPair(key, item));
+                }
+            }
+            return;
+        }
+
+        encodedPairs.add(encodeQueryPair(key, value));
+    }
+
+    private String encodeQueryPair(String key, Object value) {
+        return URLEncoder.encode(key, StandardCharsets.UTF_8)
+                + "="
+                + URLEncoder.encode(String.valueOf(value), StandardCharsets.UTF_8);
     }
 
     private void validateHttpUrl(String url) {
