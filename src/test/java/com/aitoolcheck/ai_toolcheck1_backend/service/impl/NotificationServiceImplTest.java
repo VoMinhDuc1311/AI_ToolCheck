@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.notification.res.NotificationResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.Notification;
@@ -42,13 +43,13 @@ class NotificationServiceImplTest {
     @Test
     void creatingNotificationPersistsRecord() {
         AppUser recipient = user(UUID.randomUUID(), "user@example.com");
-        when(notificationRepository.save(any(Notification.class))).thenAnswer(invocation -> {
+        when(notificationRepository.saveAndFlush(any(Notification.class))).thenAnswer(invocation -> {
             Notification notification = invocation.getArgument(0);
             notification.setId(UUID.randomUUID());
             return notification;
         });
 
-        UUID id = service.createNotification(
+        NotificationResponse res = service.createNotification(
                 recipient,
                 null,
                 NotificationType.INFO,
@@ -58,8 +59,9 @@ class NotificationServiceImplTest {
                 null,
                 "{\"projectId\":\"p\"}");
 
-        verify(notificationRepository).save(any(Notification.class));
-        org.junit.jupiter.api.Assertions.assertNotNull(id);
+        verify(notificationRepository).saveAndFlush(any(Notification.class));
+        org.junit.jupiter.api.Assertions.assertNotNull(res);
+        org.junit.jupiter.api.Assertions.assertNotNull(res.getId());
     }
 
     @Test
@@ -106,7 +108,7 @@ class NotificationServiceImplTest {
     @Test
     void unsafeMetadataIsDropped() {
         AppUser recipient = user(UUID.randomUUID(), "user@example.com");
-        when(notificationRepository.save(any(Notification.class))).thenAnswer(invocation -> {
+        when(notificationRepository.saveAndFlush(any(Notification.class))).thenAnswer(invocation -> {
             Notification notification = invocation.getArgument(0);
             assertNull(notification.getMetadataJson());
             notification.setId(UUID.randomUUID());

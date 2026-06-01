@@ -90,7 +90,7 @@ public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
                     userDetails.getAuthorities()
             );
 
-            log.debug("[WebSocketAuth] STOMP CONNECT accepted for user={}", userDetails.getUsername());
+            log.info("[WS] CONNECT authenticated user={}", userDetails.getUsername());
             return authentication;
         } catch (IllegalArgumentException e) {
             throw e;

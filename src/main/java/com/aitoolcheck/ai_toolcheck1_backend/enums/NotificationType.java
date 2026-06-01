@@ -26,6 +26,11 @@ public enum NotificationType {
     TEST_RUN_COMPLETED,
     TEST_RUN_FAILED,
 
+    // Project members
+    PROJECT_MEMBER_ADDED,
+    PROJECT_MEMBER_REMOVED,
+    PROJECT_ROLE_UPDATED,
+
     // General
     INFO
 }

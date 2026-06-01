@@ -33,7 +33,8 @@ public class WebSocketConfig implements WebSocketMessageBrokerConfigurer {
         registry.addEndpoint("/ws")
                 .setAllowedOriginPatterns(
                         corsProperties.getAllowedOriginPatterns().toArray(String[]::new)
-                );
+                )
+                .withSockJS();
     }
 
     @Override
