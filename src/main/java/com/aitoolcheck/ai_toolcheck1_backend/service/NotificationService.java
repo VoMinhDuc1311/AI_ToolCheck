@@ -25,7 +25,7 @@ public interface NotificationService {
      * Create and persist a notification for a recipient user.
      * Returns the ID of the created notification.
      */
-    UUID createNotification(
+    NotificationResponse createNotification(
             AppUser recipient,
             SourceProject project,
             NotificationType type,

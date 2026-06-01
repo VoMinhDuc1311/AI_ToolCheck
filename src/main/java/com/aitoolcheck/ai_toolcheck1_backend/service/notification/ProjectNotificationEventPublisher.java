@@ -57,6 +57,42 @@ public class ProjectNotificationEventPublisher {
         publish(projectId, actor.getId(), type, severity, title, message, actionUrl, metadata);
     }
 
+    public void publishForCurrentUserAndSpecificRecipients(
+            UUID projectId,
+            List<UUID> specificRecipientIds,
+            NotificationType type,
+            NotificationSeverity severity,
+            String title,
+            String message,
+            String actionUrl,
+            Map<String, ?> metadata) {
+
+        AppUser actor = currentUserOrNull();
+        if (actor == null || actor.getId() == null) {
+            log.debug("[ProjectNotification] Skipping {} for projectId={} because no authenticated actor exists",
+                    type, projectId);
+            return;
+        }
+
+        Set<UUID> recipients = resolveOwnerAndMaintainers(projectId);
+        if (specificRecipientIds != null) {
+            recipients.addAll(specificRecipientIds);
+        }
+        recipients.remove(actor.getId());
+
+        eventPublisher.publishEvent(ProjectActivityEvent.builder()
+                .actorUserId(actor.getId())
+                .additionalRecipientUserIds(List.copyOf(recipients))
+                .projectId(projectId)
+                .type(type)
+                .severity(severity)
+                .title(title)
+                .message(message)
+                .actionUrl(actionUrl)
+                .metadataJson(toSafeMetadataJson(metadata))
+                .build());
+    }
+
     public void publishForProjectOwner(
             UUID projectId,
             NotificationType type,

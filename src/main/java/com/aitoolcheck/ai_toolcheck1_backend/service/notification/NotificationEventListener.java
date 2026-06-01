@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.notification;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectMemberRole;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.notification.res.NotificationRealtimePayload;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.notification.res.NotificationResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ProjectMember;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -83,7 +84,7 @@ public class NotificationEventListener {
             List<AppUser> recipients = appUserRepository.findAllById(recipientIds);
 
             for (AppUser recipient : recipients) {
-                UUID notificationId = notificationService.createNotification(
+                com.aitoolcheck.ai_toolcheck1_backend.dto.notification.res.NotificationResponse savedNotif = notificationService.createNotification(
                         recipient,
                         project,
                         event.getType(),
@@ -94,20 +95,26 @@ public class NotificationEventListener {
                         event.getMetadataJson()
                 );
 
+                LocalDateTime createdAt = savedNotif.getCreatedAt() != null 
+                        ? savedNotif.getCreatedAt() 
+                        : LocalDateTime.now();
+
                 // Best-effort realtime delivery
                 NotificationRealtimePayload payload = NotificationRealtimePayload.builder()
-                        .notificationId(notificationId)
+                        .notificationId(savedNotif.getId())
                         .projectId(event.getProjectId())
                         .type(event.getType())
                         .severity(event.getSeverity())
                         .title(event.getTitle())
                         .message(event.getMessage())
                         .actionUrl(event.getActionUrl())
-                        .createdAt(LocalDateTime.now())
+                        .createdAt(createdAt)
                         .build();
 
                 // The principal name in STOMP is the user's email (from CustomUserDetails.getUsername())
                 realtimePublisher.sendToUser(recipient.getEmail(), payload);
+                log.info("[NotificationEventListener] Notification created and realtime sent: id={}, recipient={}, type={}, projectId={}",
+                        savedNotif.getId(), recipient.getEmail(), event.getType(), event.getProjectId());
             }
 
         } catch (Exception ex) {
@@ -131,8 +138,7 @@ public class NotificationEventListener {
         }
         for (ProjectMember member : projectMemberRepository.findBySourceProject_Id(project.getId())) {
             if (member.getUser() != null
-                    && member.getUser().getId() != null
-                    && member.getRole() == ProjectMemberRole.MAINTAINER) {
+                    && member.getUser().getId() != null) {
                 allowedRecipientIds.add(member.getUser().getId());
             }
         }
