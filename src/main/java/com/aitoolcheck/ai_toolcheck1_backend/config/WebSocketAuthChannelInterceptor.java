@@ -51,9 +51,7 @@ public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
 
         if (accessor.getCommand() == StompCommand.CONNECT) {
             Authentication authentication = authenticateConnect(accessor);
-            StompHeaderAccessor mutableAccessor = StompHeaderAccessor.wrap(message);
-            mutableAccessor.setUser(authentication);
-            return MessageBuilder.createMessage(message.getPayload(), mutableAccessor.getMessageHeaders());
+            accessor.setUser(authentication);
         }
 
         if (accessor.getCommand() == StompCommand.SUBSCRIBE) {
