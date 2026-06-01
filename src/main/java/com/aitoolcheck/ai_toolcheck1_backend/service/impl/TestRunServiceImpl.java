@@ -111,7 +111,9 @@ public class TestRunServiceImpl implements TestRunService {
 
         String runName = normalizeRequiredText(request.getRunName(), "runName");
         String description = normalizeOptionalText(request.getDescription());
-        String baseUrl = normalizeBaseUrl(request.getBaseUrl());
+        // Resolve effective baseUrl: request → project.defaultTargetBaseUrl → 400.
+        // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
+        String baseUrl = resolveBaseUrl(request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
         List<TestCase> resolvedCases = resolveTestCases(request, sourceProject.getId());
 
@@ -160,8 +162,9 @@ public class TestRunServiceImpl implements TestRunService {
 
         log.debug("Found SourceProject: id={}, name={}", sourceProject.getId(), sourceProject.getProjectName());
 
-        // Normalize and validate baseUrl
-        String baseUrl = normalizeBaseUrl(request.getBaseUrl());
+        // Resolve effective baseUrl: request → project.defaultTargetBaseUrl → 400.
+        // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
+        String baseUrl = resolveBaseUrl(request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
         // Resolve and validate test cases
         List<UUID> testCaseIds = request.getTestCaseIds();
@@ -728,6 +731,7 @@ public class TestRunServiceImpl implements TestRunService {
                 .responseBody(executed.responseBody())
                 .responseTimeMs(executed.responseTimeMs())
                 .errorMessage(executed.errorMessage())
+                .responseHeaders(executed.responseHeaders())
                 .build();
     }
 
@@ -1020,6 +1024,48 @@ public class TestRunServiceImpl implements TestRunService {
             return null;
         }
         return value.trim();
+    }
+
+    /**
+     * Resolves and validates the effective base URL for a TestRun.
+     *
+     * <p>Resolution order:
+     * <ol>
+     *   <li>If {@code requestBaseUrl} has text: use it (validated).
+     *   <li>Else if {@code projectDefaultTargetBaseUrl} has text: use it (validated).
+     *   <li>Else throw BadRequestException with clear guidance.
+     * </ol>
+     *
+     * <p><strong>Important:</strong> {@code projectDefaultTargetBaseUrl} comes from
+     * {@code SourceProject.defaultTargetBaseUrl}, which is the live application endpoint.
+     * {@code SourceProject.repositoryUrl} (GitHub source URL) must NEVER be used here.
+     *
+     * @param requestBaseUrl             baseUrl from the incoming request (may be null/blank)
+     * @param projectDefaultTargetBaseUrl project-level runtime target (may be null)
+     */
+    private String resolveBaseUrl(String requestBaseUrl, String projectDefaultTargetBaseUrl) {
+        if (hasText(requestBaseUrl)) {
+            String trimmed = requestBaseUrl.trim();
+            validateBaseUrl(trimmed);
+            if (trimmed.endsWith("/")) {
+                trimmed = trimmed.substring(0, trimmed.length() - 1);
+            }
+            return trimmed;
+        }
+
+        if (hasText(projectDefaultTargetBaseUrl)) {
+            String trimmed = projectDefaultTargetBaseUrl.trim();
+            validateBaseUrl(trimmed);
+            if (trimmed.endsWith("/")) {
+                trimmed = trimmed.substring(0, trimmed.length() - 1);
+            }
+            log.info("[TestRunService] No baseUrl in request — using project defaultTargetBaseUrl: {}", trimmed);
+            return trimmed;
+        }
+
+        throw new BadRequestException(
+                "Test run baseUrl is required. " +
+                "Provide baseUrl in the request, or configure project defaultTargetBaseUrl.");
     }
 
     private String normalizeBaseUrl(String baseUrl) {
