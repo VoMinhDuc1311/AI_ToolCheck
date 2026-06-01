@@ -297,33 +297,10 @@ public class SourceProjectServiceImpl implements SourceProjectService {
     }
 
     private List<SourceProject> accessibleProjects(AppUser currentUser, boolean includeArchived) {
-        Map<UUID, SourceProject> byId = new LinkedHashMap<>();
-
-        if (includeArchived) {
-            sourceProjectRepository
-                    .findByOwnerUser_IdAndDeletedFlagFalseOrderByCreatedAtDesc(currentUser.getId())
-                    .forEach(p -> byId.put(p.getId(), p));
-            projectMemberRepository.findByUser_Id(currentUser.getId()).stream()
-                    .map(ProjectMember::getSourceProject)
-                    .filter(p -> !Boolean.TRUE.equals(p.getDeletedFlag()))
-                    .forEach(p -> byId.put(p.getId(), p));
-            sourceProjectRepository
-                    .findByVisibilityAndDeletedFlagFalseOrderByCreatedAtDesc(ProjectVisibility.PUBLIC_READ)
-                    .forEach(p -> byId.put(p.getId(), p));
-        } else {
-            sourceProjectRepository
-                    .findByOwnerUser_IdAndArchivedFlagFalseAndDeletedFlagFalseOrderByCreatedAtDesc(currentUser.getId())
-                    .forEach(p -> byId.put(p.getId(), p));
-            projectMemberRepository.findByUser_Id(currentUser.getId()).stream()
-                    .map(ProjectMember::getSourceProject)
-                    .filter(p -> !Boolean.TRUE.equals(p.getArchivedFlag()) && !Boolean.TRUE.equals(p.getDeletedFlag()))
-                    .forEach(p -> byId.put(p.getId(), p));
-            sourceProjectRepository
-                    .findByVisibilityAndArchivedFlagFalseAndDeletedFlagFalseOrderByCreatedAtDesc(ProjectVisibility.PUBLIC_READ)
-                    .forEach(p -> byId.put(p.getId(), p));
-        }
-
-        return byId.values().stream().toList();
+        return sourceProjectRepository.findAccessibleProjects(
+                currentUser.getId(),
+                ProjectVisibility.PUBLIC_READ,
+                includeArchived);
     }
 
     private boolean isOwnedBy(SourceProject project, AppUser user) {

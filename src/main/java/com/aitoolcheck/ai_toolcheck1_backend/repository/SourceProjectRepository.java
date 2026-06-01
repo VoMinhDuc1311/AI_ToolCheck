@@ -50,6 +50,27 @@ public interface SourceProjectRepository extends JpaRepository<SourceProject, UU
     boolean existsByIdAndOwnerUser_Id(UUID projectId, UUID ownerUserId);
 
     @Query("""
+        SELECT sp
+        FROM SourceProject sp
+        WHERE sp.deletedFlag = false
+          AND (:includeArchived = true OR sp.archivedFlag = false)
+          AND (
+              sp.ownerUser.id = :userId
+              OR sp.visibility = :visibility
+              OR EXISTS (
+                  SELECT 1 FROM ProjectMember pm
+                  WHERE pm.sourceProject.id = sp.id
+                    AND pm.user.id = :userId
+              )
+          )
+        ORDER BY sp.createdAt DESC
+    """)
+    List<SourceProject> findAccessibleProjects(
+            @Param("userId") UUID userId,
+            @Param("visibility") ProjectVisibility visibility,
+            @Param("includeArchived") boolean includeArchived);
+
+    @Query("""
         SELECT sp.id
         FROM SourceProject sp
         WHERE sp.deletedFlag = false
