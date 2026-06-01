@@ -16,6 +16,7 @@ import org.springframework.web.client.RestTemplate;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
@@ -77,21 +78,24 @@ public class TestHttpExecutor {
             long elapsed = System.currentTimeMillis() - start;
             int statusCode = response.getStatusCode().value();
             String responseBody = response.getBody();
+            Map<String, String> responseHeaders = extractHeaders(response.getHeaders());
 
             log.debug("[TestHttpExecutor] {} {} → {} in {}ms (body {} bytes)",
                     method, finalUrl, statusCode, elapsed,
                     responseBody != null ? responseBody.length() : 0);
 
-            return ExecutedHttpResponse.success(statusCode, responseBody, elapsed);
+            return ExecutedHttpResponse.success(statusCode, responseBody, elapsed, responseHeaders);
 
         } catch (HttpStatusCodeException e) {
             // 4xx / 5xx — a real HTTP response was received
             int statusCode = e.getStatusCode().value();
             String responseBody = e.getResponseBodyAsString();
+            Map<String, String> responseHeaders = extractHeaders(e.getResponseHeaders());
             log.warn("[TestHttpExecutor] HTTP {} from {}", statusCode, prepared.getFinalUrl());
             return ExecutedHttpResponse.httpError(
                     statusCode, responseBody,
-                    "HTTP " + statusCode + " from target");
+                    "HTTP " + statusCode + " from target",
+                    responseHeaders);
 
         } catch (ResourceAccessException e) {
             // Connection refused / DNS failure / socket timeout
@@ -198,5 +202,26 @@ public class TestHttpExecutor {
     private String truncateSafe(String value, int maxLength) {
         if (value == null) return null;
         return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
+    }
+
+    /**
+     * Extracts HTTP headers from a Spring HttpHeaders map into a flat {@code Map<String,String>}.
+     * Only the first value of each header is kept (sufficient for assertion matching).
+     * Header names are kept as-is (mixed-case from server).
+     *
+     * @param httpHeaders the Spring HttpHeaders; may be null.
+     * @return a non-null, possibly empty, flat map of header name → first value.
+     */
+    private Map<String, String> extractHeaders(org.springframework.http.HttpHeaders httpHeaders) {
+        if (httpHeaders == null) {
+            return Collections.emptyMap();
+        }
+        Map<String, String> flat = new LinkedHashMap<>();
+        httpHeaders.forEach((name, values) -> {
+            if (name != null && values != null && !values.isEmpty()) {
+                flat.put(name, values.get(0));
+            }
+        });
+        return flat;
     }
 }

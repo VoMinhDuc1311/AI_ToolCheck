@@ -1,5 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.runner;
 
+import java.util.Map;
+
 /**
  * Internal DTO representing the result of one real HTTP execution.
  * <p>
@@ -18,6 +20,9 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.runner;
  *       {@code null} on success.</li>
  *   <li>{@code connectionError} – {@code true} when the target could not be
  *       reached (connection refused, DNS failure, timeout).</li>
+ *   <li>{@code responseHeaders} – HTTP response headers as a flat string map.
+ *       Key is the header name (may be mixed-case per server). {@code null}
+ *       when no response was received (network error).</li>
  * </ul>
  */
 public record ExecutedHttpResponse(
@@ -25,21 +30,25 @@ public record ExecutedHttpResponse(
         String responseBody,
         long responseTimeMs,
         String errorMessage,
-        boolean connectionError
+        boolean connectionError,
+        Map<String, String> responseHeaders
 ) {
 
     /** Convenience factory for a clean success result. */
-    public static ExecutedHttpResponse success(int statusCode, String responseBody, long responseTimeMs) {
-        return new ExecutedHttpResponse(statusCode, responseBody, responseTimeMs, null, false);
+    public static ExecutedHttpResponse success(
+            int statusCode, String responseBody, long responseTimeMs, Map<String, String> responseHeaders) {
+        return new ExecutedHttpResponse(statusCode, responseBody, responseTimeMs, null, false, responseHeaders);
     }
 
     /** Convenience factory for a network/connection-level failure (no HTTP response). */
     public static ExecutedHttpResponse networkError(String errorMessage) {
-        return new ExecutedHttpResponse(0, null, 0L, errorMessage, true);
+        return new ExecutedHttpResponse(0, null, 0L, errorMessage, true, null);
     }
 
     /** Convenience factory for an HTTP-level error (4xx/5xx — response was received). */
-    public static ExecutedHttpResponse httpError(int statusCode, String responseBody, String errorMessage) {
-        return new ExecutedHttpResponse(statusCode, responseBody, 0L, errorMessage, false);
+    public static ExecutedHttpResponse httpError(
+            int statusCode, String responseBody, String errorMessage, Map<String, String> responseHeaders) {
+        return new ExecutedHttpResponse(statusCode, responseBody, 0L, errorMessage, false, responseHeaders);
     }
 }
+

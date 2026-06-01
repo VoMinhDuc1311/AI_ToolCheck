@@ -39,7 +39,12 @@ public class CiTriggerRequest {
 
     private Boolean includeAllActive;
 
-    @NotBlank(message = "baseUrl is required")
+    /**
+     * Runtime base URL of the target application.
+     * Optional — if omitted, CI trigger will fall back to project defaultTargetBaseUrl.
+     * If neither is set, a 400 is returned.
+     * Must NEVER be auto-filled from repositoryUrl (GitHub source URL).
+     */
     @Size(max = 500, message = "baseUrl must not exceed 500 characters")
     private String baseUrl;
 

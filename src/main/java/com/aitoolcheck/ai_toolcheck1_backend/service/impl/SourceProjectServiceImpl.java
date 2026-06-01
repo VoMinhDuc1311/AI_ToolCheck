@@ -18,6 +18,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.common.GitHubRepositoryUrlParser;
+import com.aitoolcheck.ai_toolcheck1_backend.common.RuntimeTargetUrlValidator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -78,12 +79,17 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 ? GitHubRepositoryUrlParser.normaliseBranch(request.getRepositoryBranch())
                 : null;
 
+        // Validate and normalise runtime target base URL.
+        // IMPORTANT: repositoryUrl (GitHub source) must NEVER be auto-copied here.
+        String normDefaultTargetBaseUrl = RuntimeTargetUrlValidator.normalise(request.getDefaultTargetBaseUrl());
+
         SourceProject saved = sourceProjectRepository.save(SourceProject.builder()
                 .projectKey(projectKey)
                 .projectName(projectName)
                 .description(trimToNull(request.getDescription()))
                 .repositoryUrl(normRepoUrl)
                 .repositoryBranch(normRepoBranch)
+                .defaultTargetBaseUrl(normDefaultTargetBaseUrl)
                 .backendType(request.getBackendType())
                 .status(ProjectStatus.NEW)
                 .ownerUser(currentUser)
@@ -185,6 +191,10 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         project.setRepositoryBranch(normRepoUrl != null
                 ? GitHubRepositoryUrlParser.normaliseBranch(request.getRepositoryBranch())
                 : null);
+
+        // Validate and normalise runtime target base URL (null/blank clears the value).
+        // IMPORTANT: repositoryUrl must NEVER be auto-copied to defaultTargetBaseUrl.
+        project.setDefaultTargetBaseUrl(RuntimeTargetUrlValidator.normalise(request.getDefaultTargetBaseUrl()));
 
         return mapToDetailResponse(sourceProjectRepository.save(project));
     }
@@ -332,6 +342,7 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .status(p.getStatus())
                 .visibility(p.getVisibility())
                 .repositoryUrl(p.getRepositoryUrl())
+                .defaultTargetBaseUrl(p.getDefaultTargetBaseUrl())
                 .createdAt(p.getCreatedAt())
                 .archivedFlag(p.getArchivedFlag())
                 .archivedAt(p.getArchivedAt())
@@ -359,6 +370,7 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .repositoryProvider(GitHubRepositoryUrlParser.deriveProvider(repoUrl))
                 .repositoryOwner(GitHubRepositoryUrlParser.extractOwner(repoUrl))
                 .repositoryName(GitHubRepositoryUrlParser.extractRepo(repoUrl))
+                .defaultTargetBaseUrl(p.getDefaultTargetBaseUrl())
                 .backendType(p.getBackendType())
                 .status(p.getStatus())
                 .visibility(p.getVisibility())

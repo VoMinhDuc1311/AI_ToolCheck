@@ -35,6 +35,12 @@ public class SourceProjectResponse {
     /** Normalised GitHub repository URL. Null if not configured. */
     private String repositoryUrl;
 
+    /**
+     * Project-level default runtime base URL for test execution.
+     * Null if not configured. Distinct from repositoryUrl.
+     */
+    private String defaultTargetBaseUrl;
+
     private LocalDateTime createdAt;
 
     // ── Archive lifecycle ──────────────────────────────────────────────────────

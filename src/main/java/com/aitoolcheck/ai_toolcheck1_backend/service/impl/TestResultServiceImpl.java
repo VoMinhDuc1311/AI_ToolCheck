@@ -9,6 +9,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.TestResult;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRunItem;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
 import lombok.RequiredArgsConstructor;
@@ -17,6 +18,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 @Service
@@ -25,6 +27,7 @@ import java.util.Objects;
 public class TestResultServiceImpl implements TestResultService {
 
     private final TestResultRepository testResultRepository;
+    private final ObjectMapper objectMapper;
 
     @Override
     public RuleEngineResultDto evaluateAssertions(HttpActualResponseDto actualResponse,
@@ -175,6 +178,7 @@ public class TestResultServiceImpl implements TestResultService {
         result.setTestRunItem(item);
         result.setActualStatus(actualResponse.getStatusCode());
         result.setActualResponseJson(actualResponse.getResponseBody());
+        result.setActualResponseHeadersJson(toHeadersJson(actualResponse.getResponseHeaders()));
         result.setResultStatus(ruleResult.getFinalStatus());
         result.setResponseTimeMs(
                 actualResponse.getResponseTimeMs() != null ? actualResponse.getResponseTimeMs().intValue() : 0);
@@ -195,6 +199,7 @@ public class TestResultServiceImpl implements TestResultService {
         result.setTestRunItem(item);
         result.setActualStatus(actualResponse.getStatusCode());
         result.setActualResponseJson(actualResponse.getResponseBody());
+        result.setActualResponseHeadersJson(toHeadersJson(actualResponse.getResponseHeaders()));
         result.setResponseTimeMs(
                 actualResponse.getResponseTimeMs() != null ? actualResponse.getResponseTimeMs().intValue() : 0);
         result.setErrorMessage(actualResponse.getErrorMessage());
@@ -203,5 +208,21 @@ public class TestResultServiceImpl implements TestResultService {
         testResultRepository.save(result);
         item.setTestResult(result);
         return result;
+    }
+
+    /**
+     * Serializes response headers map to JSON string for persistence.
+     * Returns null safely if headers are null or serialization fails.
+     */
+    private String toHeadersJson(Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(headers);
+        } catch (Exception e) {
+            log.warn("[TestResultService] Failed to serialize response headers to JSON: {}", e.getMessage());
+            return null;
+        }
     }
 }

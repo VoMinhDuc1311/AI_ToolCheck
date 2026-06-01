@@ -43,6 +43,24 @@ public class SourceProject {
     @Column(name = "repository_branch", length = 120)
     private String repositoryBranch;
 
+    // ── Runtime execution target ───────────────────────────────────────────────
+
+    /**
+     * Default runtime base URL for test execution.
+     * This is the URL where the analysed application is actually running
+     * (e.g. http://52.220.34.212:8081).
+     * <p>
+     * IMPORTANT: This field is completely independent from {@code repositoryUrl}.
+     * {@code repositoryUrl} points to the GitHub source repository for static analysis.
+     * {@code defaultTargetBaseUrl} is the live HTTP endpoint that TestRun will call.
+     * They must NEVER be conflated.
+     * <p>
+     * Null if not configured. When set, TestRun creation can omit an explicit baseUrl
+     * and fall back to this project-level default.
+     */
+    @Column(name = "default_target_base_url", length = 500)
+    private String defaultTargetBaseUrl;
+
     @Column(name = "backend_type", length = 50)
     @Enumerated(EnumType.STRING)
     private BackendType backendType;
