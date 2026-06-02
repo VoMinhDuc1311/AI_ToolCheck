@@ -112,12 +112,13 @@ public class ProjectMemberServiceImpl implements ProjectMemberService {
                     NotificationType.PROJECT_MEMBER_ADDED,
                     NotificationSeverity.INFO,
                     "New member added",
-                    "User " + user.getFullName() + " has been added to project " + sourceProject.getProjectName() + " with role " + request.getRole().name() + ".",
+                    "User " + user.getFullName() + " has been added to project " + sourceProject.getProjectName()
+                            + " with role " + request.getRole().name() + ".",
                     "/source-projects/" + projectId,
-                    Map.of("projectId", projectId)
-            );
+                    Map.of("projectId", projectId));
         } catch (Exception ex) {
-            // Log and swallow so notification failures do not rollback project member additions
+            // Log and swallow so notification failures do not rollback project member
+            // additions
         }
 
         return toResponse(saved);
@@ -140,10 +141,11 @@ public class ProjectMemberServiceImpl implements ProjectMemberService {
                     NotificationType.PROJECT_ROLE_UPDATED,
                     NotificationSeverity.INFO,
                     "Project role updated",
-                    "User " + member.getUser().getFullName() + "'s role in project " + member.getSourceProject().getProjectName() + " has been updated to " + request.getRole().name() + ".",
+                    "User " + member.getUser().getFullName() + "'s role in project "
+                            + member.getSourceProject().getProjectName() + " has been updated to "
+                            + request.getRole().name() + ".",
                     "/source-projects/" + projectId,
-                    Map.of("projectId", projectId)
-            );
+                    Map.of("projectId", projectId));
         } catch (Exception ex) {
             // Log and swallow
         }
@@ -154,11 +156,22 @@ public class ProjectMemberServiceImpl implements ProjectMemberService {
     @Override
     @Transactional
     public void removeMember(UUID projectId, UUID memberId) {
-        projectAccessService.requireCanAdminProject(projectId);
+        SourceProject project = projectAccessService.requireCanAdminProject(projectId);
         ProjectMember member = findMemberInProject(projectId, memberId);
         AppUser user = member.getUser();
         String projectName = member.getSourceProject().getProjectName();
         projectMemberRepository.delete(member);
+        projectMemberRepository.flush(); // ensure DELETE is flushed so the count below is accurate
+
+        // P1: auto-transition SHARED → PRIVATE when the last regular member is removed
+        if (project.getVisibility() == ProjectVisibility.SHARED) {
+            long remainingCount = projectMemberRepository.countBySourceProject_Id(projectId);
+            if (remainingCount == 0) {
+                project.setVisibility(ProjectVisibility.PRIVATE);
+                sourceProjectRepository.save(project);
+            }
+        }
+        // PUBLIC_READ and PRIVATE visibility remain unchanged
 
         try {
             notificationEventPublisher.publishForCurrentUserAndSpecificRecipients(
@@ -169,8 +182,7 @@ public class ProjectMemberServiceImpl implements ProjectMemberService {
                     "Member removed",
                     "User " + user.getFullName() + " has been removed from project " + projectName + ".",
                     "/source-projects/" + projectId,
-                    Map.of("projectId", projectId)
-            );
+                    Map.of("projectId", projectId));
         } catch (Exception ex) {
             // Log and swallow
         }
