@@ -120,14 +120,33 @@ public class TestCaseServiceImpl implements TestCaseService {
                     }
                 }
 
+                HttpMethod method = itemDto.getHttpMethod();
+                boolean requiresWrite = method == HttpMethod.POST || method == HttpMethod.PUT || method == HttpMethod.PATCH || method == HttpMethod.DELETE;
+                boolean cleanupRequired = requiresWrite && (caseType == CaseType.POSITIVE);
+
+                boolean activeFlag = true;
+                if (method == HttpMethod.GET && caseType == CaseType.POSITIVE && itemDto.getUrl() != null) {
+                    String upperUrl = itemDto.getUrl().toUpperCase();
+                    if (upperUrl.contains("CUSTOMER_ABC_123") ||
+                        upperUrl.contains("UNKNOWN_") ||
+                        upperUrl.contains("SAMPLE_") ||
+                        upperUrl.contains("TEST_") ||
+                        upperUrl.contains("FAKE_") ||
+                        upperUrl.contains("DUMMY_")) {
+                        activeFlag = false;
+                    }
+                }
+
                 // 3. Tạo Entity TestCase (Bảng Cha)
                 TestCase testCase = TestCase.builder()
                         .caseName(itemDto.getTestName())
                         .caseType(caseType)
                         .priorityLevel(priorityLevel)
                         .generatedBy(GeneratedBy.AI)
-                        .activeFlag(true)
+                        .activeFlag(activeFlag)
                         .deletedFlag(false)
+                        .requiresWrite(requiresWrite)
+                        .cleanupRequired(cleanupRequired)
                         .sourceProject(project)
                         .apiEndpoint(endpoint)
                         .build();

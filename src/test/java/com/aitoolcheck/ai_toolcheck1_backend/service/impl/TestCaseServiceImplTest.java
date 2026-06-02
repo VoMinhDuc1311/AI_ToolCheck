@@ -215,6 +215,79 @@ class TestCaseServiceImplTest {
         assertThat(qp).containsEntry("name", "ChatGPT");
     }
 
+    @Test
+    void saveAiGeneratedTestCases_infersMetadataCorrectly() {
+        // Prepare request
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest request = 
+            new com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest();
+        
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto postPositive = 
+            com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto.builder()
+                .testName("POST Positive success")
+                .caseType("SUCCESS")
+                .httpMethod(HttpMethod.POST)
+                .url("/legacy/customers")
+                .build();
+
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto postValidation = 
+            com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto.builder()
+                .testName("POST Validation bad request")
+                .caseType("VALIDATION_ERROR")
+                .httpMethod(HttpMethod.POST)
+                .url("/legacy/customers")
+                .build();
+
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto getNormal = 
+            com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto.builder()
+                .testName("GET list")
+                .caseType("SUCCESS")
+                .httpMethod(HttpMethod.GET)
+                .url("/legacy/customers")
+                .build();
+
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto getFakePositive = 
+            com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto.builder()
+                .testName("GET by fake ID positive")
+                .caseType("SUCCESS")
+                .httpMethod(HttpMethod.GET)
+                .url("/legacy/customers/CUSTOMER_ABC_123")
+                .build();
+
+        request.setTestCases(List.of(postPositive, postValidation, getNormal, getFakePositive));
+
+        org.mockito.ArgumentCaptor<TestCase> captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+
+        service.saveAiGeneratedTestCases(request, endpointId, UUID.randomUUID());
+
+        verify(testCaseRepository, org.mockito.Mockito.times(4)).save(captor.capture());
+
+        List<TestCase> savedCases = captor.getAllValues();
+        
+        // Assert POST positive
+        TestCase tc1 = savedCases.stream().filter(c -> c.getCaseName().equals("POST Positive success")).findFirst().orElseThrow();
+        assertThat(tc1.getRequiresWrite()).isTrue();
+        assertThat(tc1.getCleanupRequired()).isTrue();
+        assertThat(tc1.getActiveFlag()).isTrue();
+
+        // Assert POST validation
+        TestCase tc2 = savedCases.stream().filter(c -> c.getCaseName().equals("POST Validation bad request")).findFirst().orElseThrow();
+        assertThat(tc2.getRequiresWrite()).isTrue();
+        assertThat(tc2.getCleanupRequired()).isFalse();
+        assertThat(tc2.getActiveFlag()).isTrue();
+
+        // Assert GET normal
+        TestCase tc3 = savedCases.stream().filter(c -> c.getCaseName().equals("GET list")).findFirst().orElseThrow();
+        assertThat(tc3.getRequiresWrite()).isFalse();
+        assertThat(tc3.getCleanupRequired()).isFalse();
+        assertThat(tc3.getActiveFlag()).isTrue();
+
+        // Assert GET fake positive
+        TestCase tc4 = savedCases.stream().filter(c -> c.getCaseName().equals("GET by fake ID positive")).findFirst().orElseThrow();
+        assertThat(tc4.getRequiresWrite()).isFalse();
+        assertThat(tc4.getCleanupRequired()).isFalse();
+        assertThat(tc4.getActiveFlag()).isFalse(); // Deactivated due to fake path parameter in positive GET
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
