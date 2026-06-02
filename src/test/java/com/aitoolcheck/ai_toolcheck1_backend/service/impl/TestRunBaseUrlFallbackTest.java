@@ -199,6 +199,59 @@ class TestRunBaseUrlFallbackTest {
                 .isInstanceOf(BadRequestException.class);
     }
 
+    @Test
+    void getSkippedReason_reflectively_evaluatesMutationsAndFakeDataCorrectly() throws Exception {
+        java.lang.reflect.Method method = TestRunServiceImpl.class.getDeclaredMethod(
+                "getSkippedReason", TestRunItem.class, ExecutionMode.class);
+        method.setAccessible(true);
+
+        // Case 1: Mutating request (POST) in READ_ONLY mode
+        com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput postInput = new com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput();
+        postInput.setHttpMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.POST);
+        postInput.setRequestPath("/legacy/customers");
+        TestCase postCase = new TestCase();
+        postCase.assignInput(postInput);
+        postCase.setCaseType(com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.POSITIVE);
+        postCase.setRequiresWrite(true);
+        TestRunItem postItem = new TestRunItem();
+        postItem.setTestCase(postCase);
+
+        String reason1 = (String) method.invoke(service, postItem, ExecutionMode.READ_ONLY);
+        assertThat(reason1).contains("mutating request is not allowed");
+
+        // Case 2: Mutating request (POST) in SAFE_WRITE mode -> allowed
+        String reason2 = (String) method.invoke(service, postItem, ExecutionMode.SAFE_WRITE);
+        assertThat(reason2).isNull();
+
+        // Case 3: Positive GET request with fake path variable CUSTOMER_ABC_123 -> skipped
+        com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput fakeGetInput = new com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput();
+        fakeGetInput.setHttpMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
+        fakeGetInput.setRequestPath("/legacy/customers/CUSTOMER_ABC_123");
+        TestCase fakeGetCase = new TestCase();
+        fakeGetCase.assignInput(fakeGetInput);
+        fakeGetCase.setCaseType(com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.POSITIVE);
+        fakeGetCase.setRequiresWrite(false);
+        TestRunItem fakeGetItem = new TestRunItem();
+        fakeGetItem.setTestCase(fakeGetCase);
+
+        String reason3 = (String) method.invoke(service, fakeGetItem, ExecutionMode.SAFE_WRITE);
+        assertThat(reason3).contains("positive path-variable test requires real test data");
+
+        // Case 4: Negative GET request with UNKNOWN ID -> allowed
+        com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput negativeGetInput = new com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput();
+        negativeGetInput.setHttpMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
+        negativeGetInput.setRequestPath("/legacy/customers/UNKNOWN_CUSTOMER_ID");
+        TestCase negativeGetCase = new TestCase();
+        negativeGetCase.assignInput(negativeGetInput);
+        negativeGetCase.setCaseType(com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.NEGATIVE);
+        negativeGetCase.setRequiresWrite(false);
+        TestRunItem negativeGetItem = new TestRunItem();
+        negativeGetItem.setTestCase(negativeGetCase);
+
+        String reason4 = (String) method.invoke(service, negativeGetItem, ExecutionMode.READ_ONLY);
+        assertThat(reason4).isNull();
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private SourceProject buildProject(UUID id, String repositoryUrl, String defaultTargetBaseUrl) {

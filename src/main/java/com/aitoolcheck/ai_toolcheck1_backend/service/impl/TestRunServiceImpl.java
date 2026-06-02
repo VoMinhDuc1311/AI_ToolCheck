@@ -288,6 +288,15 @@ public class TestRunServiceImpl implements TestRunService {
 
         for (TestRunItem item : items) {
             try {
+                // Check skipped/blocked first
+                String skipReason = getSkippedReason(item, testRun.getExecutionMode());
+                if (skipReason != null) {
+                    item.setItemStatus(ExecutionStatus.FAILED);
+                    testRunItemRepository.save(item);
+                    saveSkippedResult(item.getId(), skipReason);
+                    continue;
+                }
+
                 item.setItemStatus(ExecutionStatus.RUNNING);
                 testRunItemRepository.save(item);
 
@@ -402,6 +411,25 @@ public class TestRunServiceImpl implements TestRunService {
                             buildItemCompletedRealtimeEvent(executionContext, completedSnapshot, counters)
                     );
                     anyFailed = true;
+                    continue;
+                }
+
+                // Check if skipped/blocked
+                TestRunItem currentItem = transactionTemplate.execute(status -> 
+                    testRunItemRepository.findById(itemId).orElse(null)
+                );
+                TestRun currentRun = transactionTemplate.execute(status -> 
+                    testRunRepository.findById(executionContext.runId()).orElse(null)
+                );
+                String skipReason = getSkippedReason(currentItem, currentRun != null ? currentRun.getExecutionMode() : null);
+                if (skipReason != null) {
+                    markItemStatus(itemId, ExecutionStatus.FAILED);
+                    saveSkippedResult(itemId, skipReason);
+                    RealtimeItemSnapshot completedSnapshot = loadRealtimeItemSnapshot(itemId);
+                    counters.markCompleted(completedSnapshot.resultStatus());
+                    testRunRealtimePublisher.publishItemCompleted(
+                            buildItemCompletedRealtimeEvent(executionContext, completedSnapshot, counters)
+                    );
                     continue;
                 }
 
@@ -1113,5 +1141,71 @@ public class TestRunServiceImpl implements TestRunService {
 
     private boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    private String getSkippedReason(TestRunItem item, ExecutionMode executionMode) {
+        if (item == null) {
+            return null;
+        }
+        TestCase testCase = item.getTestCase();
+        if (testCase == null) {
+            return null;
+        }
+        TestCaseInput input = testCase.getTestCaseInput();
+        if (input == null) {
+            return null;
+        }
+
+        com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod method = input.getHttpMethod();
+        boolean isMutating = method != com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET && 
+                             method != com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.HEAD;
+
+        if (executionMode == ExecutionMode.READ_ONLY) {
+            if (isMutating) {
+                return "Skipped in READ_ONLY mode: mutating request is not allowed.";
+            }
+            if (Boolean.TRUE.equals(testCase.getRequiresWrite())) {
+                return "Skipped in READ_ONLY mode: mutating request (requiresWrite) is not allowed.";
+            }
+        }
+
+        // B. Also block unsafe positive GET-by-ID cases when they rely on fake hardcoded path data.
+        if (method == com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET && 
+            testCase.getCaseType() == com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.POSITIVE) {
+            
+            String path = input.getRequestPath();
+            if (path != null) {
+                String upperPath = path.toUpperCase();
+                if (upperPath.contains("CUSTOMER_ABC_123") ||
+                    upperPath.contains("UNKNOWN_") ||
+                    upperPath.contains("SAMPLE_") ||
+                    upperPath.contains("TEST_") ||
+                    upperPath.contains("FAKE_") ||
+                    upperPath.contains("DUMMY_")) {
+                    return "Skipped: positive path-variable test requires real test data.";
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private void saveSkippedResult(UUID itemId, String reason) {
+        HttpActualResponseDto skipResponse = HttpActualResponseDto.builder()
+                .statusCode(0)
+                .responseBody(null)
+                .responseTimeMs(0L)
+                .errorMessage(reason)
+                .build();
+
+        transactionTemplate.executeWithoutResult(status -> {
+            TestRunItem item = testRunItemRepository.findById(itemId)
+                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+
+            TestResult rawTestResult = testResultService.saveRawTestResult(item, skipResponse);
+            rawTestResult.setResultStatus(ResultStatus.SKIPPED);
+            rawTestResult.setBlockedReason(reason);
+            testResultRepository.save(rawTestResult);
+        });
     }
 }

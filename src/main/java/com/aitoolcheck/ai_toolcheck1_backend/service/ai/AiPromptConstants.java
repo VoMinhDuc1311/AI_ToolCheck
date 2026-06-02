@@ -157,7 +157,10 @@ public class AiPromptConstants {
          }
 
          # CRITICAL RULE (URL & PATH VARIABLES)
-         If the <API_Endpoint_Details> indicates a Path with variables (e.g., /api/orders/{orderId}), you MUST provide the final reconstructed URL in the "url" field (e.g., /api/orders/123) AND also list it in the "inputs" array with "param_in": "PATH".
+          1. If the <API_Endpoint_Details> indicates a Path with variables (e.g., /api/orders/{orderId}), you MUST provide the final reconstructed URL in the "url" field (e.g., /api/orders/UNKNOWN_ORDER_ID) AND also list it in the "inputs" array with "param_in": "PATH".
+          2. DO NOT generate positive (Happy Path 200/201) test cases for path-variable endpoints using fake, hardcoded IDs (e.g., /api/customers/CUSTOMER_ABC_123 expected status 200).
+          3. Instead, if an endpoint requires an existing resource ID and no seed, setup, or runtime variable context is available, you MUST generate a negative not-found case (e.g., GET /api/customers/UNKNOWN_CUSTOMER_ID with expected status 404).
+          4. Positive path-variable cases are only allowed if the values come from real provided test data or dynamic setup variables. Since the system does not support runtime variable/setup chains, prefer negative 404 test scenarios for generated AI cases requiring resource IDs.
 
          # CRITICAL RULE (ANTI-HALLUCINATION)
          CRITICAL RULE: You MUST output ONLY a valid JSON object. Do NOT wrap the output in markdown code blocks. Do NOT add any explanation. ONLY RETURN JSON.
