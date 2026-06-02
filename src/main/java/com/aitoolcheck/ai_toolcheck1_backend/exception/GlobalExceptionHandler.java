@@ -25,207 +25,191 @@ import java.util.List;
 
 @RestControllerAdvice
 public class GlobalExceptionHandler {
-    @ExceptionHandler(ResourceNotFoundException.class)
-    public ResponseEntity<ApiErrorResponse> handleResourceNotFound(
-            ResourceNotFoundException ex, HttpServletRequest request) {
+        @ExceptionHandler(ResourceNotFoundException.class)
+        public ResponseEntity<ApiErrorResponse> handleResourceNotFound(
+                        ResourceNotFoundException ex, HttpServletRequest request) {
 
-        return build(HttpStatus.NOT_FOUND, "Not Found", ex.getMessage(), null, request);
-    }
-
-    @ExceptionHandler(BadRequestException.class)
-    public ResponseEntity<ApiErrorResponse> handleBadRequest(
-            BadRequestException ex, HttpServletRequest request) {
-
-        return build(HttpStatus.BAD_REQUEST, "Bad Request", ex.getMessage(), null, request);
-    }
-
-    @ExceptionHandler(UnauthorizedException.class)
-    public ResponseEntity<ApiErrorResponse> handleUnauthorized(
-            UnauthorizedException ex, HttpServletRequest request) {
-
-        return build(HttpStatus.UNAUTHORIZED, "Unauthorized", ex.getMessage(), null, request);
-    }
-
-    @ExceptionHandler(ForbiddenException.class)
-    public ResponseEntity<ApiErrorResponse> handleForbidden(
-            ForbiddenException ex, HttpServletRequest request) {
-
-        return build(HttpStatus.FORBIDDEN, "Forbidden", ex.getMessage(), null, request);
-    }
-
-
-
-
-    @ExceptionHandler(MethodArgumentNotValidException.class)
-    public ResponseEntity<ApiErrorResponse> handleMethodArgumentNotValid(
-            MethodArgumentNotValidException ex, HttpServletRequest request) {
-
-        List<String> details = ex.getBindingResult().getFieldErrors().stream()
-                .map((FieldError fe) -> fe.getField() + ": " + fe.getDefaultMessage())
-                .toList();
-
-        return build(HttpStatus.BAD_REQUEST, "Bad Request", "Validation failed", details, request);
-    }
-
-
-    @ExceptionHandler(ConstraintViolationException.class)
-    public ResponseEntity<ApiErrorResponse> handleConstraintViolation(
-            ConstraintViolationException ex, HttpServletRequest request) {
-
-        List<String> details = ex.getConstraintViolations().stream()
-                .map(cv -> cv.getPropertyPath() + ": " + cv.getMessage())
-                .toList();
-
-        return build(HttpStatus.BAD_REQUEST, "Bad Request", "Constraint violation", details, request);
-    }
-
-
-
-    @ExceptionHandler(HttpMessageNotReadableException.class)
-    public ResponseEntity<ApiErrorResponse> handleHttpMessageNotReadable(
-            HttpMessageNotReadableException ex, HttpServletRequest request) {
-
-        String detail = null;
-        Throwable cause = ex.getMostSpecificCause();
-        if (cause != null && cause != ex) {
-            String causeMsg = cause.getMessage();
-            // Keep detail concise – truncate at newline if present
-            if (causeMsg != null) {
-                int newline = causeMsg.indexOf('\n');
-                detail = (newline > 0) ? causeMsg.substring(0, newline).strip() : causeMsg.strip();
-            }
+                return build(HttpStatus.NOT_FOUND, "Not Found", ex.getMessage(), null, request);
         }
 
-        List<String> details = (detail != null) ? List.of(detail) : null;
-        return build(HttpStatus.BAD_REQUEST, "Bad Request",
-                "Malformed JSON request or invalid field value", details, request);
-    }
+        @ExceptionHandler(BadRequestException.class)
+        public ResponseEntity<ApiErrorResponse> handleBadRequest(
+                        BadRequestException ex, HttpServletRequest request) {
 
+                return build(HttpStatus.BAD_REQUEST, "Bad Request", ex.getMessage(), null, request);
+        }
 
-    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
-    public ResponseEntity<ApiErrorResponse> handleMethodArgumentTypeMismatch(
-            MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
+        @ExceptionHandler(UnauthorizedException.class)
+        public ResponseEntity<ApiErrorResponse> handleUnauthorized(
+                        UnauthorizedException ex, HttpServletRequest request) {
 
-        String expectedType = (ex.getRequiredType() != null)
-                ? ex.getRequiredType().getSimpleName()
-                : "unknown";
+                return build(HttpStatus.UNAUTHORIZED, "Unauthorized", ex.getMessage(), null, request);
+        }
 
-        String detail = String.format("parameter '%s' with value '%s' could not be converted to %s",
-                ex.getName(), ex.getValue(), expectedType);
+        @ExceptionHandler(ForbiddenException.class)
+        public ResponseEntity<ApiErrorResponse> handleForbidden(
+                        ForbiddenException ex, HttpServletRequest request) {
 
-        return build(HttpStatus.BAD_REQUEST, "Bad Request",
-                "Invalid request parameter type", List.of(detail), request);
-    }
+                return build(HttpStatus.FORBIDDEN, "Forbidden", ex.getMessage(), null, request);
+        }
 
+        @ExceptionHandler(MethodArgumentNotValidException.class)
+        public ResponseEntity<ApiErrorResponse> handleMethodArgumentNotValid(
+                        MethodArgumentNotValidException ex, HttpServletRequest request) {
 
-    @ExceptionHandler(MissingServletRequestParameterException.class)
-    public ResponseEntity<ApiErrorResponse> handleMissingServletRequestParameter(
-            MissingServletRequestParameterException ex, HttpServletRequest request) {
+                List<String> details = ex.getBindingResult().getFieldErrors().stream()
+                                .map((FieldError fe) -> fe.getField() + ": " + fe.getDefaultMessage())
+                                .toList();
 
-        String detail = String.format("required parameter '%s' of type '%s' is missing",
-                ex.getParameterName(), ex.getParameterType());
+                return build(HttpStatus.BAD_REQUEST, "Bad Request", "Validation failed", details, request);
+        }
 
-        return build(HttpStatus.BAD_REQUEST, "Bad Request",
-                "Missing required request parameter", List.of(detail), request);
-    }
+        @ExceptionHandler(ConstraintViolationException.class)
+        public ResponseEntity<ApiErrorResponse> handleConstraintViolation(
+                        ConstraintViolationException ex, HttpServletRequest request) {
 
+                List<String> details = ex.getConstraintViolations().stream()
+                                .map(cv -> cv.getPropertyPath() + ": " + cv.getMessage())
+                                .toList();
 
-    @ExceptionHandler(MissingRequestHeaderException.class)
-    public ResponseEntity<ApiErrorResponse> handleMissingRequestHeader(
-            MissingRequestHeaderException ex, HttpServletRequest request) {
+                return build(HttpStatus.BAD_REQUEST, "Bad Request", "Constraint violation", details, request);
+        }
 
-        String detail = String.format("required header '%s' is missing", ex.getHeaderName());
+        @ExceptionHandler(HttpMessageNotReadableException.class)
+        public ResponseEntity<ApiErrorResponse> handleHttpMessageNotReadable(
+                        HttpMessageNotReadableException ex, HttpServletRequest request) {
 
-        return build(HttpStatus.BAD_REQUEST, "Bad Request",
-                "Missing required request header", List.of(detail), request);
-    }
+                String detail = null;
+                Throwable cause = ex.getMostSpecificCause();
+                if (cause != null && cause != ex) {
+                        String causeMsg = cause.getMessage();
+                        // Keep detail concise – truncate at newline if present
+                        if (causeMsg != null) {
+                                int newline = causeMsg.indexOf('\n');
+                                detail = (newline > 0) ? causeMsg.substring(0, newline).strip() : causeMsg.strip();
+                        }
+                }
 
+                List<String> details = (detail != null) ? List.of(detail) : null;
+                return build(HttpStatus.BAD_REQUEST, "Bad Request",
+                                "Malformed JSON request or invalid field value", details, request);
+        }
 
-    @ExceptionHandler(ServletRequestBindingException.class)
-    public ResponseEntity<ApiErrorResponse> handleServletRequestBinding(
-            ServletRequestBindingException ex, HttpServletRequest request) {
+        @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+        public ResponseEntity<ApiErrorResponse> handleMethodArgumentTypeMismatch(
+                        MethodArgumentTypeMismatchException ex, HttpServletRequest request) {
 
-        return build(HttpStatus.BAD_REQUEST, "Bad Request",
-                ex.getMessage(), null, request);
-    }
+                String expectedType = (ex.getRequiredType() != null)
+                                ? ex.getRequiredType().getSimpleName()
+                                : "unknown";
 
+                String detail = String.format("parameter '%s' with value '%s' could not be converted to %s",
+                                ex.getName(), ex.getValue(), expectedType);
 
+                return build(HttpStatus.BAD_REQUEST, "Bad Request",
+                                "Invalid request parameter type", List.of(detail), request);
+        }
 
-    @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
-    public ResponseEntity<ApiErrorResponse> handleMethodNotSupported(
-            HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
+        @ExceptionHandler(MissingServletRequestParameterException.class)
+        public ResponseEntity<ApiErrorResponse> handleMissingServletRequestParameter(
+                        MissingServletRequestParameterException ex, HttpServletRequest request) {
 
-        return build(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed",
-                ex.getMessage(), null, request);
-    }
+                String detail = String.format("required parameter '%s' of type '%s' is missing",
+                                ex.getParameterName(), ex.getParameterType());
 
-    @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
-    public ResponseEntity<ApiErrorResponse> handleMediaTypeNotSupported(
-            HttpMediaTypeNotSupportedException ex, HttpServletRequest request) {
+                return build(HttpStatus.BAD_REQUEST, "Bad Request",
+                                "Missing required request parameter", List.of(detail), request);
+        }
 
-        return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported Media Type",
-                ex.getMessage(), null, request);
-    }
+        @ExceptionHandler(MissingRequestHeaderException.class)
+        public ResponseEntity<ApiErrorResponse> handleMissingRequestHeader(
+                        MissingRequestHeaderException ex, HttpServletRequest request) {
 
-    @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
-    public ResponseEntity<ApiErrorResponse> handleMediaTypeNotAcceptable(
-            HttpMediaTypeNotAcceptableException ex, HttpServletRequest request) {
+                String detail = String.format("required header '%s' is missing", ex.getHeaderName());
 
-        return build(HttpStatus.NOT_ACCEPTABLE, "Not Acceptable",
-                ex.getMessage(), null, request);
-    }
+                return build(HttpStatus.BAD_REQUEST, "Bad Request",
+                                "Missing required request header", List.of(detail), request);
+        }
 
-    @ExceptionHandler(DataIntegrityViolationException.class)
-    public ResponseEntity<ApiErrorResponse> handleDataIntegrityViolation(
-            DataIntegrityViolationException ex, HttpServletRequest request) {
+        @ExceptionHandler(ServletRequestBindingException.class)
+        public ResponseEntity<ApiErrorResponse> handleServletRequestBinding(
+                        ServletRequestBindingException ex, HttpServletRequest request) {
 
-        return build(HttpStatus.CONFLICT, "Conflict",
-                "Re-upload failed because existing generated data depends on previous source metadata. Please retry after metadata cleanup is completed.",
-                null, request);
-    }
+                return build(HttpStatus.BAD_REQUEST, "Bad Request",
+                                ex.getMessage(), null, request);
+        }
 
+        @ExceptionHandler(HttpRequestMethodNotSupportedException.class)
+        public ResponseEntity<ApiErrorResponse> handleMethodNotSupported(
+                        HttpRequestMethodNotSupportedException ex, HttpServletRequest request) {
 
-    @ExceptionHandler(NoHandlerFoundException.class)
-    public ResponseEntity<ApiErrorResponse> handleNoHandlerFound(
-            NoHandlerFoundException ex, HttpServletRequest request) {
+                return build(HttpStatus.METHOD_NOT_ALLOWED, "Method Not Allowed",
+                                ex.getMessage(), null, request);
+        }
 
-        return build(HttpStatus.NOT_FOUND, "Not Found",
-                ex.getMessage(), null, request);
-    }
+        @ExceptionHandler(HttpMediaTypeNotSupportedException.class)
+        public ResponseEntity<ApiErrorResponse> handleMediaTypeNotSupported(
+                        HttpMediaTypeNotSupportedException ex, HttpServletRequest request) {
 
-    @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
-    public ResponseEntity<ApiErrorResponse> handleNoResourceFound(
-            org.springframework.web.servlet.resource.NoResourceFoundException ex, HttpServletRequest request) {
+                return build(HttpStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported Media Type",
+                                ex.getMessage(), null, request);
+        }
 
-        return build(HttpStatus.NOT_FOUND, "Not Found",
-                "Endpoint or resource not found: " + ex.getResourcePath(), null, request);
-    }
+        @ExceptionHandler(HttpMediaTypeNotAcceptableException.class)
+        public ResponseEntity<ApiErrorResponse> handleMediaTypeNotAcceptable(
+                        HttpMediaTypeNotAcceptableException ex, HttpServletRequest request) {
 
+                return build(HttpStatus.NOT_ACCEPTABLE, "Not Acceptable",
+                                ex.getMessage(), null, request);
+        }
 
+        @ExceptionHandler(DataIntegrityViolationException.class)
+        public ResponseEntity<ApiErrorResponse> handleDataIntegrityViolation(
+                        DataIntegrityViolationException ex, HttpServletRequest request) {
 
-    @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiErrorResponse> handleGenericException(
-            Exception ex, HttpServletRequest request) {
+                return build(HttpStatus.CONFLICT, "Conflict",
+                                "Operation failed due to a data integrity constraint. Please ensure all dependent data is resolved before retrying.",
+                                null, request);
+        }
 
-        return build(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error",
-                ex.getMessage(), null, request);
-    }
+        @ExceptionHandler(NoHandlerFoundException.class)
+        public ResponseEntity<ApiErrorResponse> handleNoHandlerFound(
+                        NoHandlerFoundException ex, HttpServletRequest request) {
 
+                return build(HttpStatus.NOT_FOUND, "Not Found",
+                                ex.getMessage(), null, request);
+        }
 
+        @ExceptionHandler(org.springframework.web.servlet.resource.NoResourceFoundException.class)
+        public ResponseEntity<ApiErrorResponse> handleNoResourceFound(
+                        org.springframework.web.servlet.resource.NoResourceFoundException ex,
+                        HttpServletRequest request) {
 
-    private ResponseEntity<ApiErrorResponse> build(
-            HttpStatus status, String error, String message,
-            List<String> details, HttpServletRequest request) {
+                return build(HttpStatus.NOT_FOUND, "Not Found",
+                                "Endpoint or resource not found: " + ex.getResourcePath(), null, request);
+        }
 
-        ApiErrorResponse body = ApiErrorResponse.builder()
-                .timestamp(LocalDateTime.now())
-                .status(status.value())
-                .error(error)
-                .message(message)
-                .path(request.getRequestURI())
-                .details(details)
-                .build();
+        @ExceptionHandler(Exception.class)
+        public ResponseEntity<ApiErrorResponse> handleGenericException(
+                        Exception ex, HttpServletRequest request) {
 
-        return ResponseEntity.status(status).body(body);
-    }
+                return build(HttpStatus.INTERNAL_SERVER_ERROR, "Internal Server Error",
+                                ex.getMessage(), null, request);
+        }
+
+        private ResponseEntity<ApiErrorResponse> build(
+                        HttpStatus status, String error, String message,
+                        List<String> details, HttpServletRequest request) {
+
+                ApiErrorResponse body = ApiErrorResponse.builder()
+                                .timestamp(LocalDateTime.now())
+                                .status(status.value())
+                                .error(error)
+                                .message(message)
+                                .path(request.getRequestURI())
+                                .details(details)
+                                .build();
+
+                return ResponseEntity.status(status).body(body);
+        }
 }
