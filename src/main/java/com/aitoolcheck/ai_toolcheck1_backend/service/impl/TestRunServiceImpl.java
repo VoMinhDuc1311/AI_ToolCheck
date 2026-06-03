@@ -279,10 +279,15 @@ public class TestRunServiceImpl implements TestRunService {
         TestRun testRun = testRunRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
 
+        List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
+
+        if (!performPreflightCheck(testRun, items)) {
+            log.warn("Preflight check failed for TestRun id: {}", id);
+            return;
+        }
+
         testRun.setRunStatus(RunStatus.RUNNING);
         testRunRepository.save(testRun);
-
-        List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
 
         boolean anyFailed = false;
 
@@ -369,6 +374,10 @@ public class TestRunServiceImpl implements TestRunService {
             List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
             if (items.isEmpty()) {
                 throw new BadRequestException("TestRun has no items to execute");
+            }
+
+            if (!performPreflightCheck(testRun, items)) {
+                throw new BadRequestException("Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.");
             }
 
             testRun.setRunStatus(RunStatus.RUNNING);
@@ -766,6 +775,47 @@ public class TestRunServiceImpl implements TestRunService {
     private String truncateSafe(String value, int maxLength) {
         if (value == null) return null;
         return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
+    }
+
+    private boolean performPreflightCheck(TestRun testRun, List<TestRunItem> items) {
+        List<TestRunItem> safeItems = items.stream()
+                .filter(item -> {
+                    TestCase testCase = item.getTestCase();
+                    if (testCase == null || testCase.getTestCaseInput() == null) return false;
+                    String method = testCase.getTestCaseInput().getHttpMethod().name();
+                    return "GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method);
+                })
+                .toList();
+
+        if (safeItems.isEmpty()) {
+            return true;
+        }
+
+        boolean all404 = true;
+        for (TestRunItem item : safeItems) {
+            TestCaseInput input = item.getTestCase().getTestCaseInput();
+            try {
+                PreparedHttpRequestResponse prepared = testRequestBuilder.build(testRun.getBaseUrl(), input);
+                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
+                if (executed.statusCode() != 404) {
+                    all404 = false;
+                    break;
+                }
+            } catch (Exception e) {
+                all404 = false;
+                break;
+            }
+        }
+
+        if (all404) {
+            String error = "Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.";
+            testRun.setRunStatus(RunStatus.FAILED);
+            String desc = testRun.getDescription();
+            testRun.setDescription(desc == null ? error : desc + "\n\nPreflight Error: " + error);
+            testRunRepository.save(testRun);
+            return false;
+        }
+        return true;
     }
 
     private void publishTestRunNotification(TestRun testRun) {

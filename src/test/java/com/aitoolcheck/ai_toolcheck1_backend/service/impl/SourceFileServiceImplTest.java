@@ -142,6 +142,44 @@ class SourceFileServiceImplTest {
     }
 
     @Test
+    void uploadZip_preservesPomXml() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        stubSuccessfulImport(projectId);
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "source.zip",
+                "application/zip",
+                zipWithEntry("pom.xml", "<project></project>")
+        );
+
+        service.uploadZip(projectId, file);
+
+        ArgumentCaptor<SourceFile> captor = ArgumentCaptor.forClass(SourceFile.class);
+        verify(sourceFileRepository).save(captor.capture());
+        assertEquals("pom.xml", captor.getValue().getFilePath());
+    }
+
+    @Test
+    void uploadZip_preservesApplicationYaml() throws Exception {
+        UUID projectId = UUID.randomUUID();
+        stubSuccessfulImport(projectId);
+
+        MockMultipartFile file = new MockMultipartFile(
+                "file",
+                "source.zip",
+                "application/zip",
+                zipWithEntry("src/main/resources/application.yml", "server: port: 8080")
+        );
+
+        service.uploadZip(projectId, file);
+
+        ArgumentCaptor<SourceFile> captor = ArgumentCaptor.forClass(SourceFile.class);
+        verify(sourceFileRepository).save(captor.capture());
+        assertEquals("src/main/resources/application.yml", captor.getValue().getFilePath());
+    }
+
+    @Test
     void zipSlipEntryIsRejected() throws Exception {
         UUID projectId = UUID.randomUUID();
         SourceProject project = new SourceProject();

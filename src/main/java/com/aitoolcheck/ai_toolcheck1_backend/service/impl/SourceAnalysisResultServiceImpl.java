@@ -61,6 +61,7 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
         }
 
         List<SourceFile> analyzableFiles = sourceFiles.stream()
+                .filter(file -> file.getFileName() != null && file.getFileName().toLowerCase().endsWith(".java"))
                 .filter(file -> file.getSourceContent() != null && !file.getSourceContent().isBlank())
                 .toList();
 
