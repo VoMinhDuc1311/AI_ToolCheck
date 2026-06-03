@@ -52,6 +52,7 @@ ai:
     # 90s: enough for qwen2.5-coder:7b with LegacySourceContextReducerService reduced input.
     # Override via env OLLAMA_READ_TIMEOUT_SECONDS if running a larger model.
     read-timeout-seconds: ${OLLAMA_READ_TIMEOUT_SECONDS:90}
+    enrich-api-doc-timeout-seconds: ${OLLAMA_ENRICH_API_DOC_TIMEOUT_SECONDS:180}
 
 logging:
   level:

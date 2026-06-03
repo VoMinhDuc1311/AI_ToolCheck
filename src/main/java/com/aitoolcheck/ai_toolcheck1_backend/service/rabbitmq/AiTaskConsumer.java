@@ -546,7 +546,7 @@ public class AiTaskConsumer {
                     log.warn("[LegacyCodeReader][RuleFallback] No fallback metadata for file {}. Job marked FAILED.",
                             sourceFile.getFilePath());
                     throw new AiProviderFailureException(
-                            "AI_PROVIDER_FAILED",
+                            AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED,
                             noFallbackMessage,
                             noFallbackMessage,
                             ollamaEx);
@@ -811,7 +811,7 @@ public class AiTaskConsumer {
     private String buildProviderFailureMessage(Throwable geminiFailure, Throwable ollamaFailure) {
         String geminiCode = aiProviderErrorClassifier.classify(geminiFailure);
         String ollamaCode = aiProviderErrorClassifier.classify(ollamaFailure);
-        return String.format("[AI_PROVIDER_FAILED] Gemini: [%s] %s | Ollama: [%s] %s",
+        return String.format("[" + AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED + "] Gemini: [%s] %s | Ollama: [%s] %s",
                 geminiCode, abbreviate(rootMessage(geminiFailure), 120),
                 ollamaCode, abbreviate(rootMessage(ollamaFailure), 120));
     }

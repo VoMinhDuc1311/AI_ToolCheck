@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.req.GeminiRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureException;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -18,9 +19,11 @@ import reactor.core.publisher.Mono;
 import reactor.util.retry.Retry;
 
 import java.time.Duration;
+import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -31,6 +34,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
         private final WebClient webClient;
         private final GeminiProperties geminiProperties;
         private final ObjectMapper objectMapper;
+        private final AtomicReference<Instant> cooldownUntil = new AtomicReference<>(Instant.EPOCH);
 
         // Paste toàn bộ System Prompt siêu xịn của bạn vào đây
         private static final String LEGACY_EXTRACTOR_PROMPT = """
@@ -215,6 +219,11 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
     // =========================================================================================
     @Override
     public Mono<String> sendPrompt(String promptText) {
+        AiProviderFailureException cooldownFailure = currentCooldownFailure();
+        if (cooldownFailure != null) {
+                return Mono.error(cooldownFailure);
+        }
+
         // Build DTO Request dựa vào tham số promptText
         GeminiRequest request = GeminiRequest.builder()
                         .contents(List.of(
@@ -238,10 +247,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                                         clientResponse -> {
                                                 log.warn("Rate limit bị chạm (429 - TOO MANY REQUESTS) từ Gemini API");
                                                 return clientResponse.bodyToMono(String.class)
-                                                                .flatMap(errorBody -> Mono.error(
-                                                                                new RuntimeException(
-                                                                                                "Rate Limit Exceeded (429): "
-                                                                                                                + errorBody)));
+                                                                .flatMap(errorBody -> Mono.error(buildRateLimitException(errorBody)));
                                         })
                         .onStatus(HttpStatusCode::is5xxServerError, clientResponse -> {
                                 log.error("Server error từ Gemini API: {}", clientResponse.statusCode());
@@ -262,11 +268,11 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                         .bodyToMono(GeminiResponse.class)
                         .map(response -> {
                                 String extractedText = response.extractText();
-                                if (extractedText == null) {
+                                if (extractedText == null || extractedText.isBlank()) {
                                         log.warn("Không trích xuất được text từ phản hồi của Gemini: {}",
                                                         response);
-                                        throw new RuntimeException(
-                                                        "Failed to extract text from Gemini API response");
+                                        throw AiProviderFailureException.emptyResponse(
+                                                        "Gemini", geminiProperties.getModel(), null);
                                 }
                                 return extractedText;
                         })
@@ -308,6 +314,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
     @Override
     public com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse sendFullPrompt(String prompt) {
         try {
+            throwIfCoolingDown();
             log.info("[GeminiClient] sendFullPrompt – độ dài: {} ký tự", prompt.length());
 
             Map<String, Object> payload = new java.util.HashMap<>();
@@ -328,7 +335,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                     .retrieve()
                     .onStatus(status -> status.isSameCodeAs(HttpStatus.TOO_MANY_REQUESTS),
                             resp -> resp.bodyToMono(String.class)
-                                    .flatMap(err -> Mono.error(new RuntimeException("Rate Limit 429: " + err))))
+                                    .flatMap(err -> Mono.error(buildRateLimitException(err))))
                     .onStatus(HttpStatusCode::isError, resp -> resp.bodyToMono(String.class)
                             .flatMap(err -> Mono.error(new RuntimeException("Gemini API Error: " + err))))
                     .bodyToMono(String.class)
@@ -362,6 +369,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
     @Override
     public GeminiResponse getFullAiResponse(String sourceCode) {
         try {
+            throwIfCoolingDown();
             log.info("[GeminiClient] Bắt đầu gọi Gemini API – độ dài source: {} ký tự", sourceCode.length());
 
             Map<String, Object> payload = buildJsonModePayload(sourceCode);
@@ -374,7 +382,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                     .retrieve()
                     .onStatus(status -> status.isSameCodeAs(HttpStatus.TOO_MANY_REQUESTS),
                             resp -> resp.bodyToMono(String.class)
-                                    .flatMap(err -> Mono.error(new RuntimeException("Rate Limit 429: " + err))))
+                            .flatMap(err -> Mono.error(buildRateLimitException(err))))
                     .onStatus(HttpStatusCode::isError, resp -> resp.bodyToMono(String.class)
                             .flatMap(err -> Mono.error(new RuntimeException("Gemini API Error: " + err))))
                     .bodyToMono(String.class)
@@ -488,7 +496,73 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
                 }
                 return rawText;
         }
+        AiProviderFailureException buildRateLimitException(String errorBody) {
+                Integer retryAfterSeconds = extractRetryAfterSeconds(errorBody);
+                if (retryAfterSeconds != null && retryAfterSeconds > 0) {
+                        cooldownUntil.set(Instant.now().plusSeconds(retryAfterSeconds));
+                }
+                return AiProviderFailureException.rateLimited(
+                                "Gemini", geminiProperties.getModel(), retryAfterSeconds, null);
+        }
+
+        private Integer extractRetryAfterSeconds(String errorBody) {
+                if (errorBody == null || errorBody.isBlank()) {
+                        return null;
+                }
+                try {
+                        JsonNode root = objectMapper.readTree(errorBody);
+                        JsonNode error = root.path("error");
+                        boolean isRateLimited = error.path("code").asInt() == 429
+                                        || "RESOURCE_EXHAUSTED".equals(error.path("status").asText());
+                        if (!isRateLimited) {
+                                return null;
+                        }
+                        for (JsonNode detail : error.path("details")) {
+                                if ("type.googleapis.com/google.rpc.RetryInfo".equals(detail.path("@type").asText())) {
+                                        return parseRetryDelaySeconds(detail.path("retryDelay").asText());
+                                }
+                        }
+                } catch (Exception e) {
+                        log.warn("[GeminiClient] Could not parse 429 RetryInfo: {}", e.getMessage());
+                }
+                return null;
+        }
+
+        private Integer parseRetryDelaySeconds(String retryDelay) {
+                if (retryDelay == null || retryDelay.isBlank()) {
+                        return null;
+                }
+                Matcher matcher = Pattern.compile("^(\\d+)(?:\\.\\d+)?s$").matcher(retryDelay.trim());
+                if (!matcher.matches()) {
+                        return null;
+                }
+                return Integer.parseInt(matcher.group(1));
+        }
+
+        private AiProviderFailureException currentCooldownFailure() {
+                Instant until = cooldownUntil.get();
+                Instant now = Instant.now();
+                if (until == null || !until.isAfter(now)) {
+                        return null;
+                }
+                long seconds = Math.max(1, Duration.between(now, until).toSeconds());
+                return AiProviderFailureException.rateLimited(
+                                "Gemini", geminiProperties.getModel(), Math.toIntExact(seconds), null);
+        }
+
+        private void throwIfCoolingDown() {
+                AiProviderFailureException cooldownFailure = currentCooldownFailure();
+                if (cooldownFailure != null) {
+                        throw cooldownFailure;
+                }
+        }
+
         private boolean isRetryableGeminiFailure(Throwable throwable) {
+                Throwable unwrapped = reactor.core.Exceptions.unwrap(throwable);
+                if (unwrapped instanceof AiProviderFailureException providerFailure
+                                && AiProviderFailureException.LLM_RATE_LIMITED.equals(providerFailure.getErrorCode())) {
+                        return false;
+                }
                 String message = throwable == null || throwable.getMessage() == null
                                 ? ""
                                 : throwable.getMessage().toLowerCase(java.util.Locale.ROOT);

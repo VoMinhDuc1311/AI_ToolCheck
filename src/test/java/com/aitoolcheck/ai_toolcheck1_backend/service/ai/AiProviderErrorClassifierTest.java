@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.ai;
 
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -21,7 +22,7 @@ class AiProviderErrorClassifierTest {
     void timeoutException_classifiesAsTimeoutNotDtoValidation() {
         String code = classifier.classify(new RuntimeException(new TimeoutException("Ollama timeout after 90s")));
 
-        assertEquals("AI_TIMEOUT", code);
+        assertEquals(AiProviderFailureException.LLM_TIMEOUT, code);
         assertNotEquals("DTO_VALIDATION_FAILED", code);
     }
 
@@ -29,18 +30,18 @@ class AiProviderErrorClassifierTest {
     void retryExhausted_classifiesAsProviderFailureNotDtoValidation() {
         String code = classifier.classify("Retries exhausted: 4/4");
 
-        assertEquals("AI_PROVIDER_FAILED", code);
+        assertEquals(AiProviderFailureException.LLM_PROVIDER_UNAVAILABLE, code);
         assertNotEquals("DTO_VALIDATION_FAILED", code);
     }
 
     @Test
     void quotaText_classifiesAsQuotaExceeded() {
-        assertEquals("AI_QUOTA_EXCEEDED", classifier.classify("RESOURCE_EXHAUSTED quota exceeded"));
+        assertEquals(AiProviderFailureException.LLM_RATE_LIMITED, classifier.classify("RESOURCE_EXHAUSTED quota exceeded"));
     }
 
     @Test
     void rateLimitText_classifiesAsRateLimited() {
-        assertEquals("AI_RATE_LIMITED", classifier.classify("429 too many requests rate limit"));
+        assertEquals(AiProviderFailureException.LLM_RATE_LIMITED, classifier.classify("429 too many requests rate limit"));
     }
 
     @Test

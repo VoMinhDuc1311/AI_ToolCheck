@@ -1,25 +1,35 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
-import com.aitoolcheck.ai_toolcheck1_backend.config.properties.OllamaProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
-import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
-import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType;
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.OllamaProperties;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureException;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
-import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
-import com.aitoolcheck.ai_toolcheck1_backend.service.OllamaApiClientService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.OllamaApiClientService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
+import java.util.function.Supplier;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class AiModelRouterServiceImpl implements AiModelRouterService {
+
+    private static final String OLLAMA = "Ollama";
+    private static final String GEMINI = "Gemini";
 
     private final OllamaApiClientService ollamaApiClientService;
     private final GeminiApiClientService geminiApiClientService;
@@ -31,149 +41,310 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
 
     @Override
     public String executeWithFallback(String prompt) {
-        String optimizedPrompt = aiOptimizationProperties.isEnabled() ?
-                aiPayloadOptimizerService.truncateIfNeeded(prompt, aiOptimizationProperties.getMaxPromptChars()) : prompt;
+        String optimizedPrompt = optimizePrompt(prompt);
+        List<AiProviderFailureException> failures = new ArrayList<>();
+        Set<String> attempted = new HashSet<>();
 
         boolean tryOllama = true;
         if (aiOptimizationProperties.isEnabled() && aiOptimizationProperties.getRouter().isFailFastLocalProvider()) {
             if (!ollamaApiClientService.isHealthy()) {
-                log.warn("[Router] Ollama health check failed. Bỏ qua Ollama, chuyển thẳng sang Gemini.");
+                log.warn("[Router] Ollama health check failed. Skipping local provider.");
+                failures.add(AiProviderFailureException.unavailable(
+                        OLLAMA, ollamaProperties.getPrimaryModel(), "health check failed", null));
                 tryOllama = false;
             }
         }
 
         if (tryOllama) {
-            // ─── TIER 1: Ollama Primary — qwen3-coder:30b ────────────────────────
-            try {
-                log.info("[Router][Tier1] Đang gọi Ollama model: {} — prompt: {} chars",
-                        ollamaProperties.getPrimaryModel(), optimizedPrompt.length());
-
-                String result = ollamaApiClientService.generateTextWithModel(
-                        optimizedPrompt, ollamaProperties.getPrimaryModel());
-
-                log.info("[Router][Tier1] Thành công với model: {}", ollamaProperties.getPrimaryModel());
-                return result;
-
-            } catch (Exception tier1Ex) {
-                log.warn("[Router][Tier1] Model {} thất bại: {}. Chuyển sang Tier 2...",
-                        ollamaProperties.getPrimaryModel(), tier1Ex.getMessage());
+            String tier1 = tryOllamaCandidate(
+                    "Tier1", ollamaProperties.getPrimaryModel(), optimizedPrompt, attempted, failures);
+            if (tier1 != null) {
+                return tier1;
             }
 
-            // ─── TIER 2: Ollama Fallback — qwen2.5-coder:7b ─────────────────────
-            try {
-                log.info("[Router][Tier2] Fallback sang Ollama model: {}",
-                        ollamaProperties.getFallbackModel());
-
-                String result = ollamaApiClientService.generateTextWithModel(
-                        optimizedPrompt, ollamaProperties.getFallbackModel());
-
-                log.info("[Router][Tier2] Thành công với model: {}", ollamaProperties.getFallbackModel());
-                return result;
-
-            } catch (Exception tier2Ex) {
-                log.warn("[Router][Tier2] Model {} cũng thất bại: {}. Chuyển sang Gemini Cloud (Tier 3)...",
-                        ollamaProperties.getFallbackModel(), tier2Ex.getMessage());
+            String tier2 = tryOllamaCandidate(
+                    "Tier2", ollamaProperties.getFallbackModel(), optimizedPrompt, attempted, failures);
+            if (tier2 != null) {
+                return tier2;
             }
         }
 
-        // ─── TIER 3: Google Gemini Cloud ─────────────────────────────────────
-        try {
-            log.info("[Router][Tier3] Fallback sang Gemini Cloud. Throttling 15s để tránh Rate Limit 429...");
-            Thread.sleep(15_000);
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            log.warn("[Router][Tier3] Throttling bị gián đoạn. Tiếp tục gọi Gemini...");
+        String geminiResult = tryGeminiCandidate(optimizedPrompt, attempted, failures);
+        if (geminiResult != null) {
+            return geminiResult;
         }
 
-        try {
-            log.info("[Router][Tier3] Đang gọi Gemini Cloud...");
-            String result = geminiApiClientService.generateText(optimizedPrompt);
-            log.info("[Router][Tier3] Thành công với Gemini Cloud.");
-            return result;
+        throwAllProvidersFailed(failures);
+        return null;
+    }
 
-        } catch (Exception tier3Ex) {
-            log.error("[Router][Tier3] Gemini Cloud cũng thất bại: {}", tier3Ex.getMessage());
+    @Override
+    public String executeWithFallbackForSkill(
+            String skillCode,
+            Supplier<String> geminiPromptSupplier,
+            Supplier<String> ollamaPromptSupplier,
+            Consumer<String> rawResponseValidator) {
+        if (!"enrich_api_doc".equalsIgnoreCase(skillCode)) {
+            return executeWithFallback(geminiPromptSupplier.get());
         }
 
-        // ─── ALL FAILED ───────────────────────────────────────────────────────
-        String errorMessage = "Tất cả LLM provider đều thất bại: "
-                + "Ollama(" + ollamaProperties.getPrimaryModel() + "), "
-                + "Ollama(" + ollamaProperties.getFallbackModel() + "), "
-                + "Gemini Cloud.";
-        log.error("[Router] {}", errorMessage);
+        List<AiProviderFailureException> failures = new ArrayList<>();
+        Set<String> attempted = new HashSet<>();
 
-        throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, errorMessage);
+        String geminiResult = tryGeminiCandidate(
+                "Tier1", geminiPromptSupplier.get(), attempted, failures, rawResponseValidator);
+        if (geminiResult != null) {
+            return geminiResult;
+        }
+
+        String ollamaResult = tryOllamaCandidate(
+                "Tier2",
+                ollamaProperties.getPrimaryModel(),
+                ollamaPromptSupplier.get(),
+                attempted,
+                failures,
+                rawResponseValidator,
+                ollamaProperties.getEnrichApiDocTimeoutSeconds());
+        if (ollamaResult != null) {
+            return ollamaResult;
+        }
+
+        throwAllProvidersFailed(failures);
+        return null;
     }
 
     @Override
     public String routeAndExecute(String prompt, UUID jobId) {
-        String modelName = "Unknown";
-        
-        String optimizedPrompt = aiOptimizationProperties.isEnabled() ?
-                aiPayloadOptimizerService.truncateIfNeeded(prompt, aiOptimizationProperties.getMaxPromptChars()) : prompt;
+        String optimizedPrompt = optimizePrompt(prompt);
+        int tokenInput = optimizedPrompt.length() / 4;
+        int tokenOutput = 0;
 
-        Integer tokenInput = optimizedPrompt.length() / 4;
-        Integer tokenOutput = 0;
-        String result = null;
-
-        boolean tryOllama = true;
-        if (aiOptimizationProperties.isEnabled() && aiOptimizationProperties.getRouter().isFailFastLocalProvider()) {
-            if (!ollamaApiClientService.isHealthy()) {
-                log.warn("[Router] Ollama health check failed. Bỏ qua Ollama, chuyển thẳng sang Gemini cho jobId={}", jobId);
-                tryOllama = false;
-            }
+        String result = executeWithFallback(optimizedPrompt);
+        if (result == null || result.isBlank()) {
+            throw AiProviderFailureException.emptyResponse("LLM", "router", null);
         }
-
-        if (tryOllama) {
-            try {
-                modelName = ollamaProperties.getPrimaryModel();
-                log.info("[Router][Tier1] Đang gọi Ollama model: {}", modelName);
-                result = ollamaApiClientService.generateTextWithModel(optimizedPrompt, modelName);
-                tokenOutput = result.length() / 4;
-                log.info("[Router][Tier1] Thành công với Ollama model: {}", modelName);
-
-            } catch (Exception ex) {
-                log.warn("[Router][Tier1] Ollama thất bại: {}. Đang chuyển hướng sang Gemini...", ex.getMessage());
-                tryOllama = false;
-            }
-        }
- 
-        if (!tryOllama) {
-            try {
-                modelName = geminiProperties.getModel();
-                log.info("[Router][Tier2] Đang gọi Gemini Cloud với model: {}...", modelName);
-
-                try {
-                    Thread.sleep(15_000);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                }
-
-                com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse geminiResponse = geminiApiClientService
-                        .sendFullPrompt(optimizedPrompt);
-
-                result = geminiResponse.extractText();
-
-                if (geminiResponse.getUsageMetadata() != null) {
-                    tokenInput = geminiResponse.getUsageMetadata().getPromptTokenCount();
-                    tokenOutput = geminiResponse.getUsageMetadata().getCandidatesTokenCount();
-                }
-
-                log.info("[Router][Tier2] Thành công với Gemini Cloud.");
-
-            } catch (Exception geminiEx) {
-                log.error("[Router][Tier2] Gemini Cloud cũng thất bại: {}", geminiEx.getMessage());
-                throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "Cả Ollama và Gemini đều thất bại.");
-            }
-        }
+        tokenOutput = result.length() / 4;
 
         try {
-            aiJobLogService.markJobAsSuccess(jobId, tokenInput, tokenOutput, modelName);
-            log.info("[Router] Đã cập nhật JobLog {} thành SUCCESS", jobId);
+            aiJobLogService.markJobAsSuccess(jobId, tokenInput, tokenOutput, "router-selected");
+            log.info("[Router] Updated JobLog {} as SUCCESS", jobId);
         } catch (Exception e) {
-            log.warn("[Router] Không thể cập nhật JobLog {}: {}", jobId, e.getMessage());
+            log.warn("[Router] Could not update JobLog {}: {}", jobId, e.getMessage());
         }
 
         return result;
+    }
+
+    private String tryOllamaCandidate(
+            String tier,
+            String model,
+            String prompt,
+            Set<String> attempted,
+            List<AiProviderFailureException> failures) {
+        return tryOllamaCandidate(
+                tier, model, prompt, attempted, failures, null, ollamaProperties.getReadTimeoutSeconds());
+    }
+
+    private String tryOllamaCandidate(
+            String tier,
+            String model,
+            String prompt,
+            Set<String> attempted,
+            List<AiProviderFailureException> failures,
+            Consumer<String> rawResponseValidator,
+            int timeoutSeconds) {
+        String key = OLLAMA + "/" + model;
+        if (!attempted.add(key)) {
+            log.warn("Skipping duplicate provider candidate: {}", key);
+            return null;
+        }
+
+        try {
+            log.info("[Router][{}] Calling Ollama model={} promptChars={} timeoutSeconds={}",
+                    tier, model, prompt.length(), timeoutSeconds);
+            String result = ollamaApiClientService.generateTextWithModel(prompt, model, timeoutSeconds);
+            if (result == null || result.isBlank()) {
+                throw AiProviderFailureException.emptyResponse(OLLAMA, model, null);
+            }
+            validateRawResponse(rawResponseValidator, result, OLLAMA, model);
+            log.info("[Router][{}] Ollama model={} succeeded.", tier, model);
+            return result;
+        } catch (Exception ex) {
+            AiProviderFailureException failure = toProviderFailure(ex, OLLAMA, model, prompt.length());
+            failures.add(failure);
+            log.warn("[Router][{}] {} failed: {}", tier, key, failure.getMessage());
+            return null;
+        }
+    }
+
+    private String tryGeminiCandidate(
+            String prompt,
+            Set<String> attempted,
+            List<AiProviderFailureException> failures) {
+        return tryGeminiCandidate("Tier3", prompt, attempted, failures, null);
+    }
+
+    private String tryGeminiCandidate(
+            String tier,
+            String prompt,
+            Set<String> attempted,
+            List<AiProviderFailureException> failures,
+            Consumer<String> rawResponseValidator) {
+        String model = geminiProperties.getModel();
+        String key = GEMINI + "/" + model;
+        if (!attempted.add(key)) {
+            log.warn("Skipping duplicate provider candidate: {}", key);
+            return null;
+        }
+
+        try {
+            int throttleMs = Integer.getInteger("ai.router.geminiThrottleMs", 15_000);
+            log.info("[Router][{}] Throttling {}ms before Gemini Cloud call.", tier, throttleMs);
+            Thread.sleep(throttleMs);
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            log.warn("[Router][{}] Gemini throttle interrupted. Continuing.", tier);
+        }
+
+        try {
+            log.info("[Router][{}] Calling Gemini Cloud model={} promptChars={}", tier, model, prompt.length());
+            String result = geminiApiClientService.generateText(prompt);
+            if (result == null || result.isBlank()) {
+                throw AiProviderFailureException.emptyResponse(GEMINI, model, null);
+            }
+            validateRawResponse(rawResponseValidator, result, GEMINI, model);
+            log.info("[Router][{}] Gemini Cloud succeeded.", tier);
+            return result;
+        } catch (Exception ex) {
+            AiProviderFailureException failure = toProviderFailure(ex, GEMINI, model, prompt.length());
+            failures.add(failure);
+            log.error("[Router][{}] Gemini Cloud failed: {}", tier, failure.getMessage());
+            return null;
+        }
+    }
+
+    private void validateRawResponse(
+            Consumer<String> rawResponseValidator,
+            String rawResponse,
+            String provider,
+            String model) {
+        if (rawResponseValidator == null) {
+            return;
+        }
+        try {
+            rawResponseValidator.accept(rawResponse);
+        } catch (Exception ex) {
+            throw AiProviderFailureException.unavailable(
+                    provider, model, "raw response validation failed: " + rootMessage(ex), ex);
+        }
+    }
+
+    private String optimizePrompt(String prompt) {
+        String safePrompt = prompt == null ? "" : prompt;
+        return aiOptimizationProperties.isEnabled()
+                ? aiPayloadOptimizerService.truncateIfNeeded(safePrompt, aiOptimizationProperties.getMaxPromptChars())
+                : safePrompt;
+    }
+
+    private void throwAllProvidersFailed(List<AiProviderFailureException> failures) {
+        String summary = summarizeFailures(failures);
+        log.error("[Router] All LLM providers failed: {}", summary);
+        throw AiProviderFailureException.allProvidersFailed(summary,
+                failures.isEmpty() ? null : failures.get(failures.size() - 1));
+    }
+
+    private String summarizeFailures(List<AiProviderFailureException> failures) {
+        if (failures.isEmpty()) {
+            return "No LLM provider candidate was available.";
+        }
+        return failures.stream()
+                .map(this::summarizeFailure)
+                .distinct()
+                .reduce((left, right) -> left + "; " + right)
+                .orElse("All LLM providers failed.");
+    }
+
+    private String summarizeFailure(AiProviderFailureException failure) {
+        String provider = failure.getProvider() == null ? "LLM" : failure.getProvider();
+        String model = failure.getModel() == null ? "unknown" : failure.getModel();
+        if (AiProviderFailureException.LLM_TIMEOUT.equals(failure.getErrorCode())) {
+            Integer timeout = failure.getTimeoutSeconds();
+            return provider + " " + model + " timed out"
+                    + (timeout == null ? "" : " after " + timeout + "s");
+        }
+        if (AiProviderFailureException.LLM_RATE_LIMITED.equals(failure.getErrorCode())) {
+            Integer retryAfter = failure.getRetryAfterSeconds();
+            return provider + " " + model + " quota/rate limit exceeded"
+                    + (retryAfter == null ? "" : ", retry after " + retryAfter + "s");
+        }
+        return provider + " " + model + " failed: " + stripCode(failure.getMessage());
+    }
+
+    private AiProviderFailureException toProviderFailure(
+            Throwable throwable,
+            String provider,
+            String model,
+            int promptChars) {
+        AiProviderFailureException typed = findProviderFailure(throwable);
+        if (typed != null) {
+            return typed;
+        }
+        if (containsTimeout(throwable)) {
+            int timeoutSeconds = OLLAMA.equals(provider)
+                    ? ollamaProperties.getReadTimeoutSeconds()
+                    : 60;
+            return AiProviderFailureException.timeout(provider, model, timeoutSeconds, promptChars, throwable);
+        }
+        return AiProviderFailureException.unavailable(provider, model, rootMessage(throwable), throwable);
+    }
+
+    private AiProviderFailureException findProviderFailure(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            Throwable unwrapped = reactor.core.Exceptions.unwrap(current);
+            if (unwrapped instanceof AiProviderFailureException providerFailure) {
+                return providerFailure;
+            }
+            current = current.getCause();
+        }
+        return null;
+    }
+
+    private boolean containsTimeout(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof TimeoutException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(Locale.ROOT);
+                if (lower.contains("timeout") || lower.contains("timed out")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
+    private String rootMessage(Throwable throwable) {
+        if (throwable == null) {
+            return "unknown error";
+        }
+        Throwable current = throwable;
+        Throwable last = throwable;
+        while (current != null) {
+            last = current;
+            current = current.getCause();
+        }
+        return last.getMessage() == null ? throwable.getMessage() : last.getMessage();
+    }
+
+    private String stripCode(String message) {
+        if (message == null) {
+            return "";
+        }
+        return message.replaceFirst("^\\[[A-Z_]+] ", "");
     }
 }
