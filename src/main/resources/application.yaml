@@ -59,6 +59,7 @@ ai:
     connect-timeout-ms: 3000
     response-timeout-ms: 30000
     read-timeout-ms: 30000
+    enrich-api-doc-timeout-seconds: 180
 
   gemini:
     enabled: true

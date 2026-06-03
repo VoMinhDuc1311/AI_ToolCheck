@@ -51,4 +51,9 @@ public class OllamaProperties {
      * Large models (30B) may take up to 2 minutes for complex prompts.
      */
     private int readTimeoutSeconds = 120;
+
+    /**
+     * Longer timeout for Agent 1 document enrichment fallback prompts.
+     */
+    private int enrichApiDocTimeoutSeconds = 180;
 }

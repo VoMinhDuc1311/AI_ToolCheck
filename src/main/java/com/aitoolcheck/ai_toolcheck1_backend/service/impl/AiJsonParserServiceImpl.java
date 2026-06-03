@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDt
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureException;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -427,18 +428,14 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
     private void guardAgainstBlankInput(String rawAiResponse) {
         if (rawAiResponse == null || rawAiResponse.isBlank()) {
             log.error("[AiJsonParser] Pre-condition failed - raw AI response is null or blank.");
-            throw new AiJsonParseException(
-                    ErrorType.INVALID_JSON_SYNTAX,
-                    "Raw AI response must not be null or blank.");
+            throw AiProviderFailureException.emptyResponse("LLM", "unknown", null);
         }
     }
 
     private void guardAgainstBlankJson(String cleanJson) {
         if (cleanJson == null || cleanJson.isBlank()) {
             log.error("[AiJsonParser] Pre-condition failed - cleanJson is null or blank.");
-            throw new AiJsonParseException(
-                    ErrorType.INVALID_JSON_SYNTAX,
-                    "Clean JSON input must not be null or blank.");
+            throw AiProviderFailureException.emptyResponse("LLM", "unknown", null);
         }
     }
 
