@@ -90,6 +90,7 @@ public class TestCaseServiceImpl implements TestCaseService {
             SourceProject project = endpoint.getSourceProject();
 
             for (AiTestCaseItemDto itemDto : request.getTestCases()) {
+                sanitizeTestCaseDto(itemDto, endpoint.getHttpMethod());
 
                 // 1. Map CaseType (Defensive)
                 CaseType caseType = CaseType.POSITIVE;
@@ -766,6 +767,45 @@ public class TestCaseServiceImpl implements TestCaseService {
 
             String requestPath = requestPathArray[0];
 
+            if (apiEndpoint.getHttpMethod() == HttpMethod.GET && 
+                ("VALIDATION_ERROR".equalsIgnoreCase(dto.getCaseType()) || "CLIENT_ERROR".equalsIgnoreCase(dto.getCaseType()))) {
+                String pathPart = requestPath.contains("?") ? requestPath.substring(0, requestPath.indexOf("?")) : requestPath;
+                boolean hasSuspicious = pathPart.contains("#") || pathPart.contains(" ") || pathPart.contains("&") ||
+                                        pathPart.contains("=") || pathPart.contains("+") || pathPart.contains("%");
+                if (hasSuspicious) {
+                    boolean expects400 = false;
+                    for (com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiAssertionDto aDto : dto.getAssertions()) {
+                        if ("STATUS_CODE".equalsIgnoreCase(aDto.getAssertionType()) && "400".equals(aDto.getExpectedValue())) {
+                            expects400 = true;
+                            break;
+                        }
+                    }
+                    if (expects400) {
+                        int lastSlash = pathPart.lastIndexOf("/");
+                        if (lastSlash != -1) {
+                            String safeId = (pathPart.contains("customers") || pathPart.contains("customer")) ? "UNKNOWN_CUSTOMER_ID" : "UNKNOWN_ID";
+                            String newPathPart = pathPart.substring(0, lastSlash + 1) + safeId;
+                            requestPath = requestPath.contains("?") ? newPathPart + requestPath.substring(requestPath.indexOf("?")) : newPathPart;
+                            
+                            for (com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiAssertionDto aDto : dto.getAssertions()) {
+                                if ("STATUS_CODE".equalsIgnoreCase(aDto.getAssertionType())) {
+                                    aDto.setExpectedValue("404");
+                                }
+                                if (aDto.getTargetPath() != null && 
+                                    (aDto.getTargetPath().contains("message") || aDto.getTargetPath().contains("error"))) {
+                                    aDto.setTargetPath("$.error");
+                                    aDto.setExpectedValue("Not Found");
+                                    aDto.setOperator("CONTAINS");
+                                }
+                            }
+                            if (caseName.contains("malformed")) {
+                                caseName = caseName.replace("malformed", "unknown").replace("special characters", "unknown ID");
+                            }
+                        }
+                    }
+                }
+            }
+
             // 2. Serialize Query Params
             if (dto.getQueryParams() != null && !dto.getQueryParams().isNull()) {
                 try {
@@ -1244,5 +1284,60 @@ public class TestCaseServiceImpl implements TestCaseService {
             });
         }
         return endpoint;
+    }
+
+    private void sanitizeTestCaseDto(AiTestCaseItemDto itemDto, HttpMethod endpointMethod) {
+        if (itemDto == null || endpointMethod != HttpMethod.GET || itemDto.getUrl() == null) {
+            return;
+        }
+
+        String url = itemDto.getUrl();
+        String pathPart = url.contains("?") ? url.substring(0, url.indexOf("?")) : url;
+
+        // Check if path contains suspicious reserved characters
+        boolean hasSuspicious = pathPart.contains("#") || pathPart.contains(" ") || pathPart.contains("&") ||
+                                pathPart.contains("=") || pathPart.contains("+") || pathPart.contains("%");
+
+        if (hasSuspicious) {
+            boolean expects400 = false;
+            if (itemDto.getAssertions() != null) {
+                for (AiTestCaseAssertionDto assertionDto : itemDto.getAssertions()) {
+                    if ("STATUS_CODE".equalsIgnoreCase(assertionDto.getAssertionType()) && "400".equals(assertionDto.getExpectedValue())) {
+                        expects400 = true;
+                        break;
+                    }
+                }
+            }
+
+            if (expects400) {
+                int lastSlash = pathPart.lastIndexOf("/");
+                if (lastSlash != -1) {
+                    String safeId = (pathPart.contains("customers") || pathPart.contains("customer")) ? "UNKNOWN_CUSTOMER_ID" : "UNKNOWN_ID";
+                    String newPathPart = pathPart.substring(0, lastSlash + 1) + safeId;
+                    String newUrl = url.contains("?") ? newPathPart + url.substring(url.indexOf("?")) : newPathPart;
+                    itemDto.setUrl(newUrl);
+
+                    if (itemDto.getAssertions() != null) {
+                        for (AiTestCaseAssertionDto assertionDto : itemDto.getAssertions()) {
+                            if ("STATUS_CODE".equalsIgnoreCase(assertionDto.getAssertionType())) {
+                                assertionDto.setExpectedValue("404");
+                            }
+                            if (assertionDto.getJsonPath() != null && 
+                                (assertionDto.getJsonPath().contains("message") || assertionDto.getJsonPath().contains("error"))) {
+                                assertionDto.setJsonPath("$.error");
+                                assertionDto.setExpectedValue("Not Found");
+                                assertionDto.setComparisonOperator("CONTAINS");
+                            }
+                        }
+                    }
+
+                    if (itemDto.getTestName() != null) {
+                        itemDto.setTestName(itemDto.getTestName()
+                            .replace("malformed", "unknown")
+                            .replace("special characters", "unknown ID"));
+                    }
+                }
+            }
+        }
     }
 }

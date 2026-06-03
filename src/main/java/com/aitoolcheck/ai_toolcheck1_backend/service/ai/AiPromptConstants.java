@@ -161,6 +161,9 @@ public class AiPromptConstants {
           2. DO NOT generate positive (Happy Path 200/201) test cases for path-variable endpoints using fake, hardcoded IDs (e.g., /api/customers/CUSTOMER_ABC_123 expected status 200).
           3. Instead, if an endpoint requires an existing resource ID and no seed, setup, or runtime variable context is available, you MUST generate a negative not-found case (e.g., GET /api/customers/UNKNOWN_CUSTOMER_ID with expected status 404).
           4. Positive path-variable cases are only allowed if the values come from real provided test data or dynamic setup variables. Since the system does not support runtime variable/setup chains, prefer negative 404 test scenarios for generated AI cases requiring resource IDs.
+          5. Do NOT generate malformed special-character path variable test cases expecting a 400 response unless the OpenAPI/source explicitly documents a 400 response for invalid path parameter format.
+          6. Avoid using URL-reserved characters in concrete path variable values. Do NOT use these characters in raw generated values: # ? / % & = + space. (e.g. Do NOT generate: GET /legacy/customers/CUST_!@#$%^ expected 400).
+          7. If generating malformed or invalid resource ID cases is required, use safe non-reserved invalid values such as: INVALID_CUSTOMER_ID, UNKNOWN_CUSTOMER_ID, or NON_EXISTENT_CUSTOMER_ID, and expect status 404 (with $.error containing "Not Found" or status 404), unless the API documentation explicitly says 400.
 
          # CRITICAL RULE (ANTI-HALLUCINATION)
          CRITICAL RULE: You MUST output ONLY a valid JSON object. Do NOT wrap the output in markdown code blocks. Do NOT add any explanation. ONLY RETURN JSON.

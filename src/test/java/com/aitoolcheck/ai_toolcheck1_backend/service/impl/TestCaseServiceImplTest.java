@@ -288,6 +288,60 @@ class TestCaseServiceImplTest {
         assertThat(tc4.getActiveFlag()).isFalse(); // Deactivated due to fake path parameter in positive GET
     }
 
+    @Test
+    void saveAiGeneratedTestCases_sanitizesMalformedGetPathTestCases() {
+        // Prepare request
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest request = 
+            new com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest();
+        
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseAssertionDto statusAssertion =
+            com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseAssertionDto.builder()
+                .assertionType("STATUS_CODE")
+                .expectedValue("400")
+                .build();
+
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseAssertionDto msgAssertion =
+            com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseAssertionDto.builder()
+                .assertionType("JSON_PATH")
+                .jsonPath("$.message")
+                .comparisonOperator("EQUALS")
+                .expectedValue("Invalid format")
+                .build();
+
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto getMalformed = 
+            com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto.builder()
+                .testName("GET with malformed special characters")
+                .caseType("VALIDATION_ERROR")
+                .httpMethod(HttpMethod.GET)
+                .url("/legacy/customers/CUST_!@#$%^")
+                .assertions(new java.util.ArrayList<>(List.of(statusAssertion, msgAssertion)))
+                .build();
+
+        request.setTestCases(List.of(getMalformed));
+
+        org.mockito.ArgumentCaptor<TestCase> captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+
+        service.saveAiGeneratedTestCases(request, endpointId, UUID.randomUUID());
+
+        verify(testCaseRepository).save(captor.capture());
+
+        TestCase savedCase = captor.getValue();
+        assertThat(savedCase.getTestCaseInput().getRequestPath()).isEqualTo("/legacy/customers/UNKNOWN_CUSTOMER_ID");
+        assertThat(savedCase.getCaseName()).contains("unknown ID");
+        
+        // Assert assertions were updated to expect 404 and "Not Found"
+        List<TestCaseAssertion> assertions = savedCase.getTestCaseAssertions();
+        assertThat(assertions).hasSize(2);
+        
+        TestCaseAssertion status = assertions.stream().filter(a -> a.getAssertionType() == AssertionType.STATUS_CODE).findFirst().orElseThrow();
+        assertThat(status.getExpectedValue()).isEqualTo("404");
+
+        TestCaseAssertion msg = assertions.stream().filter(a -> a.getAssertionType() == AssertionType.JSON_PATH).findFirst().orElseThrow();
+        assertThat(msg.getTargetPath()).isEqualTo("$.error");
+        assertThat(msg.getExpectedValue()).isEqualTo("Not Found");
+        assertThat(msg.getOperator()).isEqualTo(ComparisonOperator.CONTAINS);
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
