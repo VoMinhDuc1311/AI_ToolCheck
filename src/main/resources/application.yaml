@@ -60,6 +60,7 @@ ai:
     response-timeout-ms: 30000
     read-timeout-ms: 30000
     enrich-api-doc-timeout-seconds: 180
+    generate-test-case-timeout-seconds: ${OLLAMA_GENERATE_TEST_CASE_TIMEOUT_SECONDS:180}
 
   gemini:
     enabled: true

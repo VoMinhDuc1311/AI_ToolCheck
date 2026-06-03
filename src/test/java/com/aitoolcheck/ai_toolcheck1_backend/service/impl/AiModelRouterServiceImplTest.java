@@ -50,6 +50,8 @@ class AiModelRouterServiceImplTest {
         ollamaProperties.setPrimaryModel("qwen2.5-coder:7b");
         ollamaProperties.setFallbackModel("qwen2.5-coder:7b");
         ollamaProperties.setReadTimeoutSeconds(90);
+        ollamaProperties.setEnrichApiDocTimeoutSeconds(180);
+        ollamaProperties.setGenerateTestCaseTimeoutSeconds(180);
 
         geminiProperties = new GeminiProperties();
         geminiProperties.setModel("gemini-2.5-flash");
@@ -213,5 +215,151 @@ class AiModelRouterServiceImplTest {
         org.assertj.core.api.Assertions.assertThat(exception.getMessage())
                 .contains("retry after 34s")
                 .contains("timed out after 180s");
+    }
+
+    @Test
+    void generateTestCase_providerOrder_isGeminiThenOllama() {
+        when(geminiApiClientService.generateText(eq("testcase prompt")))
+                .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
+        when(ollamaApiClientService.generateTextWithModel(eq("testcase prompt"), eq("qwen2.5-coder:7b"), eq(180)))
+                .thenReturn("{\"test_cases\":[]}");
+
+        String result = router.executeWithFallbackForSkill(
+                "GENERATE_TEST_CASE",
+                () -> "testcase prompt",
+                () -> "testcase prompt",
+                raw -> {});
+
+        assertEquals("{\"test_cases\":[]}", result);
+        InOrder inOrder = inOrder(geminiApiClientService, ollamaApiClientService);
+        inOrder.verify(geminiApiClientService).generateText(eq("testcase prompt"));
+        inOrder.verify(ollamaApiClientService)
+                .generateTextWithModel(eq("testcase prompt"), eq("qwen2.5-coder:7b"), eq(180));
+    }
+
+    @Test
+    void generateTestCase_gemini429_thenOllamaSuccess_returnsOllamaResult() {
+        when(geminiApiClientService.generateText(anyString()))
+                .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
+        when(ollamaApiClientService.generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180)))
+                .thenReturn("{\"test_cases\":[{\"test_name\":\"ok\"}]}");
+
+        String result = router.executeWithFallbackForSkill(
+                "GENERATE_TEST_CASE",
+                () -> "testcase prompt",
+                () -> "testcase prompt",
+                raw -> {});
+
+        assertEquals("{\"test_cases\":[{\"test_name\":\"ok\"}]}", result);
+    }
+
+    @Test
+    void generateTestCase_gemini503_thenOllamaSuccess_returnsOllamaResult() {
+        when(geminiApiClientService.generateText(anyString()))
+                .thenThrow(AiProviderFailureException.unavailable(
+                        "Gemini", "gemini-2.5-flash", "503 SERVICE_UNAVAILABLE", null));
+        when(ollamaApiClientService.generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180)))
+                .thenReturn("{\"test_cases\":[]}");
+
+        String result = router.executeWithFallbackForSkill(
+                "GENERATE_TEST_CASE",
+                () -> "testcase prompt",
+                () -> "testcase prompt",
+                raw -> {});
+
+        assertEquals("{\"test_cases\":[]}", result);
+    }
+
+    @Test
+    void generateTestCase_geminiCooldown_thenOllamaSuccess_returnsOllamaResult() {
+        when(geminiApiClientService.generateText(anyString()))
+                .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 12, null));
+        when(ollamaApiClientService.generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180)))
+                .thenReturn("{\"test_cases\":[]}");
+
+        String result = router.executeWithFallbackForSkill(
+                "GENERATE_TEST_CASE",
+                () -> "testcase prompt",
+                () -> "testcase prompt",
+                raw -> {});
+
+        assertEquals("{\"test_cases\":[]}", result);
+        verify(ollamaApiClientService).generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180));
+    }
+
+    @Test
+    void generateTestCase_geminiFail_thenOllamaTimeout_returnsAllProvidersFailed() {
+        when(geminiApiClientService.generateText(anyString()))
+                .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
+        when(ollamaApiClientService.generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180)))
+                .thenThrow(AiProviderFailureException.timeout("Ollama", "qwen2.5-coder:7b", 180, 4195, null));
+
+        AiProviderFailureException exception = assertThrows(
+                AiProviderFailureException.class,
+                () -> router.executeWithFallbackForSkill(
+                        "GENERATE_TEST_CASE",
+                        () -> "testcase prompt",
+                        () -> "testcase prompt",
+                        raw -> {}));
+
+        assertEquals(AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED, exception.getErrorCode());
+        org.assertj.core.api.Assertions.assertThat(exception.getMessage())
+                .contains("Gemini gemini-2.5-flash quota/rate limit exceeded")
+                .contains("Ollama qwen2.5-coder:7b timed out after 180s")
+                .doesNotContain("INVALID_JSON_SYNTAX")
+                .doesNotContain("UnknownFormatConversionException");
+    }
+
+    @Test
+    void generateTestCase_usesGenerateTestCaseOllamaTimeout() {
+        ollamaProperties.setGenerateTestCaseTimeoutSeconds(180);
+        when(geminiApiClientService.generateText(anyString()))
+                .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
+        when(ollamaApiClientService.generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180)))
+                .thenReturn("{\"test_cases\":[]}");
+
+        router.executeWithFallbackForSkill(
+                "GENERATE_TEST_CASE",
+                () -> "testcase prompt",
+                () -> "testcase prompt",
+                raw -> {});
+
+        verify(ollamaApiClientService).generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180));
+        verify(ollamaApiClientService, never()).generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(90));
+    }
+
+    @Test
+    void agent1_enrichApiDoc_providerOrder_stillGeminiThenOllama() {
+        when(geminiApiClientService.generateText(eq("gemini prompt")))
+                .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
+        when(ollamaApiClientService.generateTextWithModel(eq("ollama prompt"), eq("qwen2.5-coder:7b"), eq(180)))
+                .thenReturn("{\"summary\":\"ok\"}");
+
+        router.executeWithFallbackForSkill(
+                "enrich_api_doc",
+                () -> "gemini prompt",
+                () -> "ollama prompt",
+                raw -> {});
+
+        InOrder inOrder = inOrder(geminiApiClientService, ollamaApiClientService);
+        inOrder.verify(geminiApiClientService).generateText(eq("gemini prompt"));
+        inOrder.verify(ollamaApiClientService)
+                .generateTextWithModel(eq("ollama prompt"), eq("qwen2.5-coder:7b"), eq(180));
+    }
+
+    @Test
+    void agent1_enrichApiDoc_timeoutStill180() {
+        when(geminiApiClientService.generateText(anyString()))
+                .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
+        when(ollamaApiClientService.generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180)))
+                .thenReturn("{\"summary\":\"ok\"}");
+
+        router.executeWithFallbackForSkill(
+                "enrich_api_doc",
+                () -> "gemini prompt",
+                () -> "ollama prompt",
+                raw -> {});
+
+        verify(ollamaApiClientService).generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180));
     }
 }

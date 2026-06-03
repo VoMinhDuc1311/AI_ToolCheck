@@ -30,6 +30,8 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
 
     private static final String OLLAMA = "Ollama";
     private static final String GEMINI = "Gemini";
+    private static final String SKILL_ENRICH_API_DOC = "enrich_api_doc";
+    private static final String SKILL_GENERATE_TEST_CASE = "GENERATE_TEST_CASE";
 
     private final OllamaApiClientService ollamaApiClientService;
     private final GeminiApiClientService geminiApiClientService;
@@ -84,7 +86,7 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
             Supplier<String> geminiPromptSupplier,
             Supplier<String> ollamaPromptSupplier,
             Consumer<String> rawResponseValidator) {
-        if (!"enrich_api_doc".equalsIgnoreCase(skillCode)) {
+        if (!isGeminiFirstSkill(skillCode)) {
             return executeWithFallback(geminiPromptSupplier.get());
         }
 
@@ -104,7 +106,7 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
                 attempted,
                 failures,
                 rawResponseValidator,
-                ollamaProperties.getEnrichApiDocTimeoutSeconds());
+                getOllamaTimeoutSecondsForSkill(skillCode));
         if (ollamaResult != null) {
             return ollamaResult;
         }
@@ -133,6 +135,42 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
         }
 
         return result;
+    }
+
+    @Override
+    public String routeAndExecuteForSkill(String skillCode, String prompt, UUID jobId) {
+        String optimizedPrompt = optimizePrompt(prompt);
+        int tokenInput = optimizedPrompt.length() / 4;
+
+        String result = executeWithFallbackForSkill(skillCode, () -> optimizedPrompt, () -> optimizedPrompt, null);
+        if (result == null || result.isBlank()) {
+            throw AiProviderFailureException.emptyResponse("LLM", "router", null);
+        }
+
+        int tokenOutput = result.length() / 4;
+        try {
+            aiJobLogService.markJobAsSuccess(jobId, tokenInput, tokenOutput, "router-selected");
+            log.info("[Router] Updated JobLog {} as SUCCESS", jobId);
+        } catch (Exception e) {
+            log.warn("[Router] Could not update JobLog {}: {}", jobId, e.getMessage());
+        }
+
+        return result;
+    }
+
+    private boolean isGeminiFirstSkill(String skillCode) {
+        return SKILL_ENRICH_API_DOC.equalsIgnoreCase(skillCode)
+                || SKILL_GENERATE_TEST_CASE.equalsIgnoreCase(skillCode);
+    }
+
+    private int getOllamaTimeoutSecondsForSkill(String skillCode) {
+        if (SKILL_ENRICH_API_DOC.equalsIgnoreCase(skillCode)) {
+            return ollamaProperties.getEnrichApiDocTimeoutSeconds();
+        }
+        if (SKILL_GENERATE_TEST_CASE.equalsIgnoreCase(skillCode)) {
+            return ollamaProperties.getGenerateTestCaseTimeoutSeconds();
+        }
+        return ollamaProperties.getReadTimeoutSeconds();
     }
 
     private String tryOllamaCandidate(
