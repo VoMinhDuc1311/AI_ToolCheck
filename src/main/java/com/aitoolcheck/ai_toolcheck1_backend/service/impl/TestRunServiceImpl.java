@@ -358,6 +358,26 @@ public class TestRunServiceImpl implements TestRunService {
             throw new BadRequestException("id is required");
         }
 
+        TestRun preflightRun = testRunRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
+
+        if (preflightRun.getRunStatus() == RunStatus.RUNNING) {
+            throw new BadRequestException("TestRun is already in RUNNING state. Wait for it to complete before re-executing.");
+        }
+
+        projectAccessService.requireCanExecuteTestRun(
+                preflightRun.getSourceProject().getId(),
+                preflightRun.getExecutionMode());
+
+        List<TestRunItem> preflightItems = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
+        if (preflightItems.isEmpty()) {
+            throw new BadRequestException("TestRun has no items to execute");
+        }
+
+        if (!performPreflightCheck(preflightRun, preflightItems)) {
+            throw new BadRequestException("Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.");
+        }
+
         ExecutionContext executionContext = transactionTemplate.execute(status -> {
             TestRun testRun = testRunRepository.findById(id)
                     .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
@@ -367,23 +387,10 @@ public class TestRunServiceImpl implements TestRunService {
                         "TestRun is already in RUNNING state. Wait for it to complete before re-executing.");
             }
 
-            projectAccessService.requireCanExecuteTestRun(
-                    testRun.getSourceProject().getId(),
-                    testRun.getExecutionMode());
-
-            List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
-            if (items.isEmpty()) {
-                throw new BadRequestException("TestRun has no items to execute");
-            }
-
-            if (!performPreflightCheck(testRun, items)) {
-                throw new BadRequestException("Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.");
-            }
-
             testRun.setRunStatus(RunStatus.RUNNING);
             TestRun savedRun = testRunRepository.save(testRun);
 
-            List<UUID> itemIds = items.stream()
+            List<UUID> itemIds = preflightItems.stream()
                     .map(TestRunItem::getId)
                     .toList();
             return new ExecutionContext(
