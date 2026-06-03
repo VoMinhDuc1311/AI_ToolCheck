@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.TestRunStaleProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.RuleEngineResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.res.TestResultResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestFailureAnalysisRepository;
@@ -17,6 +18,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
@@ -33,6 +35,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuleEngineService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
@@ -72,6 +75,10 @@ public class TestRunServiceImpl implements TestRunService {
 
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
     private static final DateTimeFormatter RUN_CODE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+    private static final String STALE_PENDING_REASON =
+            "Test run expired while pending. Please create or execute a new run.";
+    private static final String STALE_RUNNING_REASON =
+            "Test run exceeded maximum execution time and was marked failed.";
 
     private final TestRunRepository testRunRepository;
     private final TestRunItemRepository testRunItemRepository;
@@ -88,6 +95,8 @@ public class TestRunServiceImpl implements TestRunService {
     private final TestRunRealtimePublisher testRunRealtimePublisher;
     private final ProjectNotificationEventPublisher notificationEventPublisher;
     private final TestFailureAnalysisRepository testFailureAnalysisRepository;
+    private final TestRunStaleProperties testRunStaleProperties;
+    private final SourceRuntimeService sourceRuntimeService;
     private TestRunService self;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -111,6 +120,11 @@ public class TestRunServiceImpl implements TestRunService {
 
         String runName = normalizeRequiredText(request.getRunName(), "runName");
         String description = normalizeOptionalText(request.getDescription());
+        RuntimeMode runtimeMode = resolveRuntimeMode(request.getRuntimeMode());
+        if (runtimeMode == RuntimeMode.AUTO_RUNTIME_FROM_SOURCE) {
+            sourceRuntimeService.ensureRuntimeReady(sourceProject.getId());
+            throw new BadRequestException("Auto runtime from uploaded source is not enabled yet. Use External Base URL.");
+        }
         // Resolve effective baseUrl: request → project.defaultTargetBaseUrl → 400.
         // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
         String baseUrl = resolveBaseUrl(request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
@@ -127,6 +141,8 @@ public class TestRunServiceImpl implements TestRunService {
                 .baseUrl(baseUrl)
                 .environmentName(request.getEnvironmentName())
                 .executionMode(request.getExecutionMode())
+                .runtimeMode(runtimeMode)
+                .targetBaseUrlUsed(baseUrl)
                 .runStatus(RunStatus.PENDING)
                 .testRunItems(items)
                 .build();
@@ -161,6 +177,12 @@ public class TestRunServiceImpl implements TestRunService {
         SourceProject sourceProject = projectAccessService.requireCanCreateTestRun(request.getProjectId());
 
         log.debug("Found SourceProject: id={}, name={}", sourceProject.getId(), sourceProject.getProjectName());
+
+        RuntimeMode runtimeMode = resolveRuntimeMode(request.getRuntimeMode());
+        if (runtimeMode == RuntimeMode.AUTO_RUNTIME_FROM_SOURCE) {
+            sourceRuntimeService.ensureRuntimeReady(sourceProject.getId());
+            throw new BadRequestException("Auto runtime from uploaded source is not enabled yet. Use External Base URL.");
+        }
 
         // Resolve effective baseUrl: request → project.defaultTargetBaseUrl → 400.
         // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
@@ -242,6 +264,8 @@ public class TestRunServiceImpl implements TestRunService {
                 .baseUrl(baseUrl)
                 .environmentName(request.getEnvironmentName())
                 .executionMode(executionMode)
+                .runtimeMode(runtimeMode)
+                .targetBaseUrlUsed(baseUrl)
                 .runStatus(RunStatus.RUNNING) // Set to RUNNING as per requirement
                 .testRunItems(testRunItems)
                 .build();
@@ -360,6 +384,12 @@ public class TestRunServiceImpl implements TestRunService {
 
         TestRun preflightRun = testRunRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
+
+        if (isStale(preflightRun)) {
+            String staleReason = resolveStaleReason(preflightRun);
+            markRunFailed(preflightRun, staleReason);
+            throw new BadRequestException(staleReason);
+        }
 
         if (preflightRun.getRunStatus() == RunStatus.RUNNING) {
             throw new BadRequestException("TestRun is already in RUNNING state. Wait for it to complete before re-executing.");
@@ -795,6 +825,8 @@ public class TestRunServiceImpl implements TestRunService {
                 .toList();
 
         if (safeItems.isEmpty()) {
+            testRun.setPreflightStatus("SKIPPED");
+            testRun.setPreflightSummary("No safe GET/HEAD test cases selected for preflight.");
             return true;
         }
 
@@ -817,11 +849,16 @@ public class TestRunServiceImpl implements TestRunService {
         if (all404) {
             String error = "Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.";
             testRun.setRunStatus(RunStatus.FAILED);
+            testRun.setPreflightStatus("FAILED");
+            testRun.setPreflightSummary(error);
             String desc = testRun.getDescription();
             testRun.setDescription(desc == null ? error : desc + "\n\nPreflight Error: " + error);
             testRunRepository.save(testRun);
             return false;
         }
+        testRun.setPreflightStatus("PASSED");
+        testRun.setPreflightSummary("At least one safe preflight endpoint did not return 404.");
+        testRunRepository.save(testRun);
         return true;
     }
 
@@ -847,11 +884,13 @@ public class TestRunServiceImpl implements TestRunService {
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public TestRunDetailResponse getById(UUID id) {
         if (id == null) {
             throw new BadRequestException("id is required");
         }
+
+        markStaleRunsFailed();
 
         TestRun testRun = testRunRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException(
@@ -865,13 +904,14 @@ public class TestRunServiceImpl implements TestRunService {
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public List<TestRunResponse> getByProjectId(UUID projectId) {
         if (projectId == null) {
             throw new BadRequestException("projectId is required");
         }
 
         projectAccessService.requireCanViewProject(projectId);
+        markStaleRunsFailed();
 
         List<TestRun> runs = testRunRepository
                 .findBySourceProject_IdOrderByCreatedAtDesc(projectId);
@@ -991,6 +1031,12 @@ public class TestRunServiceImpl implements TestRunService {
                 .baseUrl(run.getBaseUrl())
                 .environmentName(run.getEnvironmentName())
                 .executionMode(run.getExecutionMode())
+                .runtimeMode(run.getRuntimeMode())
+                .sourceRuntimeId(run.getSourceRuntime() == null ? null : run.getSourceRuntime().getId())
+                .targetBaseUrlUsed(run.getTargetBaseUrlUsed())
+                .runtimeStatusAtStart(run.getRuntimeStatusAtStart())
+                .preflightStatus(run.getPreflightStatus())
+                .preflightSummary(run.getPreflightSummary())
                 .runStatus(run.getRunStatus())
                 .totalItems(totalItems)
                 .createdAt(run.getCreatedAt())
@@ -1016,6 +1062,12 @@ public class TestRunServiceImpl implements TestRunService {
                 .baseUrl(run.getBaseUrl())
                 .environmentName(run.getEnvironmentName())
                 .executionMode(run.getExecutionMode())
+                .runtimeMode(run.getRuntimeMode())
+                .sourceRuntimeId(run.getSourceRuntime() == null ? null : run.getSourceRuntime().getId())
+                .targetBaseUrlUsed(run.getTargetBaseUrlUsed())
+                .runtimeStatusAtStart(run.getRuntimeStatusAtStart())
+                .preflightStatus(run.getPreflightStatus())
+                .preflightSummary(run.getPreflightSummary())
                 .runStatus(run.getRunStatus())
                 .totalItems(itemResponses.size())
                 .items(itemResponses)
@@ -1095,6 +1147,90 @@ public class TestRunServiceImpl implements TestRunService {
                 .createdAt(tfa.getCreatedAt())
                 .updatedAt(tfa.getUpdatedAt())
                 .build();
+    }
+
+    @Transactional
+    public int markStaleRunsFailed() {
+        if (!testRunStaleProperties.isEnabled()) {
+            return 0;
+        }
+
+        int updated = 0;
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime pendingCutoff = now.minusMinutes(testRunStaleProperties.getPendingTimeoutMinutes());
+        LocalDateTime runningCutoff = now.minusMinutes(testRunStaleProperties.getRunningTimeoutMinutes());
+
+        List<TestRun> stalePending = testRunRepository.findByRunStatusAndCreatedAtBefore(
+                RunStatus.PENDING, pendingCutoff);
+        for (TestRun run : stalePending) {
+            markRunFailed(run, STALE_PENDING_REASON);
+            updated++;
+        }
+
+        List<TestRun> staleRunning = testRunRepository.findByRunStatusAndCreatedAtBefore(
+                RunStatus.RUNNING, runningCutoff);
+        for (TestRun run : staleRunning) {
+            markRunFailed(run, STALE_RUNNING_REASON);
+            updated++;
+        }
+
+        return updated;
+    }
+
+    private boolean failStaleRunIfNeeded(TestRun testRun) {
+        if (testRun == null || !testRunStaleProperties.isEnabled()) {
+            return false;
+        }
+        if (!isStale(testRun)) {
+            return false;
+        }
+        markRunFailed(testRun, resolveStaleReason(testRun));
+        return true;
+    }
+
+    private boolean isStale(TestRun testRun) {
+        if (testRun.getCreatedAt() == null || testRun.getRunStatus() == null) {
+            return false;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (testRun.getRunStatus() == RunStatus.PENDING) {
+            return testRun.getCreatedAt().isBefore(now.minusMinutes(testRunStaleProperties.getPendingTimeoutMinutes()));
+        }
+        if (testRun.getRunStatus() == RunStatus.RUNNING) {
+            return testRun.getCreatedAt().isBefore(now.minusMinutes(testRunStaleProperties.getRunningTimeoutMinutes()));
+        }
+        return false;
+    }
+
+    private void markRunFailed(TestRun testRun, String reason) {
+        if (testRun == null || testRun.getRunStatus() == RunStatus.FAILED) {
+            return;
+        }
+        testRun.setRunStatus(RunStatus.FAILED);
+        appendDescriptionIfMissing(testRun, reason);
+        testRunRepository.save(testRun);
+    }
+
+    private String resolveStaleReason(TestRun testRun) {
+        if (testRun != null && testRun.getRunStatus() == RunStatus.RUNNING) {
+            return STALE_RUNNING_REASON;
+        }
+        return STALE_PENDING_REASON;
+    }
+
+    private void appendDescriptionIfMissing(TestRun testRun, String reason) {
+        if (!hasText(reason)) {
+            return;
+        }
+        String existing = testRun.getDescription();
+        if (existing != null && existing.contains(reason)) {
+            return;
+        }
+        testRun.setDescription(existing == null ? reason : existing + "\n\n" + reason);
+    }
+
+    private RuntimeMode resolveRuntimeMode(RuntimeMode requestedRuntimeMode) {
+        return requestedRuntimeMode == null ? RuntimeMode.EXTERNAL_BASE_URL : requestedRuntimeMode;
     }
 
     private String normalizeRequiredText(String value, String fieldName) {

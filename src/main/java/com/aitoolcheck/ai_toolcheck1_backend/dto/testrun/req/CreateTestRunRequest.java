@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -37,6 +38,7 @@ public class CreateTestRunRequest {
      */
     @Size(max = 500, message = "baseUrl must not exceed 500 characters")
     private String baseUrl;
+    private RuntimeMode runtimeMode;
     private EnvironmentType environmentName;
     private ExecutionMode executionMode;
     private List<UUID> testCaseIds;

@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -27,6 +28,12 @@ public class TestRunResponse {
     private String baseUrl;
     private EnvironmentType environmentName;
     private ExecutionMode executionMode;
+    private RuntimeMode runtimeMode;
+    private UUID sourceRuntimeId;
+    private String targetBaseUrlUsed;
+    private String runtimeStatusAtStart;
+    private String preflightStatus;
+    private String preflightSummary;
     private RunStatus runStatus;
     private Integer totalItems;
     private LocalDateTime createdAt;

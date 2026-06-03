@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.TestRunStaleProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -13,6 +14,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuleEngineService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunRealtimePublisher;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
@@ -78,7 +80,9 @@ class TestRunPreflightTest {
                 transactionTemplate,
                 mock(TestRunRealtimePublisher.class),
                 mock(ProjectNotificationEventPublisher.class),
-                mock(TestFailureAnalysisRepository.class)
+                mock(TestFailureAnalysisRepository.class),
+                new TestRunStaleProperties(),
+                mock(SourceRuntimeService.class)
         );
 
         projectId = UUID.randomUUID();
@@ -114,6 +118,7 @@ class TestRunPreflightTest {
                 .hasMessageContaining("Base URL/runtime does not match uploaded source");
                 
         assertThat(testRun.getRunStatus()).isEqualTo(RunStatus.FAILED);
+        assertThat(testRun.getPreflightStatus()).isEqualTo("FAILED");
     }
 
     @Test

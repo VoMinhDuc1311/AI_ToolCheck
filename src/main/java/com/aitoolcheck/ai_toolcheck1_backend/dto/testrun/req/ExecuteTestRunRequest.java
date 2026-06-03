@@ -2,7 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
-import jakarta.validation.constraints.NotBlank;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import jakarta.validation.constraints.NotEmpty;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -40,13 +40,14 @@ public class ExecuteTestRunRequest {
 
     private ExecutionMode executionMode;
 
-    @NotBlank(message = "baseUrl is required")
     @Size(max = 500, message = "baseUrl must not exceed 500 characters")
     private String baseUrl;
+
+    private RuntimeMode runtimeMode;
 
     @NotEmpty(message = "testCaseIds must not be empty")
     private List<UUID> testCaseIds;
 
     /** When true, prepare and validate the request but do not send it. */
     private Boolean dryRun;
-}
+}

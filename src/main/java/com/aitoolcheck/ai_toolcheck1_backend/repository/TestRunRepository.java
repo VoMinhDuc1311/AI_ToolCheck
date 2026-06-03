@@ -15,6 +15,10 @@ public interface TestRunRepository extends JpaRepository<TestRun, UUID> {
 
     List<TestRun> findBySourceProject_IdOrderByCreatedAtDesc(UUID projectId);
 
+    List<TestRun> findByRunStatusAndCreatedAtBefore(
+            com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus runStatus,
+            java.time.LocalDateTime createdBefore);
+
     // ── Permanent delete support ───────────────────────────────────────────────
 
     /** Delete all TestRun rows for a project (after items already deleted). */
