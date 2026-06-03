@@ -2,7 +2,6 @@ package com.aitoolcheck.ai_toolcheck1_backend.config;
 
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.OllamaProperties;
 import io.netty.channel.ChannelOption;
-import io.netty.handler.timeout.ReadTimeoutHandler;
 import io.netty.handler.timeout.WriteTimeoutHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -25,6 +24,19 @@ import java.util.concurrent.TimeUnit;
  * <p>Creates a dedicated {@link WebClient} bean for communicating with
  * the local Ollama server. Timeout values are driven by {@link OllamaProperties}
  * to support both lightweight (7B) and heavyweight (30B) models.
+ *
+ * <p><strong>Timeout strategy:</strong>
+ * <ul>
+ *   <li>No global Netty {@code ReadTimeoutHandler} is registered here — it would clamp
+ *       all requests to the global value and prevent skill-specific timeouts (e.g. 180s
+ *       for {@code enrich_api_doc}) from taking effect.</li>
+ *   <li>A loose Reactor {@code responseTimeout} is set to a generous ceiling
+ *       ({@code globalReadTimeoutSeconds * 3} or at least 300s) purely as a
+ *       last-resort safety net. The effective per-request deadline is driven by
+ *       {@code Mono.timeout()} in {@link com.aitoolcheck.ai_toolcheck1_backend.service.impl.OllamaApiClientServiceImpl}.</li>
+ *   <li>TCP write timeout (30s) is kept because write hangs are independent of model
+ *       inference time.</li>
+ * </ul>
  */
 @Slf4j
 @Configuration
@@ -42,10 +54,19 @@ public class OllamaWebClientConfig {
      */
     @Bean(name = "ollamaWebClient")
     public WebClient ollamaWebClient() {
-        log.info("[OllamaWebClientConfig] Initializing OllamaWebClient — baseUrl: {}, primaryModel: {}, embedModel: {}",
+        int globalReadTimeoutSeconds = ollamaProperties.getReadTimeoutSeconds();
+
+        // Safety-net ceiling: generously above any skill-specific timeout so it
+        // never fires before Mono.timeout() does.  Minimum 300s.
+        int safetyNetSeconds = Math.max(300, globalReadTimeoutSeconds * 3);
+
+        log.info("[OllamaWebClientConfig] Initializing OllamaWebClient — baseUrl={} primaryModel={} " +
+                        "embedModel={} globalReadTimeoutSeconds={} safetyNetCeilingSeconds={}",
                 ollamaProperties.getBaseUrl(),
                 ollamaProperties.getPrimaryModel(),
-                ollamaProperties.getEmbedModel());
+                ollamaProperties.getEmbedModel(),
+                globalReadTimeoutSeconds,
+                safetyNetSeconds);
 
         ConnectionProvider connectionProvider = ConnectionProvider.builder("ollama-pool")
                 .maxConnections(20)
@@ -59,14 +80,14 @@ public class OllamaWebClientConfig {
                 // Connection timeout: configurable, default 10s
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS,
                         ollamaProperties.getConnectTimeoutSeconds() * 1000)
-                // Response timeout: configurable, default 120s for large models
-                .responseTimeout(Duration.ofSeconds(ollamaProperties.getReadTimeoutSeconds()))
-                // TCP-level read/write timeout handlers
-                .doOnConnected(connection -> {
-                    connection.addHandlerLast(new ReadTimeoutHandler(
-                            ollamaProperties.getReadTimeoutSeconds(), TimeUnit.SECONDS));
-                    connection.addHandlerLast(new WriteTimeoutHandler(30, TimeUnit.SECONDS));
-                });
+                // Safety-net response timeout: loose ceiling only.
+                // Per-request effective timeout is controlled by Mono.timeout()
+                // in OllamaApiClientServiceImpl so skill-specific values apply.
+                .responseTimeout(Duration.ofSeconds(safetyNetSeconds))
+                // TCP-level write timeout only — read timeout removed intentionally
+                // to allow per-request Mono.timeout() to be the effective deadline.
+                .doOnConnected(connection ->
+                        connection.addHandlerLast(new WriteTimeoutHandler(30, TimeUnit.SECONDS)));
 
         return WebClient.builder()
                 .baseUrl(ollamaProperties.getBaseUrl())

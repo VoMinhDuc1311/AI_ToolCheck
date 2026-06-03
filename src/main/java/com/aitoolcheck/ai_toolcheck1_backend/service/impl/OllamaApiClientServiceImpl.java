@@ -5,6 +5,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureExceptio
 import com.aitoolcheck.ai_toolcheck1_backend.service.OllamaApiClientService;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.netty.handler.timeout.ReadTimeoutException;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -17,6 +18,20 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
+/**
+ * Ollama HTTP client implementation.
+ *
+ * <p><strong>Timeout architecture:</strong>
+ * The Netty-level global {@code ReadTimeoutHandler} has been removed from
+ * {@link com.aitoolcheck.ai_toolcheck1_backend.config.OllamaWebClientConfig}
+ * to prevent it from clamping skill-specific timeouts (e.g. 180s for
+ * {@code enrich_api_doc}) to the global default (90s).
+ *
+ * <p>The effective per-request deadline is {@code Mono.timeout(Duration.ofSeconds(timeoutSeconds))}
+ * applied here. The router passes the skill-specific value, so callers control
+ * the budget. The global Reactor {@code responseTimeout} on the WebClient is set
+ * to a generous safety-net ceiling and should never fire in practice.
+ */
 @Slf4j
 @Service
 public class OllamaApiClientServiceImpl implements OllamaApiClientService {
@@ -36,11 +51,15 @@ public class OllamaApiClientServiceImpl implements OllamaApiClientService {
 
     @PostConstruct
     public void logStartupConfig() {
-        log.info("[OllamaClient] Initialized - baseUrl={} primaryModel={} connectTimeoutSeconds={} readTimeoutSeconds={}",
+        log.info("[OllamaClient] Initialized - baseUrl={} primaryModel={} " +
+                        "connectTimeoutSeconds={} globalReadTimeoutSeconds={} " +
+                        "enrichApiDocTimeoutSeconds={} " +
+                        "(note: global ReadTimeoutHandler NOT installed; per-request Mono.timeout controls effective deadline)",
                 ollamaProperties.getBaseUrl(),
                 ollamaProperties.getPrimaryModel(),
                 ollamaProperties.getConnectTimeoutSeconds(),
-                ollamaProperties.getReadTimeoutSeconds());
+                ollamaProperties.getReadTimeoutSeconds(),
+                ollamaProperties.getEnrichApiDocTimeoutSeconds());
     }
 
     @Override
@@ -56,7 +75,9 @@ public class OllamaApiClientServiceImpl implements OllamaApiClientService {
     @Override
     public String generateTextWithModel(String prompt, String model, int timeoutSeconds) {
         int promptChars = prompt == null ? 0 : prompt.length();
-        log.info("[OllamaClient] Calling model: {} - prompt: {} chars", model, promptChars);
+        log.info("[OllamaClient] Calling model={} promptChars={} effectiveHttpTimeoutSeconds={} " +
+                        "globalReadTimeoutSeconds={}",
+                model, promptChars, timeoutSeconds, ollamaProperties.getReadTimeoutSeconds());
 
         Map<String, Object> payload = Map.of(
                 "model", model,
@@ -76,24 +97,47 @@ public class OllamaApiClientServiceImpl implements OllamaApiClientService {
                                     .flatMap(err -> Mono.error(AiProviderFailureException.unavailable(
                                             "Ollama", model, "HTTP " + resp.statusCode() + ": " + err, null))))
                     .bodyToMono(String.class)
+                    // Per-request effective timeout — controls how long we wait for Ollama to respond.
+                    // This Mono.timeout() fires before the WebClient safety-net responseTimeout,
+                    // making it the true effective deadline regardless of any global config.
                     .timeout(Duration.ofSeconds(timeoutSeconds),
                             Mono.error(new TimeoutException(
                                     "[OllamaClient] Timeout after " + timeoutSeconds + "s - model: " + model)))
                     .retryWhen(reactor.util.retry.Retry.backoff(1, Duration.ofSeconds(3))
-                            .filter(ex -> !(reactor.core.Exceptions.unwrap(ex) instanceof TimeoutException)
-                                    && !(reactor.core.Exceptions.unwrap(ex) instanceof AiProviderFailureException))
-                            .doBeforeRetry(s -> log.warn("[OllamaClient] Retry {}/1 - model: {} - reason: {}",
-                                    s.totalRetries() + 1, model, s.failure().getMessage())))
+                            .filter(ex -> {
+                                Throwable unwrapped = reactor.core.Exceptions.unwrap(ex);
+                                // Do not retry on Reactor TimeoutException, Netty ReadTimeoutException,
+                                // or typed provider failures — these are terminal.
+                                return !(unwrapped instanceof TimeoutException)
+                                        && !(unwrapped instanceof ReadTimeoutException)
+                                        && !(unwrapped instanceof AiProviderFailureException)
+                                        && !containsTimeoutMessage(unwrapped);
+                            })
+                            .doBeforeRetry(s -> {
+                                Throwable cause = reactor.core.Exceptions.unwrap(s.failure());
+                                String reason = cause != null && cause.getMessage() != null
+                                        ? cause.getClass().getSimpleName() + ": " + cause.getMessage()
+                                        : (cause != null ? cause.getClass().getSimpleName() : "unknown");
+                                log.warn("[OllamaClient] Retry {}/1 - model={} - reason: {}",
+                                        s.totalRetries() + 1, model, reason);
+                            }))
                     .doOnError(ex -> log.warn("[OllamaClient] Model {} failed: {}", model, ex.getMessage()))
                     .block();
         } catch (Exception ex) {
             Throwable unwrapped = reactor.core.Exceptions.unwrap(ex);
             long durationMs = Duration.ofNanos(System.nanoTime() - startedAt).toMillis();
+
             if (unwrapped instanceof AiProviderFailureException providerFailure) {
                 throw providerFailure;
             }
-            if (unwrapped instanceof TimeoutException || containsTimeoutMessage(unwrapped)) {
-                log.warn("[OllamaClient] Timeout model={} timeoutSeconds={} promptChars={} durationMs={}",
+            // ReadTimeoutException from Netty must map to LLM_TIMEOUT, not LLM_PROVIDER_UNAVAILABLE.
+            // This can occur if a loose safety-net responseTimeout fires, or if the unwrapped
+            // exception chain contains a ReadTimeoutException.
+            if (unwrapped instanceof TimeoutException
+                    || unwrapped instanceof ReadTimeoutException
+                    || containsReadTimeout(unwrapped)
+                    || containsTimeoutMessage(unwrapped)) {
+                log.warn("[OllamaClient] Timeout model={} effectiveHttpTimeoutSeconds={} promptChars={} durationMs={}",
                         model, timeoutSeconds, promptChars, durationMs);
                 throw AiProviderFailureException.timeout("Ollama", model, timeoutSeconds, promptChars, unwrapped);
             }
@@ -146,6 +190,20 @@ public class OllamaApiClientServiceImpl implements OllamaApiClientService {
             log.warn("[OllamaClient] Health check failed: {}", e.getMessage());
             return false;
         }
+    }
+
+    /**
+     * Returns true if any throwable in the exception chain is a Netty {@link ReadTimeoutException}.
+     */
+    private boolean containsReadTimeout(Throwable throwable) {
+        Throwable current = throwable;
+        while (current != null) {
+            if (current instanceof ReadTimeoutException) {
+                return true;
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     private boolean containsTimeoutMessage(Throwable throwable) {
