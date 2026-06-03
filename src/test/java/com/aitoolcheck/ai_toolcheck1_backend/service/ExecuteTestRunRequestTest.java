@@ -56,15 +56,14 @@ class ExecuteTestRunRequestTest {
     }
 
     @Test
-    void whenMissingBaseUrl_validationFails() {
+    void whenMissingBaseUrl_validationSucceedsForProjectDefaultFallback() {
         ExecuteTestRunRequest request = ExecuteTestRunRequest.builder()
                 .projectId(UUID.randomUUID())
                 .testCaseIds(List.of(UUID.randomUUID()))
                 .build();
 
         Set<ConstraintViolation<ExecuteTestRunRequest>> violations = validator.validate(request);
-        assertThat(violations).hasSize(1);
-        assertThat(violations.iterator().next().getMessage()).isEqualTo("baseUrl is required");
+        assertThat(violations).isEmpty();
     }
 
     @Test

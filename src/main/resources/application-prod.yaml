@@ -74,3 +74,18 @@ management:
   endpoint:
     health:
       show-details: never
+
+test-run:
+  stale:
+    enabled: ${TEST_RUN_STALE_ENABLED:true}
+    pending-timeout-minutes: ${TEST_RUN_STALE_PENDING_TIMEOUT_MINUTES:30}
+    running-timeout-minutes: ${TEST_RUN_STALE_RUNNING_TIMEOUT_MINUTES:120}
+
+runtime:
+  auto:
+    enabled: ${RUNTIME_AUTO_ENABLED:false}
+    docker-network: ${RUNTIME_AUTO_DOCKER_NETWORK:ai-toolcheck-runtime}
+    internal-port: ${RUNTIME_AUTO_INTERNAL_PORT:8080}
+    build-timeout-seconds: ${RUNTIME_AUTO_BUILD_TIMEOUT_SECONDS:300}
+    startup-timeout-seconds: ${RUNTIME_AUTO_STARTUP_TIMEOUT_SECONDS:120}
+    max-active-runtimes: ${RUNTIME_AUTO_MAX_ACTIVE_RUNTIMES:5}
