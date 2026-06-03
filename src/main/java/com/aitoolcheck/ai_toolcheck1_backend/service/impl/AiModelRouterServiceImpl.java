@@ -160,7 +160,7 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
         }
 
         try {
-            log.info("[Router][{}] Calling Ollama model={} promptChars={} timeoutSeconds={}",
+            log.info("[Router][{}] Calling Ollama model={} promptChars={} requestedTimeoutSeconds={}",
                     tier, model, prompt.length(), timeoutSeconds);
             String result = ollamaApiClientService.generateTextWithModel(prompt, model, timeoutSeconds);
             if (result == null || result.isBlank()) {
@@ -170,7 +170,9 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
             log.info("[Router][{}] Ollama model={} succeeded.", tier, model);
             return result;
         } catch (Exception ex) {
-            AiProviderFailureException failure = toProviderFailure(ex, OLLAMA, model, prompt.length());
+            // Pass timeoutSeconds so that if the client didn't already produce a typed
+            // LLM_TIMEOUT failure, toProviderFailure uses the skill-specific value.
+            AiProviderFailureException failure = toProviderFailure(ex, OLLAMA, model, prompt.length(), timeoutSeconds);
             failures.add(failure);
             log.warn("[Router][{}] {} failed: {}", tier, key, failure.getMessage());
             return null;
@@ -285,15 +287,22 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
             String provider,
             String model,
             int promptChars) {
+        return toProviderFailure(throwable, provider, model, promptChars,
+                OLLAMA.equals(provider) ? ollamaProperties.getReadTimeoutSeconds() : 60);
+    }
+
+    private AiProviderFailureException toProviderFailure(
+            Throwable throwable,
+            String provider,
+            String model,
+            int promptChars,
+            int effectiveTimeoutSeconds) {
         AiProviderFailureException typed = findProviderFailure(throwable);
         if (typed != null) {
             return typed;
         }
         if (containsTimeout(throwable)) {
-            int timeoutSeconds = OLLAMA.equals(provider)
-                    ? ollamaProperties.getReadTimeoutSeconds()
-                    : 60;
-            return AiProviderFailureException.timeout(provider, model, timeoutSeconds, promptChars, throwable);
+            return AiProviderFailureException.timeout(provider, model, effectiveTimeoutSeconds, promptChars, throwable);
         }
         return AiProviderFailureException.unavailable(provider, model, rootMessage(throwable), throwable);
     }

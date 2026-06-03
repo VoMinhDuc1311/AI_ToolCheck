@@ -141,7 +141,7 @@ class AiModelRouterServiceImplTest {
     }
 
     @Test
-    void enrichApiDoc_providerOrder_isGeminiThenOllama() {
+    void enrichApiDocOllamaCall_usesEffectiveTimeout180() {
         ollamaProperties.setEnrichApiDocTimeoutSeconds(180);
         when(geminiApiClientService.generateText(eq("gemini prompt")))
                 .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 25, null));
@@ -162,7 +162,7 @@ class AiModelRouterServiceImplTest {
     }
 
     @Test
-    void gemini429_thenOllamaSuccess_returnsOllamaResult() {
+    void gemini429_thenOllamaPath_stillUsesEnrichTimeout() {
         when(geminiApiClientService.generateText(anyString()))
                 .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
         when(ollamaApiClientService.generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180)))
@@ -194,7 +194,7 @@ class AiModelRouterServiceImplTest {
     }
 
     @Test
-    void gemini429_thenOllamaTimeout_returnsAllProvidersFailed() {
+    void noInvalidJsonSyntaxForProviderTimeout() {
         when(geminiApiClientService.generateText(anyString()))
                 .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
         when(ollamaApiClientService.generateTextWithModel(anyString(), eq("qwen2.5-coder:7b"), eq(180)))
