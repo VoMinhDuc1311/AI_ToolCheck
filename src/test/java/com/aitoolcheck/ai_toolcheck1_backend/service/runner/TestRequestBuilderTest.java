@@ -312,6 +312,47 @@ class TestRequestBuilderTest {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    @Test
+    void build_withRawSpecialCharsInPath_encodesCorrectly() throws JsonProcessingException {
+        TestCaseInput input = buildInput(HttpMethod.GET, "/legacy/customers/CUST_!@#$%^", null, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("http://localhost:8080", input);
+
+        assertEquals("http://localhost:8080/legacy/customers/CUST_!@%23$%25%5E", prepared.getFinalUrl());
+        assertEquals("/legacy/customers/CUST_!@%23$%25%5E", prepared.getRequestPath());
+    }
+
+    @Test
+    void build_withAlreadyEncodedPath_doesNotDoubleEncode() throws JsonProcessingException {
+        TestCaseInput input = buildInput(HttpMethod.GET, "/legacy/customers/CUST_!@%23$%25%5E", null, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("http://localhost:8080", input);
+
+        assertEquals("http://localhost:8080/legacy/customers/CUST_!@%23$%25%5E", prepared.getFinalUrl());
+        assertEquals("/legacy/customers/CUST_!@%23$%25%5E", prepared.getRequestPath());
+    }
+
+    @Test
+    void build_withSpaceInPath_encodesToPercent20() throws JsonProcessingException {
+        TestCaseInput input = buildInput(HttpMethod.GET, "/legacy/customers/CUST ID", null, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("http://localhost:8080", input);
+
+        assertEquals("http://localhost:8080/legacy/customers/CUST%20ID", prepared.getFinalUrl());
+        assertEquals("/legacy/customers/CUST%20ID", prepared.getRequestPath());
+    }
+
+    @Test
+    void build_withPlusInPath_encodesToPercent2B() throws JsonProcessingException {
+        TestCaseInput input = buildInput(HttpMethod.GET, "/legacy/customers/CUST+ID", null, null, null);
+
+        PreparedHttpRequestResponse prepared = builder.build("http://localhost:8080", input);
+
+        assertEquals("http://localhost:8080/legacy/customers/CUST%2BID", prepared.getFinalUrl());
+        assertEquals("/legacy/customers/CUST%2BID", prepared.getRequestPath());
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
 

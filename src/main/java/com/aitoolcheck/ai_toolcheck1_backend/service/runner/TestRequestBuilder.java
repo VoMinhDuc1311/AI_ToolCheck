@@ -70,7 +70,7 @@ public class TestRequestBuilder {
         validateInput(input);
 
         String normalizedBase  = normalizeBaseUrl(baseUrl);
-        String normalizedPath  = normalizeRequestPath(input.getRequestPath());
+        String normalizedPath  = encodePathSafely(normalizeRequestPath(input.getRequestPath()));
         String finalUrl;
 
         // Parse stored JSON strings to typed Map/Object — NOT to raw JsonNode,
@@ -247,5 +247,61 @@ public class TestRequestBuilder {
 
     private boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    /**
+     * Encodes path variables/segments safely to prevent raw URL-reserved characters
+     * (especially '#') from truncating the request path at the fragment parser stage.
+     * Splitting by '/' ensures path separators themselves are not incorrectly encoded.
+     * Percent-encoded sequences (%XX) are preserved to avoid double-encoding.
+     */
+    private String encodePathSafely(String path) {
+        if (path == null || path.isEmpty()) {
+            return path;
+        }
+        String[] segments = path.split("/", -1);
+        for (int i = 0; i < segments.length; i++) {
+            segments[i] = encodeSegmentSafely(segments[i]);
+        }
+        return String.join("/", segments);
+    }
+
+    private String encodeSegmentSafely(String segment) {
+        if (segment == null || segment.isEmpty()) {
+            return segment;
+        }
+        StringBuilder sb = new StringBuilder();
+        int len = segment.length();
+        int lastIndex = 0;
+        int i = 0;
+        while (i < len) {
+            if (segment.charAt(i) == '%') {
+                if (i + 2 < len && isHexDigit(segment.charAt(i + 1)) && isHexDigit(segment.charAt(i + 2))) {
+                    if (i > lastIndex) {
+                        String part = segment.substring(lastIndex, i);
+                        sb.append(encodeSegmentPart(part));
+                    }
+                    sb.append(segment.substring(i, i + 3));
+                    i += 3;
+                    lastIndex = i;
+                    continue;
+                }
+            }
+            i++;
+        }
+        if (lastIndex < len) {
+            String part = segment.substring(lastIndex, len);
+            sb.append(encodeSegmentPart(part));
+        }
+        return sb.toString();
+    }
+
+    private String encodeSegmentPart(String part) {
+        String encoded = org.springframework.web.util.UriUtils.encodePathSegment(part, StandardCharsets.UTF_8);
+        return encoded.replace("+", "%2B");
+    }
+
+    private boolean isHexDigit(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
     }
 }
