@@ -89,12 +89,13 @@ public class AiPromptConstants {
     * SYSTEM PROMPT FOR AI SKILL 2: GENERATE TEST CASES
     *
     * <p>
-    * Format args (in order):
-    * <ol>
-    * <li>{@code %s} — API Endpoint Details (Method, Path, Query/Path
-    * Parameters)</li>
-    * <li>{@code %s} — Payload/Schema Definitions</li>
-    * </ol>
+    * Note: This prompt template uses named placeholders and must not be formatted using String.format() or String.formatted().
+    * </p>
+    * Placeholders:
+    * <ul>
+    * <li>{@code {{API_ENDPOINT_DETAILS}}} — API Endpoint Details (Method, Path, Query/Path Parameters)</li>
+    * <li>{@code {{PAYLOAD_SCHEMA_DEFINITIONS}}} — Payload/Schema Definitions</li>
+    * </ul>
     */
    public static final String PROMPT_SKILL_2_GEN_TESTCASE = """
          # SYSTEM ROLE
@@ -104,11 +105,11 @@ public class AiPromptConstants {
          You are provided with the technical metadata of an API endpoint and its schema definitions.
 
          <API_Endpoint_Details>
-         %s
+         {{API_ENDPOINT_DETAILS}}
          </API_Endpoint_Details>
 
          <Payload_Schema_Definitions>
-         %s
+         {{PAYLOAD_SCHEMA_DEFINITIONS}}
          </Payload_Schema_Definitions>
 
          # TASK INSTRUCTIONS

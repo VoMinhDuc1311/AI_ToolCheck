@@ -650,10 +650,22 @@ public class TestCaseServiceImpl implements TestCaseService {
                 aiPayloadOptimizerService.truncateIfNeeded(schemas.toString(), aiOptimizationProperties.getMaxPromptChars() / 2) : schemas.toString();
 
         // 3. Inject Context vào Prompt
-        String prompt = String.format(
-                AiPromptConstants.PROMPT_SKILL_2_GEN_TESTCASE,
-                apiDetails.toString(),
-                optimizedSchemas);
+        String prompt;
+        try {
+            prompt = buildGenerateTestCasePrompt(apiDetails.toString(), optimizedSchemas, endpointId, jobId);
+            log.info("[GenerateTestCase] Prompt built successfully endpointId={} jobId={} promptChars={} apiDetailsChars={} schemaChars={}",
+                    endpointId, jobId, prompt.length(), apiDetails.length(), optimizedSchemas.length());
+        } catch (Exception e) {
+            log.error("[GenerateTestCase] Prompt build failed skill=GENERATE_TEST_CASE template=PROMPT_SKILL_2_GEN_TESTCASE endpointId={} jobId={} rootCause={}",
+                    endpointId, jobId, e.getMessage(), e);
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.FAILED);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setErrorMessage("Prompt build failed: " + e.getMessage());
+                aiJobLogRepository.save(job);
+            });
+            throw new AiPersistenceException("Quy trình sinh Test Case thất bại do lỗi build prompt: " + e.getMessage(), e);
+        }
 
         String rawResult = null;
         try {
@@ -687,6 +699,31 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         return rawResult;
+    }
+
+    String buildGenerateTestCasePrompt(
+            String apiEndpointDetails,
+            String payloadSchemaDefinitions,
+            String endpointId,
+            UUID jobId
+    ) {
+        String prompt = AiPromptConstants.PROMPT_SKILL_2_GEN_TESTCASE
+                .replace("{{API_ENDPOINT_DETAILS}}", nullToEmpty(apiEndpointDetails))
+                .replace("{{PAYLOAD_SCHEMA_DEFINITIONS}}", nullToEmpty(payloadSchemaDefinitions));
+
+        if (prompt.contains("{{API_ENDPOINT_DETAILS}}")
+                || prompt.contains("{{PAYLOAD_SCHEMA_DEFINITIONS}}")) {
+            throw new IllegalStateException(
+                "Prompt template unresolved placeholders for skill=GENERATE_TEST_CASE, template=PROMPT_SKILL_2_GEN_TESTCASE, endpointId="
+                + endpointId + ", jobId=" + jobId
+            );
+        }
+
+        return prompt;
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 
     @Override

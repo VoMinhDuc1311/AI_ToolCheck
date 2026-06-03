@@ -19,6 +19,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -47,6 +48,12 @@ class TestCaseServiceImplTest {
     private ProjectAccessService projectAccessService;
     private ApiEndpointRepository apiEndpointRepository;
     private ApiDocumentVersionRepository apiDocumentVersionRepository;
+    private AiModelRouterService aiModelRouterService;
+    private AiJsonParserService aiJsonParserService;
+    private AiJobLogRepository aiJobLogRepository;
+    private ApplicationContext applicationContext;
+    private AiOptimizationProperties aiOptimizationProperties;
+    private AiPayloadOptimizerService aiPayloadOptimizerService;
     private TestCaseServiceImpl service;
 
     private UUID projectId;
@@ -61,22 +68,28 @@ class TestCaseServiceImplTest {
         projectAccessService = mock(ProjectAccessService.class);
         apiEndpointRepository = mock(ApiEndpointRepository.class);
         apiDocumentVersionRepository = mock(ApiDocumentVersionRepository.class);
+        aiModelRouterService = mock(AiModelRouterService.class);
+        aiJsonParserService = mock(AiJsonParserService.class);
+        aiJobLogRepository = mock(AiJobLogRepository.class);
+        applicationContext = mock(ApplicationContext.class);
+        aiOptimizationProperties = mock(AiOptimizationProperties.class);
+        aiPayloadOptimizerService = mock(AiPayloadOptimizerService.class);
 
         service = new TestCaseServiceImpl(
                 testCaseRepository,
                 mock(TestCaseAssertionRepository.class),
                 apiEndpointRepository,
                 apiDocumentVersionRepository,
-                mock(AiJobLogRepository.class),
+                aiJobLogRepository,
                 mock(AiTaskProducer.class),
-                mock(AiModelRouterService.class),
-                mock(AiJsonParserService.class),
+                aiModelRouterService,
+                aiJsonParserService,
                 projectAccessService,
                 mock(AiSkillRepository.class),
                 new ObjectMapper(),
-                mock(ApplicationContext.class),
-                mock(AiPayloadOptimizerService.class),
-                mock(AiOptimizationProperties.class));
+                applicationContext,
+                aiPayloadOptimizerService,
+                aiOptimizationProperties);
 
         projectId = UUID.randomUUID();
         endpointId = UUID.randomUUID();
@@ -445,5 +458,88 @@ class TestCaseServiceImplTest {
         assertion.setTestCase(tc);
 
         return tc;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Agent 2 Formatting & Prompt Generation Tests
+    // ─────────────────────────────────────────────────────────────────────────
+
+    @Test
+    void generateTestCasePrompt_doesNotThrowWhenTemplateContainsLiteralPercent() {
+        String apiDetails = "100% valid. # ? / % & = + space. CUST_!@#$%^";
+        String optimizedSchemas = "Some schemas with % character.";
+        
+        String prompt = assertDoesNotThrow(() -> 
+            service.buildGenerateTestCasePrompt(apiDetails, optimizedSchemas, endpointId.toString(), UUID.randomUUID())
+        );
+        
+        assertThat(prompt).contains("100% valid");
+        assertThat(prompt).contains("# ? / % & = + space");
+        assertThat(prompt).contains("CUST_!@#$%^");
+    }
+
+    @Test
+    void generateTestCasePrompt_containsInjectedApiDetails() {
+        String apiDetails = "GET /legacy/customers";
+        String prompt = service.buildGenerateTestCasePrompt(apiDetails, "Some schema", endpointId.toString(), UUID.randomUUID());
+        assertThat(prompt).contains("GET /legacy/customers");
+    }
+
+    @Test
+    void generateTestCasePrompt_containsInjectedSchemas() {
+        String optimizedSchemas = "{ \"CustomerRequest\": {} }";
+        String prompt = service.buildGenerateTestCasePrompt("GET /legacy", optimizedSchemas, endpointId.toString(), UUID.randomUUID());
+        assertThat(prompt).contains("{ \"CustomerRequest\": {} }");
+    }
+
+    @Test
+    void generateTestCasePrompt_hasNoUnresolvedNamedPlaceholders() {
+        String prompt = service.buildGenerateTestCasePrompt("GET /legacy", "Some schema", endpointId.toString(), UUID.randomUUID());
+        assertThat(prompt).doesNotContain("{{API_ENDPOINT_DETAILS}}");
+        assertThat(prompt).doesNotContain("{{PAYLOAD_SCHEMA_DEFINITIONS}}");
+    }
+
+    @Test
+    void generateTestCaseProcessing_reachesRouterAfterPromptBuild() {
+        UUID jobId = UUID.randomUUID();
+        String dummyJson = "{\"test_cases\": []}";
+        
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+        when(aiModelRouterService.routeAndExecute(any(), any())).thenReturn(dummyJson);
+        
+        com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest dummyRequest = 
+                new com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest();
+        dummyRequest.setTestCases(java.util.Collections.emptyList());
+        when(aiJsonParserService.parseTestCaseRequest(dummyJson)).thenReturn(dummyRequest);
+        
+        String result = service.generateTestCaseProcessing(endpointId.toString(), jobId);
+        
+        assertEquals(dummyJson, result);
+        verify(aiModelRouterService).routeAndExecute(any(), any());
+    }
+
+    @Test
+    void promptSkill2_noStringFormatRequired() {
+        // Assert that the raw constant no longer contains %s placeholders
+        assertThat(com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants.PROMPT_SKILL_2_GEN_TESTCASE)
+                .doesNotContain("%s");
+        
+        // Assert it contains the named placeholders
+        assertThat(com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants.PROMPT_SKILL_2_GEN_TESTCASE)
+                .contains("{{API_ENDPOINT_DETAILS}}")
+                .contains("{{PAYLOAD_SCHEMA_DEFINITIONS}}");
+    }
+
+    @Test
+    void regression_agent1EnrichDocPrompt_unaffected() {
+        // Check that Agent 1's system prompt still contains the %s formatting placeholders
+        assertThat(com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants.ENRICH_DOC_SYSTEM_PROMPT)
+                .contains("%s");
+        
+        // Confirm formatting behaves normally for Agent 1 prompt
+        String formatted = String.format(
+                com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants.ENRICH_DOC_SYSTEM_PROMPT,
+                "RAG CONTEXT", "METADATA");
+        assertThat(formatted).contains("RAG CONTEXT").contains("METADATA");
     }
 }
