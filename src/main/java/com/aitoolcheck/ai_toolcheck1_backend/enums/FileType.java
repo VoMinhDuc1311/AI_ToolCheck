@@ -38,5 +38,9 @@ public enum FileType {
 
     TEST,
 
+    BUILD,
+    APP_CONFIG,
+    SCRIPT,
+
     UNKNOWN
 }

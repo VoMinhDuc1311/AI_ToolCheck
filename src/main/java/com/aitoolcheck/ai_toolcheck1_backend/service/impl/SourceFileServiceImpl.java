@@ -122,17 +122,17 @@ public class SourceFileServiceImpl implements SourceFileService {
                 unzipSafely(zipPath, extractDir);
                 Path contentRoot = resolveContentRoot(extractDir, stripSingleRootDirectory);
 
-                List<Path> javaFiles;
+                List<Path> preservedFiles;
                 try (Stream<Path> stream = Files.walk(contentRoot)) {
-                    javaFiles = stream
+                    preservedFiles = stream
                             .filter(Files::isRegularFile)
-                            .filter(this::isJavaFile)
+                            .filter(this::isPreservedFile)
                             .filter(path -> !shouldIgnorePath(contentRoot.relativize(path)))
                             .toList();
                 }
 
-                if (javaFiles.isEmpty()) {
-                    throw new BadRequestException("No Java files found in uploaded zip");
+                if (preservedFiles.isEmpty()) {
+                    throw new BadRequestException("No valid source files found in uploaded zip");
                 }
 
                 int ignoredFiles = countIgnoredFiles(extractDir);
@@ -146,10 +146,10 @@ public class SourceFileServiceImpl implements SourceFileService {
                         .build());
 
                 Map<String, UploadedJavaFile> uploadedByPath = new HashMap<>();
-                for (Path javaFile : javaFiles) {
+                for (Path javaFile : preservedFiles) {
                     UploadedJavaFile uploaded = toUploadedJavaFile(javaFile, contentRoot);
                     if (uploadedByPath.put(uploaded.filePath(), uploaded) != null) {
-                        throw new BadRequestException("Duplicate Java file path in uploaded zip: " + uploaded.filePath());
+                        throw new BadRequestException("Duplicate file path in uploaded zip: " + uploaded.filePath());
                     }
                 }
 
@@ -212,7 +212,7 @@ public class SourceFileServiceImpl implements SourceFileService {
                         + ", unchanged: " + unchangedFiles
                         + ", deleted: " + deletedFiles + ".";
 
-                uploadVersion.setTotalJavaFilesFound(javaFiles.size());
+                uploadVersion.setTotalJavaFilesFound(preservedFiles.size());
                 uploadVersion.setSavedFiles(savedFiles);
                 uploadVersion.setIgnoredFiles(ignoredFiles);
                 uploadVersion.setAddedFiles(addedFiles);
@@ -241,7 +241,7 @@ public class SourceFileServiceImpl implements SourceFileService {
                         .projectName(sourceProject.getProjectName())
                         .uploadVersionId(uploadVersion.getId())
                         .versionNo(uploadVersion.getVersionNo())
-                        .totalJavaFilesFound(javaFiles.size())
+                        .totalJavaFilesFound(preservedFiles.size())
                         .savedFiles(savedFiles)
                         .ignoredFiles(ignoredFiles)
                         .addedFiles(addedFiles)
@@ -438,15 +438,25 @@ public class SourceFileServiceImpl implements SourceFileService {
                 || normalized.startsWith("out/");
     }
 
-    private boolean isJavaFile(Path path) {
-        return path.getFileName().toString().toLowerCase().endsWith(".java");
+    private boolean isPreservedFile(Path path) {
+        String fileName = path.getFileName().toString().toLowerCase();
+        if (fileName.endsWith(".java")) return true;
+        
+        return fileName.equals("pom.xml") || 
+               fileName.equals("build.gradle") || fileName.equals("build.gradle.kts") ||
+               fileName.equals("settings.gradle") || fileName.equals("settings.gradle.kts") ||
+               fileName.equals("mvnw") || fileName.equals("mvnw.cmd") ||
+               fileName.equals("gradlew") || fileName.equals("gradlew.bat") ||
+               fileName.equals("application.yml") || fileName.equals("application.yaml") ||
+               fileName.equals("application.properties") ||
+               fileName.equals("dockerfile");
     }
 
     private int countIgnoredFiles(Path extractDir) throws IOException {
         try (Stream<Path> stream = Files.walk(extractDir)) {
             return (int) stream
                     .filter(Files::isRegularFile)
-                    .filter(path -> !isJavaFile(path) || shouldIgnorePath(extractDir.relativize(path)))
+                    .filter(path -> !isPreservedFile(path) || shouldIgnorePath(extractDir.relativize(path)))
                     .count();
         }
     }
@@ -548,6 +558,9 @@ public class SourceFileServiceImpl implements SourceFileService {
     }
 
     private String extractPackageName(Path javaFile) {
+        if (!javaFile.getFileName().toString().endsWith(".java")) {
+            return null;
+        }
         try (Stream<String> lines = Files.lines(javaFile)) {
             return lines
                     .map(String::trim)
@@ -570,6 +583,16 @@ public class SourceFileServiceImpl implements SourceFileService {
     private FileType detectFileType(Path relativePath, String fileName) {
         String path = relativePath.toString().replace("\\", "/").toLowerCase();
         String name = fileName == null ? "" : fileName.toLowerCase();
+
+        if (name.equals("pom.xml") || name.startsWith("build.gradle") || name.startsWith("settings.gradle") || name.equals("dockerfile")) {
+            return FileType.BUILD;
+        }
+        if (name.equals("application.yml") || name.equals("application.yaml") || name.equals("application.properties")) {
+            return FileType.APP_CONFIG;
+        }
+        if (name.equals("mvnw") || name.equals("mvnw.cmd") || name.equals("gradlew") || name.equals("gradlew.bat")) {
+            return FileType.SCRIPT;
+        }
 
         if (path.startsWith("src/test/") || path.contains("/src/test/") || name.endsWith("test.java") || name.endsWith("tests.java")) {
             return FileType.TEST;
