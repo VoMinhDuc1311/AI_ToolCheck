@@ -117,6 +117,41 @@ class TestRunPreflightTest {
     }
 
     @Test
+    void externalBaseUrlPreflight_allSafeEndpoints404_persistsRunFailed() {
+        TestRunItem item1 = buildItemWithMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
+        when(testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(testRun.getId())).thenReturn(List.of(item1));
+        
+        when(testRequestBuilder.build(any(), any())).thenReturn(mock(com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.PreparedHttpRequestResponse.class));
+        com.aitoolcheck.ai_toolcheck1_backend.service.runner.ExecutedHttpResponse resp404 = mock(com.aitoolcheck.ai_toolcheck1_backend.service.runner.ExecutedHttpResponse.class);
+        when(resp404.statusCode()).thenReturn(404);
+        when(testHttpExecutor.execute(any())).thenReturn(resp404);
+
+        service.executeTestRunAsync(testRun.getId());
+        
+        assertThat(testRun.getRunStatus()).isEqualTo(RunStatus.FAILED);
+        org.mockito.Mockito.verify(testRunRepository, org.mockito.Mockito.atLeastOnce()).save(testRun);
+    }
+
+    @Test
+    void executeApi_preflightFailure_doesNotLeaveRunPending() {
+        TestRunItem item1 = buildItemWithMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
+        when(testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(testRun.getId())).thenReturn(List.of(item1));
+        
+        when(testRequestBuilder.build(any(), any())).thenReturn(mock(com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.PreparedHttpRequestResponse.class));
+        com.aitoolcheck.ai_toolcheck1_backend.service.runner.ExecutedHttpResponse resp404 = mock(com.aitoolcheck.ai_toolcheck1_backend.service.runner.ExecutedHttpResponse.class);
+        when(resp404.statusCode()).thenReturn(404);
+        when(testHttpExecutor.execute(any())).thenReturn(resp404);
+
+        assertThatThrownBy(() -> service.execute(testRun.getId()))
+                .isInstanceOf(BadRequestException.class);
+                
+        assertThat(testRun.getRunStatus()).isNotEqualTo(RunStatus.PENDING);
+        assertThat(testRun.getRunStatus()).isNotEqualTo(RunStatus.RUNNING);
+        assertThat(testRun.getRunStatus()).isEqualTo(RunStatus.FAILED);
+        org.mockito.Mockito.verify(testRunRepository, org.mockito.Mockito.atLeastOnce()).save(testRun);
+    }
+
+    @Test
     void externalBaseUrlPreflight_someSafeEndpointNot404_allowsRun() {
         TestRunItem item1 = buildItemWithMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
         TestRunItem item2 = buildItemWithMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.HEAD);
