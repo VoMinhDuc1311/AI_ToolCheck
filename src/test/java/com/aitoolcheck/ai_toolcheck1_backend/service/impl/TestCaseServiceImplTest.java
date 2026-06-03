@@ -38,8 +38,10 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
 class TestCaseServiceImplTest {
@@ -505,7 +507,7 @@ class TestCaseServiceImplTest {
         String dummyJson = "{\"test_cases\": []}";
         
         when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
-        when(aiModelRouterService.routeAndExecute(any(), any())).thenReturn(dummyJson);
+        when(aiModelRouterService.routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any())).thenReturn(dummyJson);
         
         com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest dummyRequest = 
                 new com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest();
@@ -515,7 +517,8 @@ class TestCaseServiceImplTest {
         String result = service.generateTestCaseProcessing(endpointId.toString(), jobId);
         
         assertEquals(dummyJson, result);
-        verify(aiModelRouterService).routeAndExecute(any(), any());
+        verify(aiModelRouterService).routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any());
+        verify(aiModelRouterService, never()).routeAndExecute(any(), any());
     }
 
     @Test

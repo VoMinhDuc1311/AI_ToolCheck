@@ -12,4 +12,5 @@ public interface AiModelRouterService {
             Supplier<String> ollamaPromptSupplier,
             Consumer<String> rawResponseValidator);
     String routeAndExecute(String prompt, UUID jobId);
+    String routeAndExecuteForSkill(String skillCode, String prompt, UUID jobId);
 }

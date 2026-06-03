@@ -671,7 +671,7 @@ public class TestCaseServiceImpl implements TestCaseService {
         try {
             // 4. Định tuyến AI và thực thi (Tốn thời gian, không có @Transactional để tránh
             // treo DB connection)
-            rawResult = aiModelRouterService.routeAndExecute(prompt, jobId);
+            rawResult = aiModelRouterService.routeAndExecuteForSkill("GENERATE_TEST_CASE", prompt, jobId);
 
             // 5. Sau khi nhận kết quả, parse và persist ngay vào DB (New Flow - Week 8)
             // Bước 5.1: Parse JSON AI thành DTO chuẩn

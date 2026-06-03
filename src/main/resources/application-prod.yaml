@@ -53,6 +53,7 @@ ai:
     # Override via env OLLAMA_READ_TIMEOUT_SECONDS if running a larger model.
     read-timeout-seconds: ${OLLAMA_READ_TIMEOUT_SECONDS:90}
     enrich-api-doc-timeout-seconds: ${OLLAMA_ENRICH_API_DOC_TIMEOUT_SECONDS:180}
+    generate-test-case-timeout-seconds: ${OLLAMA_GENERATE_TEST_CASE_TIMEOUT_SECONDS:180}
 
 logging:
   level:

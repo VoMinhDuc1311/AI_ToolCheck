@@ -53,13 +53,14 @@ public class OllamaApiClientServiceImpl implements OllamaApiClientService {
     public void logStartupConfig() {
         log.info("[OllamaClient] Initialized - baseUrl={} primaryModel={} " +
                         "connectTimeoutSeconds={} globalReadTimeoutSeconds={} " +
-                        "enrichApiDocTimeoutSeconds={} " +
+                        "enrichApiDocTimeoutSeconds={} generateTestCaseTimeoutSeconds={} " +
                         "(note: global ReadTimeoutHandler NOT installed; per-request Mono.timeout controls effective deadline)",
                 ollamaProperties.getBaseUrl(),
                 ollamaProperties.getPrimaryModel(),
                 ollamaProperties.getConnectTimeoutSeconds(),
                 ollamaProperties.getReadTimeoutSeconds(),
-                ollamaProperties.getEnrichApiDocTimeoutSeconds());
+                ollamaProperties.getEnrichApiDocTimeoutSeconds(),
+                ollamaProperties.getGenerateTestCaseTimeoutSeconds());
     }
 
     @Override
