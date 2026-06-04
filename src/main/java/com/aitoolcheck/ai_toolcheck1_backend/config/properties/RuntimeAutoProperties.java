@@ -5,66 +5,89 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 /**
- * Configuration properties for the auto-runtime feature.
+ * Configuration properties for source auto-runtime.
  *
- * <p>Bound from {@code runtime.auto.*} in {@code application.yaml}.
- *
- * <h3>Port allocation:</h3>
- * <p>When starting auto-runtimes via Docker, host ports are allocated from
- * {@code [hostPortRangeStart, hostPortRangeEnd]}. The first available port
- * in this range is selected. Default range: 18080–18999 (920 slots).
+ * <p>Primary binding prefix: {@code ai.runtime.*}. The existing Java class name
+ * is retained because services already depend on it.
  */
 @Data
 @Component
-@ConfigurationProperties(prefix = "runtime.auto")
+@ConfigurationProperties(prefix = "ai.runtime")
 public class RuntimeAutoProperties {
 
-    /** Whether the auto-runtime feature is enabled at all. Default: {@code false}. */
+    /** Master switch for auto-runtime. Default: false. */
     private boolean enabled = false;
 
-    /**
-     * Docker network name to attach runtime containers to.
-     * Must exist before the first container is started.
-     * Default: {@code ai-toolcheck-runtime}.
-     */
-    private String dockerNetwork = "ai-toolcheck-runtime";
+    /** Docker-specific switch. Both enabled and docker.enabled must be true. */
+    private Docker docker = new Docker();
 
-    /**
-     * The internal (container-side) port that the source application exposes.
-     * Used as the container port in {@code docker run -p HOST_PORT:INTERNAL_PORT}.
-     * Default: {@code 8080}.
-     */
+    /** Backward-compatible direct network property; docker.network wins if set. */
+    private String dockerNetwork = "ai-toolcheck-network";
+
+    /** Container-side application port fallback. */
     private int internalPort = 8080;
 
-    /**
-     * Maximum time (in seconds) allowed for {@code docker build} to complete.
-     * Default: {@code 300} (5 minutes).
-     */
+    /** Host port range for runtime containers. */
+    private int portMin = 18080;
+    private int portMax = 18999;
+
+    /** Prefix used for generated Docker images and container names. */
+    private String containerPrefix = "aitc-runtime";
+
+    /** Hostname/IP used in publicBaseUrl. Override in production. */
+    private String publicHost = "127.0.0.1";
+
     private int buildTimeoutSeconds = 300;
-
-    /**
-     * Maximum time (in seconds) to wait for the started container to pass
-     * health checks before marking it as {@code BUILD_FAILED}.
-     * Default: {@code 120} (2 minutes).
-     */
-    private int startupTimeoutSeconds = 120;
-
-    /**
-     * Maximum number of concurrently running auto-runtime containers.
-     * Requests beyond this limit will return a {@code BUILD_QUEUED} or error response.
-     * Default: {@code 5}.
-     */
+    private int startTimeoutSeconds = 120;
+    private int healthTimeoutSeconds = 5;
     private int maxActiveRuntimes = 5;
 
-    /**
-     * Start of the host port range used for allocating ports to auto-runtime containers.
-     * Default: {@code 18080}.
-     */
-    private int hostPortRangeStart = 18080;
+    public boolean isDockerRuntimeEnabled() {
+        return enabled && docker != null && docker.isEnabled();
+    }
 
-    /**
-     * End (inclusive) of the host port range for auto-runtime containers.
-     * Default: {@code 18999}.
-     */
-    private int hostPortRangeEnd = 18999;
+    public String getDockerNetwork() {
+        if (docker != null && docker.getNetwork() != null && !docker.getNetwork().isBlank()) {
+            return docker.getNetwork();
+        }
+        return dockerNetwork;
+    }
+
+    public void setDockerNetwork(String dockerNetwork) {
+        this.dockerNetwork = dockerNetwork;
+        if (this.docker == null) {
+            this.docker = new Docker();
+        }
+        this.docker.setNetwork(dockerNetwork);
+    }
+
+    public int getStartupTimeoutSeconds() {
+        return startTimeoutSeconds;
+    }
+
+    public void setStartupTimeoutSeconds(int startupTimeoutSeconds) {
+        this.startTimeoutSeconds = startupTimeoutSeconds;
+    }
+
+    public int getHostPortRangeStart() {
+        return portMin;
+    }
+
+    public void setHostPortRangeStart(int hostPortRangeStart) {
+        this.portMin = hostPortRangeStart;
+    }
+
+    public int getHostPortRangeEnd() {
+        return portMax;
+    }
+
+    public void setHostPortRangeEnd(int hostPortRangeEnd) {
+        this.portMax = hostPortRangeEnd;
+    }
+
+    @Data
+    public static class Docker {
+        private boolean enabled = false;
+        private String network;
+    }
 }

@@ -356,10 +356,13 @@ class SourceRuntimeServiceImplTest {
         RuntimeAutoProperties properties = new RuntimeAutoProperties();
 
         assertThat(properties.isEnabled()).isFalse();
-        assertThat(properties.getDockerNetwork()).isEqualTo("ai-toolcheck-runtime");
+        assertThat(properties.getDockerNetwork()).isEqualTo("ai-toolcheck-network");
         assertThat(properties.getInternalPort()).isEqualTo(8080);
         assertThat(properties.getBuildTimeoutSeconds()).isEqualTo(300);
         assertThat(properties.getStartupTimeoutSeconds()).isEqualTo(120);
+        assertThat(properties.getPortMin()).isEqualTo(18080);
+        assertThat(properties.getPortMax()).isEqualTo(18999);
+        assertThat(properties.getContainerPrefix()).isEqualTo("aitc-runtime");
         assertThat(properties.getMaxActiveRuntimes()).isEqualTo(5);
     }
 

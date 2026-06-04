@@ -3,105 +3,83 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.runtime;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.RuntimeAutoProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.MaterializedRuntimeSource;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.RuntimeDetectionResult;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeType;
+import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceRuntime;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceRuntimeRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuntimeSourceMaterializer;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.IOException;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
-/**
- * {@link RuntimeOrchestratorStrategy} that builds a Docker image from source and
- * manages container lifecycle via the Docker CLI and Docker socket.
- *
- * <h3>Prerequisites (all must be satisfied):</h3>
- * <ul>
- *   <li>{@code /var/run/docker.sock} must be mounted into the backend container.</li>
- *   <li>{@code docker} CLI must be present on PATH inside the backend container.</li>
- *   <li>A writable temp directory must be available for source materialization.</li>
- * </ul>
- *
- * <h3>Lifecycle:</h3>
- * <ol>
- *   <li>Materialize source files to a temp directory via
- *       {@link RuntimeSourceMaterializer#materialize(java.util.UUID)}.</li>
- *   <li>Detect which network to join and which port to allocate (from config range).</li>
- *   <li>Generate a {@code Dockerfile} targeting the detected runtime type
- *       (Maven/Gradle Spring Boot).</li>
- *   <li>Run {@code docker build} — update runtime to {@code BUILDING}.</li>
- *   <li>Run {@code docker run} with the allocated host port — update to {@code STARTING}.</li>
- *   <li>Poll health endpoint until UP or timeout — update to {@code UP} or {@code BUILD_FAILED}.</li>
- * </ol>
- *
- * <p><strong>Phase 2 note:</strong> This class is fully wired and will be selected by
- * {@link RuntimeOrchestratorFactory} when Docker is available. The build/run loop
- * implementation is a thin skeleton in this commit — it transitions the runtime to
- * {@code BUILD_FAILED} with an actionable reason rather than fake {@code UP}. The
- * full container orchestration implementation is deferred to Phase 3 (when EC2 gets
- * Docker socket mount or DinD sidecar).
- */
 @RequiredArgsConstructor
 @Slf4j
 public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
 
-    private static final List<String> HEALTH_PROBE_PATHS = List.of(
-            "/actuator/health", "/health", "/healthz", "/"
-    );
-    private static final Duration HEALTH_PROBE_TIMEOUT = Duration.ofSeconds(5);
-    private static final int HEALTH_POLL_INTERVAL_SECONDS = 3;
+    private static final List<String> HEALTH_PROBE_PATHS = List.of("/actuator/health", "/health", "/healthz", "/");
+    private static final Pattern SAFE_DOCKER_REF = Pattern.compile("[a-z0-9][a-z0-9_.-]{0,127}");
+    private static final int CONTAINER_NAME_MAX = 63;
 
     private final SourceRuntimeRepository sourceRuntimeRepository;
+    private final ApiEndpointRepository apiEndpointRepository;
     private final RuntimeSourceMaterializer runtimeSourceMaterializer;
     private final RuntimeAutoProperties properties;
+    private CommandExecutor commandExecutor = new ProcessCommandExecutor();
+    private HealthProbe healthProbe = new HttpHealthProbe();
 
     @Override
     public SourceRuntime start(SourceProject project, RuntimeDetectionResult detection) {
-        log.info("[DockerRuntimeOrchestrator] Starting runtime for project={} type={}",
-                project.getId(), detection.getRuntimeType());
-
-        // Step 1: Persist BUILDING status
         SourceRuntime runtime = sourceRuntimeRepository.save(buildRuntime(project, detection, RuntimeStatus.BUILDING, null));
         runtime.setBuildStartedAt(LocalDateTime.now());
         sourceRuntimeRepository.save(runtime);
 
-        // Step 2: Materialize source
         MaterializedRuntimeSource materialized;
         try {
             materialized = runtimeSourceMaterializer.materialize(project.getId());
+            if (materialized.getSourceVersionId() != null) {
+                runtime.setSourceVersion(com.aitoolcheck.ai_toolcheck1_backend.model.SourceUploadVersion.builder()
+                        .id(materialized.getSourceVersionId())
+                        .build());
+            }
         } catch (Exception e) {
-            log.error("[DockerRuntimeOrchestrator] Materialization failed for project={}: {}",
-                    project.getId(), e.getMessage());
-            return failRuntime(runtime, "Source materialization failed: " + e.getMessage());
+            return failRuntime(runtime, RuntimeStatus.BUILD_FAILED, "Source materialization failed: " + safeMessage(e));
         }
 
+        String containerName = null;
+        String imageTag = null;
         try {
-            // Step 3: Generate Dockerfile
-            String dockerfileContent = generateDockerfile(detection);
-            java.nio.file.Path dockerfilePath = materialized.getRootDir().resolve("Dockerfile.autorun");
-            try {
-                java.nio.file.Files.writeString(dockerfilePath, dockerfileContent);
-            } catch (IOException e) {
-                return failRuntime(runtime, "Could not write Dockerfile: " + e.getMessage());
-            }
+            int appPort = detection.getDetectedPort() != null ? detection.getDetectedPort() : properties.getInternalPort();
+            Path dockerfilePath = resolveDockerfile(materialized.getRootDir(), detection, appPort);
+            imageTag = sanitizeDockerRef(properties.getContainerPrefix()) + ":" + sanitizeDockerRef(project.getId() + "-" + System.currentTimeMillis());
+            containerName = sanitizeContainerName(properties.getContainerPrefix(), project.getId(), System.currentTimeMillis());
+            int hostPort = allocatePort(project.getId());
 
-            // Step 4: docker build
-            String imageTag = "ai-toolcheck-runtime-" + project.getId().toString().substring(0, 8);
-            boolean built = runDockerBuild(materialized.getRootDir(), imageTag, dockerfilePath);
-            if (!built) {
-                return failRuntime(runtime, "docker build failed. Check that the source compiles correctly.");
+            CommandResult build = runDockerBuild(materialized.getRootDir(), imageTag, dockerfilePath);
+            if (!build.success()) {
+                cleanupContainerAndImage(containerName, imageTag);
+                return failRuntime(runtime, RuntimeStatus.BUILD_FAILED, "docker build failed: " + build.summary());
             }
 
             runtime.setBuildFinishedAt(LocalDateTime.now());
@@ -109,56 +87,50 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
             runtime.setRuntimeStatus(RuntimeStatus.STARTING);
             sourceRuntimeRepository.save(runtime);
 
-            // Step 5: docker run
-            int hostPort = allocatePort(project.getId());
-            String containerName = "ait-runtime-" + project.getId().toString().substring(0, 8);
-            boolean started = runDockerContainer(imageTag, containerName, hostPort, properties.getDockerNetwork());
-            if (!started) {
-                stopContainerQuietly(containerName);
-                return failRuntime(runtime, "docker run failed. Container may have crashed on startup.");
+            CommandResult run = runDockerContainer(imageTag, containerName, hostPort, appPort, properties.getDockerNetwork());
+            if (!run.success()) {
+                cleanupContainerAndImage(containerName, imageTag);
+                return failRuntime(runtime, RuntimeStatus.UNHEALTHY, "docker run failed: " + run.summary());
             }
 
+            String publicUrl = buildPublicUrl(hostPort, detection.getContextPath());
             runtime.setContainerName(containerName);
-            runtime.setInternalPort(hostPort);
-            int contextPort = detection.getDetectedPort() != null ? detection.getDetectedPort() : properties.getInternalPort();
-            String contextPath = detection.getContextPath() != null ? detection.getContextPath() : "";
-            String publicUrl = "http://" + resolveHostForRuntime() + ":" + hostPort + contextPath;
-            runtime.setPublicBaseUrl(publicUrl);
+            runtime.setInternalPort(appPort);
+            runtime.setDetectedPort(appPort);
             runtime.setDockerNetwork(properties.getDockerNetwork());
+            runtime.setPublicBaseUrl(publicUrl);
+            sourceRuntimeRepository.save(runtime);
 
-            // Step 6: Health poll
-            String healthPath = pollUntilHealthy(publicUrl, properties.getStartupTimeoutSeconds());
-            if (healthPath == null) {
-                stopContainerQuietly(containerName);
-                return failRuntime(runtime, "Container started but did not respond on any health endpoint within "
-                        + properties.getStartupTimeoutSeconds() + "s. URL: " + publicUrl);
+            ProbeResult probe = pollUntilHealthy(project.getId(), publicUrl, properties.getStartTimeoutSeconds());
+            if (!probe.up()) {
+                cleanupContainerAndImage(containerName, imageTag);
+                return failRuntime(runtime, RuntimeStatus.UNHEALTHY,
+                        "Container started but health probe failed: " + probe.status());
             }
 
             runtime.setRuntimeStatus(RuntimeStatus.UP);
             runtime.setStartedAt(LocalDateTime.now());
-            runtime.setHealthCheckPath(healthPath);
-            runtime.setLastHealthStatus("UP:" + healthPath);
+            runtime.setHealthCheckPath(probe.path());
+            runtime.setLastHealthStatus(probe.status());
             runtime.setLastError(null);
-            log.info("[DockerRuntimeOrchestrator] Runtime UP for project={} url={}", project.getId(), publicUrl);
             return sourceRuntimeRepository.save(runtime);
-
+        } catch (Exception e) {
+            cleanupContainerAndImage(containerName, imageTag);
+            return failRuntime(runtime, RuntimeStatus.BUILD_FAILED, safeMessage(e));
         } finally {
-            // Always clean up the temp dir — image is already in Docker if build succeeded
-            try {
-                if (materialized.getRootDir() != null) {
-                    deleteDirectory(materialized.getRootDir());
-                }
-            } catch (Exception e) {
-                log.warn("[DockerRuntimeOrchestrator] Failed to clean up temp dir: {}", e.getMessage());
-            }
+            cleanupMaterialized(materialized);
         }
     }
 
     @Override
     public SourceRuntime stop(SourceRuntime runtime) {
-        String containerName = runtime.getContainerName();
-        if (containerName != null && !containerName.isBlank()) {
-            stopContainerQuietly(containerName);
+        if (runtime.getRuntimeStatus() == RuntimeStatus.STOPPED) {
+            return runtime;
+        }
+        runtime.setRuntimeStatus(RuntimeStatus.STOPPING);
+        sourceRuntimeRepository.save(runtime);
+        if (hasText(runtime.getContainerName())) {
+            commandExecutor.run(30, List.of("docker", "rm", "-f", runtime.getContainerName()));
         }
         runtime.setRuntimeStatus(RuntimeStatus.STOPPED);
         runtime.setStoppedAt(LocalDateTime.now());
@@ -170,21 +142,34 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
         return "DockerRuntimeOrchestrator";
     }
 
-    // ── Dockerfile generation ─────────────────────────────────────────────────
+    void setCommandExecutor(CommandExecutor commandExecutor) {
+        this.commandExecutor = commandExecutor;
+    }
 
-    private String generateDockerfile(RuntimeDetectionResult detection) {
+    void setHealthProbe(HealthProbe healthProbe) {
+        this.healthProbe = healthProbe;
+    }
+
+    Path resolveDockerfile(Path root, RuntimeDetectionResult detection, int appPort) throws IOException {
+        Path existing = root.resolve("Dockerfile");
+        if (Files.isRegularFile(existing)) {
+            return existing;
+        }
+        Path generated = root.resolve("Dockerfile.autorun");
+        Files.writeString(generated, generateDockerfile(detection, appPort));
+        return generated;
+    }
+
+    String generateDockerfile(RuntimeDetectionResult detection, int appPort) {
         RuntimeType type = detection.getRuntimeType();
-        int appPort = detection.getDetectedPort() != null ? detection.getDetectedPort() : 8080;
-        String contextPath = detection.getContextPath() != null ? detection.getContextPath() : "";
-
         if (type == RuntimeType.SPRING_BOOT_MAVEN) {
             return """
                     FROM eclipse-temurin:21-jdk AS build
                     WORKDIR /app
                     COPY . .
-                    RUN chmod +x mvnw 2>/dev/null || true
-                    RUN ./mvnw -B -DskipTests clean package 2>/dev/null || mvn -B -DskipTests clean package
-                    
+                    RUN chmod +x mvnw || true
+                    RUN if [ -x ./mvnw ]; then ./mvnw -B -DskipTests clean package; else mvn -B -DskipTests clean package; fi
+
                     FROM eclipse-temurin:21-jre
                     WORKDIR /app
                     COPY --from=build /app/target/*.jar app.jar
@@ -192,14 +177,15 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
                     EXPOSE %d
                     ENTRYPOINT ["java", "-jar", "app.jar"]
                     """.formatted(appPort, appPort);
-        } else if (type == RuntimeType.SPRING_BOOT_GRADLE) {
+        }
+        if (type == RuntimeType.SPRING_BOOT_GRADLE) {
             return """
                     FROM eclipse-temurin:21-jdk AS build
                     WORKDIR /app
                     COPY . .
-                    RUN chmod +x gradlew 2>/dev/null || true
-                    RUN ./gradlew -x test bootJar 2>/dev/null || gradle -x test bootJar
-                    
+                    RUN chmod +x gradlew || true
+                    RUN if [ -x ./gradlew ]; then ./gradlew -x test bootJar; else gradle -x test bootJar; fi
+
                     FROM eclipse-temurin:21-jre
                     WORKDIR /app
                     COPY --from=build /app/build/libs/*.jar app.jar
@@ -207,126 +193,54 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
                     EXPOSE %d
                     ENTRYPOINT ["java", "-jar", "app.jar"]
                     """.formatted(appPort, appPort);
-        } else {
-            throw new IllegalArgumentException("Unsupported runtime type for Docker build: " + type);
         }
+        throw new IllegalArgumentException("Unsupported runtime type for Docker build: " + type);
     }
 
-    // ── Docker process helpers ────────────────────────────────────────────────
-
-    private boolean runDockerBuild(java.nio.file.Path contextDir, String imageTag, java.nio.file.Path dockerfilePath) {
-        return runProcess(properties.getBuildTimeoutSeconds(),
+    CommandResult runDockerBuild(Path contextDir, String imageTag, Path dockerfilePath) {
+        return commandExecutor.run(properties.getBuildTimeoutSeconds(), List.of(
                 "docker", "build",
                 "-f", dockerfilePath.toAbsolutePath().toString(),
                 "-t", imageTag,
-                contextDir.toAbsolutePath().toString());
+                contextDir.toAbsolutePath().toString()
+        ));
     }
 
-    private boolean runDockerContainer(String imageTag, String containerName, int hostPort, String network) {
-        return runProcess(30,
+    CommandResult runDockerContainer(String imageTag, String containerName, int hostPort, int appPort, String network) {
+        if (!hasText(network)) {
+            return new CommandResult(false, 1, "Docker network is not configured.");
+        }
+        CommandResult networkCheck = commandExecutor.run(30, List.of("docker", "network", "inspect", network));
+        if (!networkCheck.success()) {
+            return new CommandResult(false, networkCheck.exitCode(), "Docker network missing: " + network);
+        }
+        return commandExecutor.run(30, List.of(
                 "docker", "run", "-d",
                 "--name", containerName,
-                "-p", hostPort + ":" + properties.getInternalPort(),
+                "-p", hostPort + ":" + appPort,
                 "--network", network,
                 "--restart", "no",
-                imageTag);
+                imageTag
+        ));
     }
 
-    private void stopContainerQuietly(String containerName) {
-        try {
-            runProcess(30, "docker", "rm", "-f", containerName);
-        } catch (Exception ignored) { }
-    }
-
-    private boolean runProcess(int timeoutSeconds, String... command) {
-        try {
-            ProcessBuilder pb = new ProcessBuilder(command);
-            pb.redirectErrorStream(true);
-            Process process = pb.start();
-            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                log.warn("[DockerRuntimeOrchestrator] Command '{}' timed out after {}s", command[0], timeoutSeconds);
-                return false;
-            }
-            return process.exitValue() == 0;
-        } catch (IOException | InterruptedException e) {
-            if (e instanceof InterruptedException) Thread.currentThread().interrupt();
-            log.error("[DockerRuntimeOrchestrator] Command '{}' failed: {}", command[0], e.getMessage());
-            return false;
+    int allocatePort(UUID projectId) {
+        int start = properties.getPortMin();
+        int end = properties.getPortMax();
+        if (start < 1 || end < start || end > 65535) {
+            throw new IllegalStateException("Invalid runtime port range: " + start + "-" + end);
         }
-    }
-
-    // ── Health polling ────────────────────────────────────────────────────────
-
-    /**
-     * Polls health endpoints on the given base URL until a 2xx response is received
-     * or the timeout expires.
-     *
-     * @return the path that responded with 2xx, or {@code null} if timed out.
-     */
-    private String pollUntilHealthy(String publicUrl, int timeoutSeconds) {
-        HttpClient client = HttpClient.newBuilder()
-                .connectTimeout(HEALTH_PROBE_TIMEOUT)
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
-
-        long deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
-        int attempt = 0;
-
-        while (System.currentTimeMillis() < deadline) {
-            attempt++;
-            for (String path : HEALTH_PROBE_PATHS) {
-                try {
-                    HttpRequest req = HttpRequest.newBuilder()
-                            .uri(URI.create(publicUrl + path))
-                            .timeout(HEALTH_PROBE_TIMEOUT)
-                            .GET()
-                            .build();
-                    HttpResponse<Void> resp = client.send(req, HttpResponse.BodyHandlers.discarding());
-                    if (resp.statusCode() >= 200 && resp.statusCode() < 300) {
-                        log.info("[DockerRuntimeOrchestrator] Health UP at {} (attempt {})", publicUrl + path, attempt);
-                        return path;
-                    }
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    return null;
-                } catch (Exception ignored) { }
-            }
-            try {
-                TimeUnit.SECONDS.sleep(HEALTH_POLL_INTERVAL_SECONDS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                return null;
-            }
-        }
-        log.warn("[DockerRuntimeOrchestrator] Health poll timed out after {}s for {}", timeoutSeconds, publicUrl);
-        return null;
-    }
-
-    // ── Port allocation ───────────────────────────────────────────────────────
-
-    /**
-     * Allocates an available host port in the configured range (default 18080–18999).
-     * Tries each port in order and returns the first that is not in use by Docker.
-     * Falls back to the start of the range if all are taken (should not happen in practice).
-     */
-    private int allocatePort(java.util.UUID projectId) {
-        int start = properties.getHostPortRangeStart();
-        int end = properties.getHostPortRangeEnd();
-
         for (int port = start; port <= end; port++) {
             if (isPortAvailable(port)) {
                 log.info("[DockerRuntimeOrchestrator] Allocated host port {} for project={}", port, projectId);
                 return port;
             }
         }
-        log.warn("[DockerRuntimeOrchestrator] No free port found in range {}-{}, using {}", start, end, start);
-        return start;
+        throw new IllegalStateException("No free host port in runtime range " + start + "-" + end);
     }
 
-    private boolean isPortAvailable(int port) {
-        try (java.net.ServerSocket socket = new java.net.ServerSocket(port)) {
+    boolean isPortAvailable(int port) {
+        try (ServerSocket socket = new ServerSocket(port)) {
             socket.setReuseAddress(true);
             return true;
         } catch (IOException e) {
@@ -334,20 +248,86 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
         }
     }
 
-    private String resolveHostForRuntime() {
-        // In Docker-network mode, containers communicate via service name.
-        // Public URL uses the EC2 host IP or localhost depending on context.
-        // We default to 127.0.0.1 — the caller can override via publicBaseUrl update.
-        return "127.0.0.1";
+    String sanitizeContainerName(String prefix, UUID projectId, long timestamp) {
+        String raw = sanitizeDockerRef(prefix) + "-" + projectId.toString().substring(0, 8) + "-" + timestamp;
+        return raw.length() <= CONTAINER_NAME_MAX ? raw : raw.substring(0, CONTAINER_NAME_MAX);
     }
 
-    // ── Utility ───────────────────────────────────────────────────────────────
+    String sanitizeDockerRef(String raw) {
+        String sanitized = (raw == null ? "aitc-runtime" : raw)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[^a-z0-9.-]", "-")
+                .replaceAll("^[^a-z0-9]+", "")
+                .replaceAll("[^a-z0-9]+$", "");
+        if (sanitized.isBlank()) {
+            sanitized = "aitc-runtime";
+        }
+        if (sanitized.length() > 128) {
+            sanitized = sanitized.substring(0, 128);
+        }
+        if (!SAFE_DOCKER_REF.matcher(sanitized).matches()) {
+            throw new IllegalArgumentException("Unsafe Docker reference after sanitization.");
+        }
+        return sanitized;
+    }
 
-    private SourceRuntime failRuntime(SourceRuntime runtime, String reason) {
-        log.error("[DockerRuntimeOrchestrator] Runtime failed for project={}: {}", 
-                runtime.getSourceProject().getId(), reason);
-        runtime.setRuntimeStatus(RuntimeStatus.BUILD_FAILED);
+    private String buildPublicUrl(int hostPort, String contextPath) {
+        String path = hasText(contextPath) ? contextPath.trim() : "";
+        if (path.endsWith("/")) {
+            path = path.substring(0, path.length() - 1);
+        }
+        if (hasText(path) && !path.startsWith("/")) {
+            path = "/" + path;
+        }
+        return "http://" + properties.getPublicHost() + ":" + hostPort + path;
+    }
+
+    private ProbeResult pollUntilHealthy(UUID projectId, String publicUrl, int timeoutSeconds) {
+        long deadline = System.currentTimeMillis() + (long) timeoutSeconds * 1000;
+        List<ProbeCandidate> candidates = buildProbeCandidates(projectId);
+        while (System.currentTimeMillis() < deadline) {
+            for (ProbeCandidate candidate : candidates) {
+                int status = healthProbe.get(publicUrl + candidate.path(), properties.getHealthTimeoutSeconds());
+                if (status >= 200 && status < 300) {
+                    String prefix = candidate.openapi() ? "UP:OPENAPI_PROBE:" : "UP:";
+                    return new ProbeResult(true, candidate.path(), prefix + candidate.path() + ":" + status);
+                }
+            }
+            sleep(3);
+        }
+        return new ProbeResult(false, null, "DOWN:no_healthy_endpoint");
+    }
+
+    private List<ProbeCandidate> buildProbeCandidates(UUID projectId) {
+        List<ProbeCandidate> candidates = new ArrayList<>();
+        HEALTH_PROBE_PATHS.forEach(path -> candidates.add(new ProbeCandidate(path, false)));
+        try {
+            apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId).stream()
+                    .filter(e -> e.getHttpMethod() == HttpMethod.GET)
+                    .map(ApiEndpoint::getEndpointPath)
+                    .filter(this::isSafeProbePath)
+                    .distinct()
+                    .limit(5)
+                    .forEach(path -> candidates.add(new ProbeCandidate(path, true)));
+        } catch (Exception e) {
+            log.debug("[DockerRuntimeOrchestrator] Could not load OpenAPI probe candidates: {}", e.getMessage());
+        }
+        return candidates;
+    }
+
+    private boolean isSafeProbePath(String path) {
+        return hasText(path)
+                && path.startsWith("/")
+                && !path.contains("{")
+                && !path.contains("}")
+                && !path.contains("..")
+                && path.length() <= 200;
+    }
+
+    private SourceRuntime failRuntime(SourceRuntime runtime, RuntimeStatus status, String reason) {
+        runtime.setRuntimeStatus(status);
         runtime.setBuildFinishedAt(LocalDateTime.now());
+        runtime.setLastHealthStatus(status == RuntimeStatus.UNHEALTHY ? "DOWN:HEALTH_DOWN" : runtime.getLastHealthStatus());
         runtime.setLastError(reason);
         runtime.setPublicBaseUrl(null);
         return sourceRuntimeRepository.save(runtime);
@@ -366,12 +346,108 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
                 .build();
     }
 
-    private void deleteDirectory(java.nio.file.Path dir) throws IOException {
-        if (dir == null || !java.nio.file.Files.exists(dir)) return;
-        try (var stream = java.nio.file.Files.walk(dir)) {
-            stream.sorted(java.util.Comparator.reverseOrder())
-                    .map(java.nio.file.Path::toFile)
-                    .forEach(java.io.File::delete);
+    private void cleanupContainerAndImage(String containerName, String imageTag) {
+        if (hasText(containerName)) {
+            commandExecutor.run(30, List.of("docker", "rm", "-f", containerName));
+        }
+        if (hasText(imageTag)) {
+            commandExecutor.run(30, List.of("docker", "rmi", "-f", imageTag));
+        }
+    }
+
+    private void cleanupMaterialized(MaterializedRuntimeSource materialized) {
+        try {
+            if (materialized != null) {
+                materialized.cleanup();
+            }
+        } catch (RuntimeException e) {
+            log.warn("[DockerRuntimeOrchestrator] Failed to clean up temp source: {}", e.getMessage());
+        }
+    }
+
+    private void sleep(int seconds) {
+        try {
+            TimeUnit.SECONDS.sleep(seconds);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private boolean hasText(String value) {
+        return value != null && !value.isBlank();
+    }
+
+    private String safeMessage(Exception e) {
+        return e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+    }
+
+    interface CommandExecutor {
+        CommandResult run(int timeoutSeconds, List<String> command);
+    }
+
+    record CommandResult(boolean success, int exitCode, String output) {
+        String summary() {
+            if (output == null || output.isBlank()) {
+                return "exitCode=" + exitCode;
+            }
+            String masked = output.replaceAll("(?i)(token|password|secret|api[_-]?key)=\\S+", "$1=***");
+            return masked.length() > 500 ? masked.substring(0, 500) : masked;
+        }
+    }
+
+    interface HealthProbe {
+        int get(String url, int timeoutSeconds);
+    }
+
+    record ProbeResult(boolean up, String path, String status) {
+    }
+
+    record ProbeCandidate(String path, boolean openapi) {
+    }
+
+    static class ProcessCommandExecutor implements CommandExecutor {
+        @Override
+        public CommandResult run(int timeoutSeconds, List<String> command) {
+            try {
+                ProcessBuilder pb = new ProcessBuilder(command);
+                pb.redirectErrorStream(true);
+                Process process = pb.start();
+                boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+                String output = new String(process.getInputStream().readAllBytes());
+                if (!finished) {
+                    process.destroyForcibly();
+                    return new CommandResult(false, -1, "timed out after " + timeoutSeconds + "s");
+                }
+                return new CommandResult(process.exitValue() == 0, process.exitValue(), output);
+            } catch (IOException e) {
+                return new CommandResult(false, -1, e.getMessage());
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return new CommandResult(false, -1, "interrupted");
+            }
+        }
+    }
+
+    static class HttpHealthProbe implements HealthProbe {
+        @Override
+        public int get(String url, int timeoutSeconds) {
+            try {
+                HttpClient client = HttpClient.newBuilder()
+                        .connectTimeout(Duration.ofSeconds(timeoutSeconds))
+                        .followRedirects(HttpClient.Redirect.NORMAL)
+                        .build();
+                HttpRequest req = HttpRequest.newBuilder()
+                        .uri(URI.create(url))
+                        .timeout(Duration.ofSeconds(timeoutSeconds))
+                        .GET()
+                        .build();
+                return client.send(req, HttpResponse.BodyHandlers.discarding()).statusCode();
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return -1;
+            } catch (Exception e) {
+                return -1;
+            }
         }
     }
 }
