@@ -158,6 +158,22 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
         return result;
     }
 
+    /**
+     * Routes to the best available provider for {@code skillCode} but does NOT
+     * touch the AiJobLog status. The caller must mark SUCCESS (or FAILED) after
+     * its own downstream processing (parse, DB save) completes.
+     */
+    @Override
+    public String routeAndExecuteForSkillRaw(String skillCode, String prompt) {
+        String optimizedPrompt = optimizePrompt(prompt);
+        String result = executeWithFallbackForSkill(skillCode, () -> optimizedPrompt, () -> optimizedPrompt, null);
+        if (result == null || result.isBlank()) {
+            throw AiProviderFailureException.emptyResponse("LLM", "router", null);
+        }
+        log.info("[Router][raw] Skill={} completed. chars={}", skillCode, result.length());
+        return result;
+    }
+
     private boolean isGeminiFirstSkill(String skillCode) {
         return SKILL_ENRICH_API_DOC.equalsIgnoreCase(skillCode)
                 || SKILL_GENERATE_TEST_CASE.equalsIgnoreCase(skillCode);

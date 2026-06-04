@@ -296,7 +296,6 @@ public class TestRunServiceImpl implements TestRunService {
 
     @Override
     @Async
-    @Transactional
     public void executeTestRunAsync(UUID id) {
         log.info("Starting async execution for TestRun id: {}", id);
 
@@ -341,6 +340,16 @@ public class TestRunServiceImpl implements TestRunService {
                 }
 
                 // 1. Build prepared request (pure frame — no HTTP execution)
+                // Guard: if requestPath still has unresolved {variable} placeholders, mark ERROR early.
+                String requestPath = input.getRequestPath();
+                if (requestPath != null && requestPath.matches(".*\\{[^}]+}.*")) {
+                    log.warn("[executeTestRunAsync] Unresolved path variable in requestPath='{}' for item id={}",
+                            requestPath, item.getId());
+                    item.setItemStatus(ExecutionStatus.FAILED);
+                    testRunItemRepository.save(item);
+                    anyFailed = true;
+                    continue;
+                }
                 PreparedHttpRequestResponse prepared = testRequestBuilder.build(
                         testRun.getBaseUrl(), input);
 
@@ -576,6 +585,22 @@ public class TestRunServiceImpl implements TestRunService {
             }
 
             // Build while the input entity is initialized; HTTP still happens outside this transaction.
+            // Guard: if requestPath still has unresolved {variable} placeholders, mark ERROR early.
+            String requestPath = input.getRequestPath();
+            if (requestPath != null && requestPath.matches(".*\\{[^}]+}.*")) {
+                log.warn("[prepareItemExecution] Unresolved path variable in requestPath='{}' for item id={}",
+                        requestPath, item.getId());
+                return new ItemExecutionContext(
+                        item.getId(),
+                        testCase.getId(),
+                        testCase.getCaseCode(),
+                        testCase.getCaseName(),
+                        item.getSortOrder(),
+                        item.getItemStatus(),
+                        null,
+                        true  // treat as missingInput so caller saves PREPARE_FAILED error
+                );
+            }
             PreparedHttpRequestResponse prepared = testRequestBuilder.build(baseUrl, input);
             return new ItemExecutionContext(
                     item.getId(),

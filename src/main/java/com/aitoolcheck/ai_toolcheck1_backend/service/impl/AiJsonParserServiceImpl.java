@@ -465,9 +465,17 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
             String rawJson) {
         guardAgainstBlankInput(rawJson);
 
+        // Layer 0: Normalize field-name aliases and enum aliases BEFORE parsing.
+        // This is a cheap string-level fix so Jackson can map cleanly.
+        String normalized = normalizeTestCaseAliases(rawJson);
+
+        // Layer 0b: If the response is an object wrapper, extract the inner array.
+        // Handles: {"testCases":[...]}, {"cases":[...]}, {"tests":[...]}, {"data":[...]}
+        normalized = unwrapTestCaseArray(normalized);
+
         // Layer 1: Tìm ranh giới '[' đầu và ']' cuối
-        int startIndex = rawJson.indexOf(JSON_ARRAY_OPEN);
-        int endIndex = rawJson.lastIndexOf(JSON_ARRAY_CLOSE);
+        int startIndex = normalized.indexOf(JSON_ARRAY_OPEN);
+        int endIndex = normalized.lastIndexOf(JSON_ARRAY_CLOSE);
 
         if (startIndex == -1 || endIndex == -1 || endIndex <= startIndex) {
             log.error("[AiJsonParser][TestCase] Không tìm thấy mảng JSON hợp lệ. startIndex={}, endIndex={}",
@@ -477,7 +485,7 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
                     "Invalid JSON array structure from AI: cannot find '[' or ']' delimiters.");
         }
 
-        String cleanJson = rawJson.substring(startIndex, endIndex + 1).trim();
+        String cleanJson = normalized.substring(startIndex, endIndex + 1).trim();
         if (cleanJson.isBlank()) {
             throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "Cleaned JSON array is empty.");
         }
@@ -518,5 +526,93 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
                     ErrorType.DTO_MAPPING_ERROR,
                     "Cannot parse JSON array to AiTestCaseDto list. Reason: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Normalizes field-name and enum-value aliases that AI models commonly emit.
+     *
+     * <h3>Field-name aliases (JSON key replacement)</h3>
+     * <ul>
+     *   <li>{@code "test_name"} → {@code "case_name"}</li>
+     *   <li>{@code "testName"}  → {@code "case_name"} (camelCase variant)</li>
+     * </ul>
+     *
+     * <h3>Enum-value aliases (scoped to case_type / caseType field only)</h3>
+     * <ul>
+     *   <li>{@code "case_type": "SUCCESS"}  → {@code "case_type": "POSITIVE"}</li>
+     *   <li>{@code "case_type": "FAILURE"}  → {@code "case_type": "NEGATIVE"}</li>
+     *   <li>{@code "caseType": "SUCCESS"}   → {@code "caseType": "POSITIVE"}</li>
+     *   <li>{@code "caseType": "FAILURE"}   → {@code "caseType": "NEGATIVE"}</li>
+     * </ul>
+     *
+     * <p><strong>Safety note:</strong> SUCCESS/FAILURE replacements are scoped to
+     * the {@code case_type}/{@code caseType} field via regex so that other JSON
+     * string values (e.g. {@code "description"}, {@code "message"},
+     * {@code "expectedValue"}) containing these words are never mutated.</p>
+     *
+     * <h3>Assertion-type aliases (value replacement)</h3>
+     * <ul>
+     *   <li>{@code "VALIDATION_ERROR"} → {@code "VALIDATION"}</li>
+     *   <li>{@code "CLIENT_ERROR"}     → {@code "VALIDATION"}</li>
+     *   <li>{@code "JSON_BODY"}        → {@code "JSON_PATH"}</li>
+     * </ul>
+     */
+    private String normalizeTestCaseAliases(String raw) {
+        if (raw == null) return "";
+        return raw
+                // ── Field-name aliases ─────────────────────────────────────────────
+                .replace("\"test_name\"", "\"case_name\"")
+                .replace("\"testName\"",  "\"case_name\"")
+
+                // ── case_type enum aliases — scoped to the field, not global ───────
+                // Matches: "case_type"  : "SUCCESS"  and  "caseType"  : "SUCCESS"
+                // (optional whitespace around the colon is handled by \s*)
+                .replaceAll("(\"(?:case_type|caseType)\"\\s*:\\s*)\"SUCCESS\"",  "$1\"POSITIVE\"")
+                .replaceAll("(\"(?:case_type|caseType)\"\\s*:\\s*)\"FAILURE\"",  "$1\"NEGATIVE\"")
+
+                // ── Assertion-type aliases — these appear only as enum values ──────
+                // VALIDATION_ERROR / CLIENT_ERROR are not common English words in
+                // free-text fields, so a global replace is low-risk and correct here.
+                .replace("\"VALIDATION_ERROR\"",  "\"VALIDATION\"")
+                .replace("\"CLIENT_ERROR\"",      "\"VALIDATION\"")
+                .replace("\"JSON_BODY\"",          "\"JSON_PATH\"");
+    }
+
+    /**
+     * If the AI wraps the test-case array inside an object
+     * (e.g. {@code {"testCases": [...]}}) this method extracts the raw array
+     * string so the downstream array parser works correctly.
+     *
+     * <p>Supported wrapper keys (case-insensitive): {@code testCases}, {@code cases},
+     * {@code tests}, {@code data}, {@code items}, {@code test_cases}.
+     */
+    private String unwrapTestCaseArray(String raw) {
+        int firstBrace = raw.indexOf('{');
+        int firstBracket = raw.indexOf('[');
+
+        // If the outermost structure is already an array, no unwrapping needed.
+        if (firstBracket != -1 && (firstBrace == -1 || firstBracket < firstBrace)) {
+            return raw;
+        }
+        if (firstBrace == -1) {
+            return raw; // No JSON object found at all — let downstream handle.
+        }
+
+        try {
+            JsonNode root = objectMapper.readTree(raw.substring(firstBrace, raw.lastIndexOf('}') + 1));
+            if (!root.isObject()) return raw;
+
+            // Try known wrapper keys
+            for (String key : new String[]{"testCases", "test_cases", "cases", "tests", "data", "items"}) {
+                JsonNode candidate = root.get(key);
+                if (candidate != null && candidate.isArray()) {
+                    log.debug("[AiJsonParser][TestCase] Unwrapped object key='{}' containing {} element(s)", key, candidate.size());
+                    return candidate.toString();
+                }
+            }
+        } catch (Exception e) {
+            log.debug("[AiJsonParser][TestCase] unwrapTestCaseArray parse attempt failed, continuing: {}", e.getMessage());
+        }
+        return raw; // Could not unwrap — let downstream decide.
     }
 }
