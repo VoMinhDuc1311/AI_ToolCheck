@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.runtime;
 
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.RuntimeAutoProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceRuntimeRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuntimeSourceMaterializer;
 import jakarta.annotation.PostConstruct;
@@ -40,6 +41,7 @@ public class RuntimeOrchestratorFactory {
 
     private final EnvironmentCapabilityDetector capabilityDetector;
     private final SourceRuntimeRepository sourceRuntimeRepository;
+    private final ApiEndpointRepository apiEndpointRepository;
     private final RuntimeSourceMaterializer runtimeSourceMaterializer;
     private final RuntimeAutoProperties runtimeAutoProperties;
 
@@ -101,6 +103,7 @@ public class RuntimeOrchestratorFactory {
             log.info("[RuntimeOrchestratorFactory] Docker available → selecting DockerRuntimeOrchestrator");
             return new DockerRuntimeOrchestrator(
                     sourceRuntimeRepository,
+                    apiEndpointRepository,
                     runtimeSourceMaterializer,
                     runtimeAutoProperties
             );

@@ -39,6 +39,21 @@ springdoc:
     enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:false}
 
 ai:
+  runtime:
+    enabled: ${AI_RUNTIME_ENABLED:false}
+    docker:
+      enabled: ${AI_RUNTIME_DOCKER_ENABLED:false}
+      network: ${AI_RUNTIME_DOCKER_NETWORK:ai-toolcheck-network}
+    internal-port: ${AI_RUNTIME_INTERNAL_PORT:8080}
+    port-min: ${AI_RUNTIME_PORT_MIN:18080}
+    port-max: ${AI_RUNTIME_PORT_MAX:18999}
+    container-prefix: ${AI_RUNTIME_CONTAINER_PREFIX:aitc-runtime}
+    public-host: ${AI_RUNTIME_PUBLIC_HOST:127.0.0.1}
+    build-timeout-seconds: ${AI_RUNTIME_BUILD_TIMEOUT_SECONDS:300}
+    start-timeout-seconds: ${AI_RUNTIME_START_TIMEOUT_SECONDS:120}
+    health-timeout-seconds: ${AI_RUNTIME_HEALTH_TIMEOUT_SECONDS:5}
+    max-active-runtimes: ${AI_RUNTIME_MAX_ACTIVE_RUNTIMES:5}
+
   gemini:
     api-key: ${AI_GEMINI_API_KEY}
     base-url: ${AI_GEMINI_BASE_URL:https://generativelanguage.googleapis.com/v1beta/models}
@@ -80,15 +95,6 @@ test-run:
     enabled: ${TEST_RUN_STALE_ENABLED:true}
     pending-timeout-minutes: ${TEST_RUN_STALE_PENDING_TIMEOUT_MINUTES:30}
     running-timeout-minutes: ${TEST_RUN_STALE_RUNNING_TIMEOUT_MINUTES:120}
-
-runtime:
-  auto:
-    enabled: ${RUNTIME_AUTO_ENABLED:false}
-    docker-network: ${RUNTIME_AUTO_DOCKER_NETWORK:ai-toolcheck-runtime}
-    internal-port: ${RUNTIME_AUTO_INTERNAL_PORT:8080}
-    build-timeout-seconds: ${RUNTIME_AUTO_BUILD_TIMEOUT_SECONDS:300}
-    startup-timeout-seconds: ${RUNTIME_AUTO_STARTUP_TIMEOUT_SECONDS:120}
-    max-active-runtimes: ${RUNTIME_AUTO_MAX_ACTIVE_RUNTIMES:5}
 
 # Schema compatibility migrator — runs at startup to ensure DB schema matches the Java model.
 # This is the mechanism that converts source_file.file_type from MySQL ENUM to VARCHAR(50).

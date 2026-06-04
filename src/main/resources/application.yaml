@@ -53,6 +53,21 @@ ai:
     fail-fast-local-provider: true
     provider-health-cache-seconds: 30
 
+  runtime:
+    enabled: false
+    docker:
+      enabled: false
+      network: ai-toolcheck-network
+    internal-port: 8080
+    port-min: 18080
+    port-max: 18999
+    container-prefix: aitc-runtime
+    public-host: 127.0.0.1
+    build-timeout-seconds: 300
+    start-timeout-seconds: 120
+    health-timeout-seconds: 5
+    max-active-runtimes: 5
+
   ollama:
     enabled: true
     health-timeout-ms: 3000
@@ -140,14 +155,3 @@ test-run:
     enabled: true
     pending-timeout-minutes: 30
     running-timeout-minutes: 120
-
-runtime:
-  auto:
-    enabled: false
-    docker-network: ai-toolcheck-runtime
-    internal-port: 8080
-    build-timeout-seconds: 300
-    startup-timeout-seconds: 120
-    max-active-runtimes: 5
-    host-port-range-start: 18080
-    host-port-range-end: 18999
