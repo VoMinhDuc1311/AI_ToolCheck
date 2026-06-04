@@ -355,7 +355,7 @@ class TestCaseServiceImplTest {
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("No OpenAPI document found");
 
-        verify(aiModelRouterService, never()).routeAndExecuteForSkill(any(), any(), any());
+        verify(aiModelRouterService, never()).routeAndExecuteForSkillRaw(any(), any());
         verify(testCaseRepository, never()).save(any());
     }
 
@@ -373,7 +373,7 @@ class TestCaseServiceImplTest {
                 .thenReturn(List.of(v2, v1));
 
         String aiJson = "{\"test_cases\":[]}";
-        when(aiModelRouterService.routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any()))
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
                 .thenReturn(aiJson);
         AiGeneratedTestCaseRequest parsed = new AiGeneratedTestCaseRequest();
         parsed.setTestCases(List.of());
@@ -385,7 +385,7 @@ class TestCaseServiceImplTest {
 
         assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
         // AI router must have been called (meaning v2 was loaded and matched)
-        verify(aiModelRouterService).routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any());
+        verify(aiModelRouterService).routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any());
     }
 
     @Test
@@ -400,14 +400,14 @@ class TestCaseServiceImplTest {
         endpoint.setEndpointPath("/users/{id}");
 
         String aiJson = "{\"test_cases\":[]}";
-        when(aiModelRouterService.routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any()))
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
                 .thenReturn(aiJson);
         AiGeneratedTestCaseRequest parsed = new AiGeneratedTestCaseRequest();
         parsed.setTestCases(List.of());
         when(aiJsonParserService.parseTestCaseRequest(aiJson)).thenReturn(parsed);
 
         assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), UUID.randomUUID()));
-        verify(aiModelRouterService).routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any());
+        verify(aiModelRouterService).routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any());
     }
 
     @Test
@@ -453,7 +453,7 @@ class TestCaseServiceImplTest {
                 .isInstanceOf(BadRequestException.class)
                 .hasMessageContaining("OpenAPI operation not found");
 
-        verify(aiModelRouterService, never()).routeAndExecuteForSkill(any(), any(), any());
+        verify(aiModelRouterService, never()).routeAndExecuteForSkillRaw(any(), any());
         verify(testCaseRepository, never()).save(any());
     }
 
@@ -469,7 +469,7 @@ class TestCaseServiceImplTest {
         endpoint.setHttpMethod(HttpMethod.GET);
         endpoint.setEndpointPath("/greeting");
 
-        when(aiModelRouterService.routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any()))
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
                 .thenThrow(new RuntimeException("LLM timeout"));
 
         assertThatThrownBy(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId))
@@ -491,7 +491,7 @@ class TestCaseServiceImplTest {
         endpoint.setEndpointPath("/greeting");
 
         String aiJson = "{\"test_cases\":[]}";
-        when(aiModelRouterService.routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any()))
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
                 .thenReturn(aiJson);
         AiGeneratedTestCaseRequest parsed = new AiGeneratedTestCaseRequest();
         parsed.setTestCases(List.of());
@@ -499,7 +499,69 @@ class TestCaseServiceImplTest {
 
         String result = service.generateTestCaseProcessing(endpointId.toString(), jobId);
         assertEquals(aiJson, result);
-        verify(aiModelRouterService).routeAndExecuteForSkill(eq("GENERATE_TEST_CASE"), any(), any());
+        verify(aiModelRouterService).routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any());
+    }
+
+    @Test
+    void generateTestCaseProcessing_jobSavedAsCompletedOnSuccess() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        String aiJson = "{\"test_cases\":[]}";
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
+                .thenReturn(aiJson);
+        AiGeneratedTestCaseRequest parsed = new AiGeneratedTestCaseRequest();
+        parsed.setTestCases(List.of());
+        when(aiJsonParserService.parseTestCaseRequest(aiJson)).thenReturn(parsed);
+
+        com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog jobLog = new com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog();
+        jobLog.setId(jobId);
+        jobLog.setExecutionStatus(com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus.RUNNING);
+        when(aiJobLogRepository.findById(jobId)).thenReturn(Optional.of(jobLog));
+
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+        assertEquals(com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus.SUCCESS, jobLog.getExecutionStatus());
+        assertNotNull(jobLog.getCompletedAt());
+        verify(aiJobLogRepository).save(jobLog);
+    }
+
+    @Test
+    void generateTestCaseProcessing_jobSavedAsFailedOnParseFailure() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        String aiJson = "{\"invalid_json\": true}";
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
+                .thenReturn(aiJson);
+        when(aiJsonParserService.parseTestCaseRequest(aiJson))
+                .thenThrow(new com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException(
+                        com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType.INVALID_JSON_SYNTAX,
+                        "JSON malformed"));
+
+        com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog jobLog = new com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog();
+        jobLog.setId(jobId);
+        jobLog.setExecutionStatus(com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus.RUNNING);
+        when(aiJobLogRepository.findById(jobId)).thenReturn(Optional.of(jobLog));
+
+        assertThrows(Exception.class, () -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+        assertEquals(com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus.FAILED, jobLog.getExecutionStatus());
+        assertNotNull(jobLog.getCompletedAt());
+        assertTrue(jobLog.getErrorMessage().contains("AI provider failed"));
+        verify(aiJobLogRepository).save(jobLog);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────

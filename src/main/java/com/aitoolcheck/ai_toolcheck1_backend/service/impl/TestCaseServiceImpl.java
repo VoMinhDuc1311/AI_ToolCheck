@@ -685,12 +685,28 @@ public class TestCaseServiceImpl implements TestCaseService {
 
         String rawResult = null;
         try {
-            // 4. Route to AI provider
-            rawResult = aiModelRouterService.routeAndExecuteForSkill("GENERATE_TEST_CASE", prompt, jobId);
+            // 4. Route to AI provider — does NOT mark job SUCCESS yet.
+            //    We only mark SUCCESS after parse + save both succeed.
+            rawResult = aiModelRouterService.routeAndExecuteForSkillRaw("GENERATE_TEST_CASE", prompt);
 
-            // 5. Parse AI output and persist
+            // 5. Parse AI output
             AiGeneratedTestCaseRequest testCaseRequest = aiJsonParserService.parseTestCaseRequest(rawResult);
+
+            // 6. Persist test cases
             proxySelf.saveAiGeneratedTestCases(testCaseRequest, UUID.fromString(endpointId), jobId);
+
+            // 7. Mark job SUCCESS only after both parse AND persist succeed
+            int tokenInput = prompt.length() / 4;
+            int tokenOutput = rawResult.length() / 4;
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.SUCCESS);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setTokenInput(tokenInput);
+                job.setTokenOutput(tokenOutput);
+                job.setModelName("router-selected");
+                aiJobLogRepository.save(job);
+            });
+            log.info("[GenerateTestCase] Job {} marked COMPLETED after successful parse+save. endpointId={}", jobId, endpointId);
 
         } catch (Exception e) {
             String aiFailMsg = "AI provider failed while generating test cases from OpenAPI document: "

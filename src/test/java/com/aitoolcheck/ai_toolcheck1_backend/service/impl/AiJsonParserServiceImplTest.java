@@ -19,6 +19,8 @@ class AiJsonParserServiceImplTest {
             validator,
             new SimpleMeterRegistry());
 
+    // ── Existing sanitization tests ──────────────────────────────────────────
+
     @Test
     void extractAndSanitizeJson_whenRawResponseIsNullThrowsEmptyResponseNotInvalidJson() {
         AiProviderFailureException exception = assertThrows(
@@ -46,5 +48,154 @@ class AiJsonParserServiceImplTest {
                 """);
 
         assertEquals("{\"summary\":\"ok\"}", normalized);
+    }
+
+    // ── Existing alias/wrapper tests ─────────────────────────────────────────
+
+    @Test
+    void cleanAndParseTestCaseJson_withWrapperAndAliases() {
+        String rawJson = """
+                {
+                  "testCases": [
+                    {
+                      "test_name": "Get User Profile",
+                      "case_type": "SUCCESS",
+                      "priority_level": "HIGH",
+                      "assertions": [
+                        {
+                          "assertion_type": "STATUS_CODE",
+                          "expected_value": "200"
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """;
+        var results = parser.cleanAndParseTestCaseJson(rawJson);
+        assertEquals(1, results.size());
+        assertEquals("Get User Profile", results.get(0).getCaseName());
+        assertEquals("POSITIVE", results.get(0).getCaseType());
+    }
+
+    @Test
+    void cleanAndParseTestCaseJson_withCasesWrapper() {
+        String rawJson = """
+                {
+                  "cases": [
+                    {
+                      "testName": "Get User Info",
+                      "case_type": "SUCCESS",
+                      "priority_level": "HIGH",
+                      "assertions": []
+                    }
+                  ]
+                }
+                """;
+        var results = parser.cleanAndParseTestCaseJson(rawJson);
+        assertEquals(1, results.size());
+        assertEquals("Get User Info", results.get(0).getCaseName());
+    }
+
+    @Test
+    void cleanAndParseTestCaseJson_withBareArrayAndAliases() {
+        String rawJson = """
+                [
+                  {
+                    "test_name": "Auth Failure",
+                    "case_type": "CLIENT_ERROR",
+                    "priority_level": "MEDIUM",
+                    "assertions": [
+                      {
+                        "assertion_type": "JSON_BODY",
+                        "expected_value": "Unauthorized"
+                      }
+                    ]
+                  }
+                ]
+                """;
+        var results = parser.cleanAndParseTestCaseJson(rawJson);
+        assertEquals(1, results.size());
+        assertEquals("Auth Failure", results.get(0).getCaseName());
+        assertEquals("VALIDATION", results.get(0).getCaseType());
+    }
+
+    // ── Regression: FAILURE alias ────────────────────────────────────────────
+
+    /**
+     * AI emits {@code case_type: "FAILURE"} — must be mapped to {@code "NEGATIVE"}.
+     * This was not covered before; regression guard against reverting the fix.
+     */
+    @Test
+    void cleanAndParseTestCaseJson_failureAliasMapsToNegative() {
+        String rawJson = """
+                {
+                  "testCases": [
+                    {
+                      "case_name": "Server Error Scenario",
+                      "case_type": "FAILURE",
+                      "priority_level": "HIGH",
+                      "assertions": [
+                        {
+                          "assertion_type": "STATUS_CODE",
+                          "expected_value": "500"
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """;
+        var results = parser.cleanAndParseTestCaseJson(rawJson);
+        assertEquals(1, results.size());
+        assertEquals("NEGATIVE", results.get(0).getCaseType());
+    }
+
+    /**
+     * SUCCESS/FAILURE appearing in free-text fields (case_name, expectedValue, description)
+     * must NOT be mutated by the alias normalizer — only the {@code case_type} field is mapped.
+     *
+     * <p>This is the regression test for the scoped-replace fix introduced in Phase 0.
+     * Previously {@code .replace("\"SUCCESS\"", "\"POSITIVE\"")} would corrupt any JSON
+     * string value that happened to contain these words.</p>
+     */
+    @Test
+    void cleanAndParseTestCaseJson_enumAliasDoesNotMutateOtherStringFields() {
+        String rawJson = """
+                {
+                  "testCases": [
+                    {
+                      "case_name": "Payment SUCCESS confirmed",
+                      "case_type": "SUCCESS",
+                      "priority_level": "MEDIUM",
+                      "assertions": [
+                        {
+                          "assertion_type": "STATUS_CODE",
+                          "expected_value": "200"
+                        }
+                      ]
+                    },
+                    {
+                      "case_name": "Payment FAILURE report",
+                      "case_type": "FAILURE",
+                      "priority_level": "HIGH",
+                      "assertions": [
+                        {
+                          "assertion_type": "STATUS_CODE",
+                          "expected_value": "500"
+                        }
+                      ]
+                    }
+                  ]
+                }
+                """;
+        var results = parser.cleanAndParseTestCaseJson(rawJson);
+        assertEquals(2, results.size());
+
+        // case_type aliases are mapped correctly
+        assertEquals("POSITIVE", results.get(0).getCaseType());
+        assertEquals("NEGATIVE", results.get(1).getCaseType());
+
+        // Free-text case_name values must NOT be mutated
+        assertEquals("Payment SUCCESS confirmed", results.get(0).getCaseName());
+        assertEquals("Payment FAILURE report",    results.get(1).getCaseName());
     }
 }
