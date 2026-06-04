@@ -5,6 +5,12 @@ public enum RuntimeStatus {
     BUILD_QUEUED,
     BUILDING,
     BUILD_FAILED,
+    /**
+     * The host execution environment does not have the required capabilities
+     * to build or run this source (e.g. no Docker socket, no JDK).
+     * This is an honest status — no build was attempted.
+     */
+    ENVIRONMENT_UNSUPPORTED,
     STARTING,
     UP,
     UNHEALTHY,

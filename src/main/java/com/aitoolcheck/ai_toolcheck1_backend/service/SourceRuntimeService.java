@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.req.RegisterExternalRuntimeRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.RuntimeActionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
 
@@ -83,4 +84,23 @@ public interface SourceRuntimeService {
      * </ol>
      */
     String resolveBaseUrlForTestRun(UUID projectId, String requestBaseUrl, String projectDefaultTargetBaseUrl);
+
+    /**
+     * Returns the latest environment capability report for this host.
+     * Probes Docker CLI, Docker socket, JDK, Maven, Gradle, and writable temp dir.
+     * Results indicate whether autostart can proceed and what is missing.
+     */
+    EnvironmentCapabilityReport getEnvironmentCapabilities();
+
+    /**
+     * Updates the custom health-check path used by {@link #healthCheckRuntime(UUID)}.
+     * By default, the probe tries /actuator/health, /health, /healthz, /.
+     * This method allows specifying a project-specific path (e.g. /greeting, /api/ping).
+     *
+     * @param projectId       the project whose runtime health-check path should be updated.
+     * @param healthCheckPath the custom path to probe, e.g. {@code /greeting}.
+     * @return updated action response.
+     */
+    RuntimeActionResponse updateHealthCheckPath(UUID projectId, String healthCheckPath);
 }
+

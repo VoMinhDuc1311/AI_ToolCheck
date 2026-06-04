@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.controller;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.req.RegisterExternalRuntimeRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.RuntimeActionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
@@ -15,6 +16,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.time.LocalDateTime;
@@ -51,15 +53,25 @@ public class SourceRuntimeController {
                 sourceRuntimeService.listRuntimes(projectId)));
     }
 
+    @GetMapping("/environment")
+    @Operation(
+            summary = "Get host environment capabilities",
+            description = "Probes the backend host for Docker CLI, Docker socket, JDK, Maven, Gradle, and writable temp dir. "
+                    + "Returns a summary explaining what is available and what infrastructure change is needed for autostart. "
+                    + "On the current EC2 deployment (eclipse-temurin:21-jre, no docker.sock mount), canAutoStart will be false.",
+            operationId = "getEnvironmentCapabilities"
+    )
+    public ResponseEntity<ApiResponse<EnvironmentCapabilityReport>> getEnvironment(@PathVariable UUID projectId) {
+        return ResponseEntity.ok(success("Environment capabilities probed.",
+                sourceRuntimeService.getEnvironmentCapabilities()));
+    }
+
     @PostMapping("/external")
     @Operation(
             summary = "Register external runtime",
-            description = """
-                    Registers a user-managed external runtime by recording its base URL.
-                    AI ToolCheck will not build or start the application — the caller manages it.
-                    Any previously UP external runtime for this project is stopped first.
-                    The runtime is immediately marked UP after registration.
-                    """,
+            description = "Registers a user-managed external runtime by recording its base URL. "
+                    + "Any previously UP external runtime for this project is stopped first. "
+                    + "The runtime is immediately marked UP after registration.",
             operationId = "registerExternalRuntime"
     )
     public ResponseEntity<ApiResponse<RuntimeActionResponse>> registerExternal(
@@ -72,12 +84,11 @@ public class SourceRuntimeController {
     @PostMapping("/health")
     @Operation(
             summary = "Health check runtime",
-            description = """
-                    Probes the current runtime's public base URL with HTTP GET requests to
-                    /actuator/health, /health, /healthz, / in order.
-                    Updates lastHealthStatus. Does not change runtimeStatus.
-                    Returns HEALTH_UP (any 2xx) or HEALTH_DOWN.
-                    """,
+            description = "Probes the current runtime's public base URL. "
+                    + "If a custom healthCheckPath is set (via POST /health-check-path), it is probed first. "
+                    + "Otherwise tries /actuator/health, /health, /healthz, / in order. "
+                    + "Updates lastHealthStatus. Does not change runtimeStatus. "
+                    + "Returns HEALTH_UP (any 2xx) or HEALTH_DOWN.",
             operationId = "healthCheckRuntime"
     )
     public ResponseEntity<ApiResponse<RuntimeActionResponse>> healthCheck(@PathVariable UUID projectId) {
@@ -85,15 +96,29 @@ public class SourceRuntimeController {
         return ResponseEntity.ok(response(data.getCode(), data.getMessage(), data));
     }
 
+    @PostMapping("/health-check-path")
+    @Operation(
+            summary = "Set custom health check path",
+            description = "Sets a custom health-check path for this project's runtime. "
+                    + "Example: /greeting, /api/ping, /actuator/health. "
+                    + "Fixes the Phase 1 issue where health check returned HEALTH_DOWN for apps "
+                    + "with non-standard endpoints. After setting /greeting, POST /health probes that path first.",
+            operationId = "updateHealthCheckPath"
+    )
+    public ResponseEntity<ApiResponse<RuntimeActionResponse>> updateHealthCheckPath(
+            @PathVariable UUID projectId,
+            @RequestParam String path) {
+        RuntimeActionResponse data = sourceRuntimeService.updateHealthCheckPath(projectId, path);
+        return ResponseEntity.ok(response(data.getCode(), data.getMessage(), data));
+    }
+
     @PostMapping("/start")
     @Operation(
-            summary = "Start source runtime (AUTO mode skeleton)",
-            description = """
-                    Phase 1 skeleton: detects source type and materializes build files
-                    but does NOT build or start any Docker container.
-                    Returns AUTO_RUNTIME_NOT_IMPLEMENTED until Phase 2 is deployed.
-                    For external runtimes, use POST /external instead.
-                    """,
+            summary = "Start source runtime (AUTO mode)",
+            description = "Phase 2: Probes the host environment and attempts to start an auto-runtime. "
+                    + "On current EC2 (no docker.sock): sets runtimeStatus=ENVIRONMENT_UNSUPPORTED with clear instructions. "
+                    + "NEVER returns runtimeStatus=UP unless the container is genuinely reachable. "
+                    + "For external runtimes, use POST /external instead.",
             operationId = "startSourceRuntime"
     )
     public ResponseEntity<ApiResponse<RuntimeActionResponse>> startRuntime(@PathVariable UUID projectId) {
@@ -103,8 +128,8 @@ public class SourceRuntimeController {
 
     @PostMapping("/rebuild")
     @Operation(
-            summary = "Rebuild source runtime (AUTO mode skeleton)",
-            description = "Phase 1 skeleton. Same behaviour as /start — Docker build is Phase 2.",
+            summary = "Rebuild and restart source runtime (AUTO mode)",
+            description = "Stops the existing runtime (if any) then starts a fresh build via the environment-appropriate orchestrator.",
             operationId = "rebuildSourceRuntime"
     )
     public ResponseEntity<ApiResponse<RuntimeActionResponse>> rebuildRuntime(@PathVariable UUID projectId) {
@@ -115,12 +140,10 @@ public class SourceRuntimeController {
     @PostMapping("/stop")
     @Operation(
             summary = "Stop runtime",
-            description = """
-                    Marks the current runtime as STOPPED and persists stoppedAt.
-                    For EXTERNAL runtimes: records STOPPED status — does NOT terminate the actual process.
-                    For AUTO runtimes (Phase 1): records STOPPED — container teardown is Phase 2.
-                    Idempotent: safe to call when no runtime exists.
-                    """,
+            description = "Marks the current runtime as STOPPED. "
+                    + "For EXTERNAL runtimes: records status only, does NOT terminate the process. "
+                    + "For AUTO runtimes with an active container: terminates the Docker container. "
+                    + "Idempotent: safe to call when no runtime exists.",
             operationId = "stopSourceRuntime"
     )
     public ResponseEntity<ApiResponse<RuntimeActionResponse>> stopRuntime(@PathVariable UUID projectId) {
