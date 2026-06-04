@@ -614,49 +614,65 @@ public class TestCaseServiceImpl implements TestCaseService {
             throw new BadRequestException("ApiEndpoint ID is required for generating test cases.");
         }
 
-        // Khắc phục lỗi LazyInitializationException bằng cách gọi qua Proxy để kích
-        // hoạt Transaction đọc
+        // Load endpoint with lazy collections initialised inside a transaction
         TestCaseService proxySelf = applicationContext.getBean(TestCaseService.class);
         ApiEndpoint endpoint = proxySelf.getEndpointWithDetails(UUID.fromString(endpointId));
 
-        // 1. Tổng hợp thông tin API (Method, Path, Parameters)
-        String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name() : "GET";
-        String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+        UUID projectId = endpoint.getSourceProject().getId();
+        String httpMethod = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name() : "GET";
+        String endpointPath = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
 
-        StringBuilder apiDetails = new StringBuilder();
-        apiDetails.append("Method: ").append(method).append("\n");
-        apiDetails.append("Path: ").append(path).append("\n");
-
-        if (endpoint.getApiParameters() != null && !endpoint.getApiParameters().isEmpty()) {
-            apiDetails.append("Parameters:\n");
-            endpoint.getApiParameters().forEach(p -> apiDetails.append("- ").append(p.getParamName())
-                    .append(" (").append(p.getParamIn()).append("): ")
-                    .append(p.getDataType()).append("\n"));
-        }
-
-        // 2. Lấy Schema Definitions
-        StringBuilder schemas = new StringBuilder();
-        if (endpoint.getEndpointSchemaMaps() != null) {
-            endpoint.getEndpointSchemaMaps().forEach(map -> {
-                if (map.getApiSchema() != null) {
-                    schemas.append("Schema [").append(map.getUsageType()).append("]: ")
-                            .append(map.getApiSchema().getSchemaName()).append("\n");
-                }
+        // 1. Load latest ApiDocumentVersion for this project (Agent 1 output)
+        ApiDocumentVersion latestVersion = resolveLatestOpenApiVersion(projectId);
+        if (latestVersion == null || latestVersion.getContentJson() == null
+                || latestVersion.getContentJson().isBlank()) {
+            String msg = "No OpenAPI document found for this project. " +
+                    "Please run Agent 1 Generate OpenAPI first. projectId=" + projectId;
+            log.warn("[GenerateTestCase] {} endpointId={} jobId={}", msg, endpointId, jobId);
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.FAILED);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setErrorMessage(msg);
+                aiJobLogRepository.save(job);
             });
+            throw new BadRequestException(msg);
         }
 
-        // Optimize schema if needed
-        String optimizedSchemas = aiOptimizationProperties.isEnabled() ?
-                aiPayloadOptimizerService.truncateIfNeeded(schemas.toString(), aiOptimizationProperties.getMaxPromptChars() / 2) : schemas.toString();
+        // 2. Build compact OpenAPI context from Agent 1 document
+        String compactContext;
+        try {
+            compactContext = buildCompactOpenApiContext(endpoint, latestVersion);
+        } catch (BadRequestException e) {
+            // Operation not found or document unreadable — fail the job clearly
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.FAILED);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setErrorMessage(e.getMessage());
+                aiJobLogRepository.save(job);
+            });
+            throw e;
+        } catch (Exception e) {
+            String msg = "Failed to parse OpenAPI document for context building: " + e.getMessage();
+            log.error("[GenerateTestCase] {} endpointId={} jobId={}", msg, endpointId, jobId, e);
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.FAILED);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setErrorMessage(msg);
+                aiJobLogRepository.save(job);
+            });
+            throw new AiPersistenceException(msg, e);
+        }
 
-        // 3. Inject Context vào Prompt
+        // 3. Build prompt with compact OpenAPI context
         String prompt;
         try {
-            prompt = buildGenerateTestCasePrompt(apiDetails.toString(), optimizedSchemas, endpointId, jobId);
-            log.info("[GenerateTestCase] Prompt built successfully endpointId={} jobId={} promptChars={} apiDetailsChars={} schemaChars={}",
-                    endpointId, jobId, prompt.length(), apiDetails.length(), optimizedSchemas.length());
+            prompt = buildGenerateTestCasePrompt(compactContext, endpointId, jobId);
+            log.info("[GenerateTestCase] Prompt built endpointId={} jobId={} promptChars={} " +
+                            "openApiContextChars={} method={} path={}",
+                    endpointId, jobId, prompt.length(), compactContext.length(),
+                    httpMethod, endpointPath);
         } catch (Exception e) {
-            log.error("[GenerateTestCase] Prompt build failed skill=GENERATE_TEST_CASE template=PROMPT_SKILL_2_GEN_TESTCASE endpointId={} jobId={} rootCause={}",
+            log.error("[GenerateTestCase] Prompt build failed endpointId={} jobId={} cause={}",
                     endpointId, jobId, e.getMessage(), e);
             aiJobLogRepository.findById(jobId).ifPresent(job -> {
                 job.setExecutionStatus(ExecutionStatus.FAILED);
@@ -664,36 +680,30 @@ public class TestCaseServiceImpl implements TestCaseService {
                 job.setErrorMessage("Prompt build failed: " + e.getMessage());
                 aiJobLogRepository.save(job);
             });
-            throw new AiPersistenceException("Quy trình sinh Test Case thất bại do lỗi build prompt: " + e.getMessage(), e);
+            throw new AiPersistenceException("Prompt build failed: " + e.getMessage(), e);
         }
 
         String rawResult = null;
         try {
-            // 4. Định tuyến AI và thực thi (Tốn thời gian, không có @Transactional để tránh
-            // treo DB connection)
+            // 4. Route to AI provider
             rawResult = aiModelRouterService.routeAndExecuteForSkill("GENERATE_TEST_CASE", prompt, jobId);
 
-            // 5. Sau khi nhận kết quả, parse và persist ngay vào DB (New Flow - Week 8)
-            // Bước 5.1: Parse JSON AI thành DTO chuẩn
+            // 5. Parse AI output and persist
             AiGeneratedTestCaseRequest testCaseRequest = aiJsonParserService.parseTestCaseRequest(rawResult);
-
-            // Bước 5.2: Khắc phục Self-Invocation bằng cách gọi qua Proxy của Spring
             proxySelf.saveAiGeneratedTestCases(testCaseRequest, UUID.fromString(endpointId), jobId);
 
         } catch (Exception e) {
-            log.error("[TestCaseService] Lỗi toàn cục khi xử lý AI cho Job {}: {}", jobId, e.getMessage());
-
-            // XỬ LÝ PHASE 4 THẤT BẠI TẠI ĐÂY (An toàn vì không bị dính dáng đến Transaction
-            // Rollback)
+            String aiFailMsg = "AI provider failed while generating test cases from OpenAPI document: "
+                    + e.getMessage();
+            log.error("[GenerateTestCase] {} endpointId={} jobId={}", aiFailMsg, endpointId, jobId);
             aiJobLogRepository.findById(jobId).ifPresent(job -> {
                 job.setExecutionStatus(ExecutionStatus.FAILED);
                 job.setCompletedAt(LocalDateTime.now());
-                job.setErrorMessage("Lỗi xử lý AI: " + e.getMessage());
+                job.setErrorMessage(aiFailMsg);
                 aiJobLogRepository.save(job);
             });
-
             if (!(e instanceof AiPersistenceException)) {
-                throw new AiPersistenceException("Quy trình sinh Test Case thất bại: " + e.getMessage(), e);
+                throw new AiPersistenceException(aiFailMsg, e);
             }
             throw e;
         }
@@ -701,24 +711,167 @@ public class TestCaseServiceImpl implements TestCaseService {
         return rawResult;
     }
 
+    // =========================================================================
+    // OpenAPI Context Helpers — STEP 4 (compact context for Agent 2 prompt)
+    // =========================================================================
+
+    ApiDocumentVersion resolveLatestOpenApiVersion(UUID projectId) {
+        java.util.List<ApiDocumentVersion> versions =
+                apiDocumentVersionRepository.findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId);
+        return versions.isEmpty() ? null : versions.get(0);
+    }
+
+    String buildCompactOpenApiContext(ApiEndpoint endpoint, ApiDocumentVersion version) {
+        String methodKey = endpoint.getHttpMethod() != null
+                ? endpoint.getHttpMethod().name().toLowerCase(java.util.Locale.ROOT)
+                : "get";
+        String pathKey = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+
+        // Parse the full OpenAPI JSON
+        com.fasterxml.jackson.databind.node.ObjectNode openApiRoot;
+        try {
+            openApiRoot = (com.fasterxml.jackson.databind.node.ObjectNode)
+                    objectMapper.readTree(version.getContentJson());
+        } catch (Exception e) {
+            throw new BadRequestException(
+                    "Cannot parse OpenAPI contentJson for version " + version.getId() + ": " + e.getMessage());
+        }
+
+        // Find operation node at paths[pathKey][methodKey]
+        JsonNode operation = findOperationNode(openApiRoot, pathKey, methodKey);
+        if (operation == null || operation.isMissingNode()) {
+            throw new BadRequestException(
+                    "OpenAPI operation not found for " + methodKey.toUpperCase(java.util.Locale.ROOT)
+                            + " " + pathKey + " in latest API document.");
+        }
+
+        // Collect $ref names used by this operation and resolve them
+        java.util.Set<String> refs = collectSchemaRefs(operation);
+        com.fasterxml.jackson.databind.node.ObjectNode relatedSchemas =
+                resolveRelatedSchemas(openApiRoot, refs, new java.util.HashSet<>());
+
+        log.info("[GenerateTestCase][OpenApi] Matched operation path={} method={} " +
+                        "relatedSchemasCount={} relatedSchemasChars={}",
+                pathKey, methodKey, relatedSchemas.size(),
+                relatedSchemas.toString().length());
+
+        // Assemble compact context object
+        com.fasterxml.jackson.databind.node.ObjectNode context =
+                objectMapper.createObjectNode();
+        context.put("source", "AGENT_1_OPENAPI_DOCUMENT");
+        JsonNode openapiVersion = openApiRoot.get("openapi");
+        if (openapiVersion != null) context.set("openapi", openapiVersion);
+        JsonNode info = openApiRoot.get("info");
+        if (info != null && info.isObject()) {
+            com.fasterxml.jackson.databind.node.ObjectNode slimInfo = objectMapper.createObjectNode();
+            if (info.has("title")) slimInfo.set("title", info.get("title"));
+            if (info.has("version")) slimInfo.set("version", info.get("version"));
+            context.set("info", slimInfo);
+        }
+        context.put("path", pathKey);
+        context.put("method", methodKey);
+        context.set("operation", operation);
+        context.set("relatedSchemas", relatedSchemas);
+
+        // Minify to compact JSON to keep token count low
+        try {
+            return objectMapper.writeValueAsString(context);
+        } catch (Exception e) {
+            throw new BadRequestException("Failed to serialize compact OpenAPI context: " + e.getMessage());
+        }
+    }
+
+    /** Finds paths[normalizedPath][method] in an OpenAPI root node. */
+    JsonNode findOperationNode(JsonNode openApiRoot, String path, String method) {
+        JsonNode paths = openApiRoot.get("paths");
+        if (paths == null || paths.isMissingNode()) return null;
+
+        // Try exact path first, then normalized (trim trailing slash)
+        String normalizedPath = path.endsWith("/") && path.length() > 1
+                ? path.substring(0, path.length() - 1) : path;
+
+        JsonNode pathItem = paths.get(path);
+        if (pathItem == null || pathItem.isMissingNode()) {
+            pathItem = paths.get(normalizedPath);
+        }
+        if (pathItem == null || pathItem.isMissingNode()) return null;
+
+        return pathItem.get(method);
+    }
+
+    /**
+     * Recursively collects all "$ref": "#/components/schemas/Foo" schema names
+     * referenced in the given JsonNode.
+     */
+    java.util.Set<String> collectSchemaRefs(JsonNode node) {
+        java.util.Set<String> refs = new java.util.LinkedHashSet<>();
+        collectSchemaRefsRecursive(node, refs, new java.util.HashSet<>(), 0);
+        return refs;
+    }
+
+    private void collectSchemaRefsRecursive(JsonNode node, java.util.Set<String> refs,
+                                            java.util.Set<String> visited, int depth) {
+        if (node == null || depth > 20) return;
+        if (node.isObject()) {
+            JsonNode ref = node.get("$ref");
+            if (ref != null && ref.isTextual()) {
+                String refValue = ref.asText();
+                if (refValue.startsWith("#/components/schemas/")) {
+                    String schemaName = refValue.substring("#/components/schemas/".length());
+                    refs.add(schemaName);
+                }
+            }
+            node.fields().forEachRemaining(entry ->
+                    collectSchemaRefsRecursive(entry.getValue(), refs, visited, depth + 1));
+        } else if (node.isArray()) {
+            node.forEach(child ->
+                    collectSchemaRefsRecursive(child, refs, visited, depth + 1));
+        }
+    }
+
+    /**
+     * Resolves schema definitions for the given ref names from components/schemas,
+     * expanding nested $refs recursively (with a visited guard to prevent cycles).
+     */
+    com.fasterxml.jackson.databind.node.ObjectNode resolveRelatedSchemas(
+            JsonNode openApiRoot, java.util.Set<String> refs, java.util.Set<String> visited) {
+        com.fasterxml.jackson.databind.node.ObjectNode result = objectMapper.createObjectNode();
+        JsonNode components = openApiRoot.get("components");
+        if (components == null || components.isMissingNode()) return result;
+        JsonNode schemas = components.get("schemas");
+        if (schemas == null || schemas.isMissingNode()) return result;
+
+        for (String schemaName : refs) {
+            if (visited.contains(schemaName)) continue;
+            visited.add(schemaName);
+            JsonNode schemaDef = schemas.get(schemaName);
+            if (schemaDef == null || schemaDef.isMissingNode()) continue;
+            result.set(schemaName, schemaDef);
+            // Resolve nested refs within this schema
+            java.util.Set<String> nestedRefs = collectSchemaRefs(schemaDef);
+            if (!nestedRefs.isEmpty()) {
+                com.fasterxml.jackson.databind.node.ObjectNode nestedResolved =
+                        resolveRelatedSchemas(openApiRoot, nestedRefs, visited);
+                nestedResolved.fields().forEachRemaining(e -> result.set(e.getKey(), e.getValue()));
+            }
+        }
+        return result;
+    }
+
+    /** Builds the final Agent 2 prompt by injecting the compact OpenAPI context. */
     String buildGenerateTestCasePrompt(
-            String apiEndpointDetails,
-            String payloadSchemaDefinitions,
+            String compactOpenApiContext,
             String endpointId,
             UUID jobId
     ) {
         String prompt = AiPromptConstants.PROMPT_SKILL_2_GEN_TESTCASE
-                .replace("{{API_ENDPOINT_DETAILS}}", nullToEmpty(apiEndpointDetails))
-                .replace("{{PAYLOAD_SCHEMA_DEFINITIONS}}", nullToEmpty(payloadSchemaDefinitions));
+                .replace("{{OPENAPI_OPERATION_CONTEXT}}", nullToEmpty(compactOpenApiContext));
 
-        if (prompt.contains("{{API_ENDPOINT_DETAILS}}")
-                || prompt.contains("{{PAYLOAD_SCHEMA_DEFINITIONS}}")) {
+        if (prompt.contains("{{OPENAPI_OPERATION_CONTEXT}}")) {
             throw new IllegalStateException(
-                "Prompt template unresolved placeholders for skill=GENERATE_TEST_CASE, template=PROMPT_SKILL_2_GEN_TESTCASE, endpointId="
-                + endpointId + ", jobId=" + jobId
-            );
+                    "Prompt template has unresolved placeholder OPENAPI_OPERATION_CONTEXT, endpointId="
+                    + endpointId + ", jobId=" + jobId);
         }
-
         return prompt;
     }
 
