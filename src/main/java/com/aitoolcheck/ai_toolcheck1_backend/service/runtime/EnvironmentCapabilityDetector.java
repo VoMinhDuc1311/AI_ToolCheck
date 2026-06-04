@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.config.properties.RuntimeAutoProper
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentCapability;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -26,6 +27,7 @@ public class EnvironmentCapabilityDetector {
     private final CommandProbe commandProbe;
     private final String dockerSocketPath;
 
+    @Autowired
     public EnvironmentCapabilityDetector(RuntimeAutoProperties properties) {
         this(properties, new ProcessCommandProbe(), DEFAULT_DOCKER_SOCKET_PATH);
     }
