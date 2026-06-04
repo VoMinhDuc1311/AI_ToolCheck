@@ -103,6 +103,11 @@ public interface AiJobLogRepository extends JpaRepository<AiJobLog, UUID> {
 
     List<AiJobLog> findBySourceProject_IdOrderByStartedAtDesc(UUID projectId);
 
+    List<AiJobLog> findBySourceProject_IdAndJobTypeAndExecutionStatusInOrderByStartedAtDesc(
+            UUID projectId,
+            JobType jobType,
+            Collection<ExecutionStatus> statuses);
+
     List<AiJobLog> findAllByOrderByStartedAtDesc();
 
     List<AiJobLog> findBySourceProject_IdInOrderByStartedAtDesc(Collection<UUID> projectIds);

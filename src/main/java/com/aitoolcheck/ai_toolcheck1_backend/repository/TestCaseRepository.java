@@ -34,6 +34,10 @@ public interface TestCaseRepository extends JpaRepository<TestCase, UUID>, JpaSp
 
     long countBySourceProject_IdAndGeneratedByAndDeletedFlagFalse(UUID projectId, com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy generatedBy);
 
+    long countBySourceProject_IdAndGeneratedByAndActiveFlagTrueAndDeletedFlagFalse(
+            UUID projectId,
+            com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy generatedBy);
+
     // ── Permanent delete support ───────────────────────────────────────────────
 
     /** Delete all TestCase rows for a project (after assertions/inputs already deleted). */
