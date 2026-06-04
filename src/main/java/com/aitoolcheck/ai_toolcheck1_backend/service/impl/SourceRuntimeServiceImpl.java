@@ -15,10 +15,12 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceRuntime;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceRuntimeRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuntimeDetectorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuntimeSourceMaterializer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.runtime.RuntimeOrchestratorFactory;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -30,6 +32,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 
@@ -58,6 +61,7 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     public static final String AUTO_RUNTIME_UNSUPPORTED_CODE = "AUTO_RUNTIME_UNSUPPORTED";
     public static final String AUTO_RUNTIME_PHASE_2_READY_MESSAGE =
             "Auto runtime detection/materialization succeeded, but Docker runtime build/start is not implemented yet.";
+    public static final String CODE_ENVIRONMENT_UNSUPPORTED = "ENVIRONMENT_UNSUPPORTED";
 
     /** Timeout for health-check probe HTTP GET requests. */
     private static final Duration HEALTH_CHECK_TIMEOUT = Duration.ofSeconds(5);
@@ -71,6 +75,7 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     private final RuntimeAutoProperties runtimeAutoProperties;
     private final RuntimeDetectorService runtimeDetectorService;
     private final RuntimeSourceMaterializer runtimeSourceMaterializer;
+    private final RuntimeOrchestratorFactory orchestratorFactory;
 
     // ── Read operations ──────────────────────────────────────────────────────
 
@@ -182,7 +187,19 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                     .build();
         }
 
-        String healthResult = probeHealth(baseUrl);
+        // Build probe list: custom path first (if configured), then defaults
+        List<String> probePaths = new ArrayList<>();
+        String customPath = runtime.getHealthCheckPath();
+        if (customPath != null && !customPath.isBlank()) {
+            probePaths.add(customPath);
+        }
+        for (String p : HEALTH_CHECK_PATHS) {
+            if (!probePaths.contains(p)) {
+                probePaths.add(p);
+            }
+        }
+
+        String healthResult = probeHealth(baseUrl, probePaths);
         runtime.setLastHealthStatus(healthResult);
         sourceRuntimeRepository.save(runtime);
 
@@ -208,9 +225,9 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     @Override
     @Transactional(readOnly = true)
     public SourceRuntimeResponse ensureRuntimeReady(UUID projectId) {
-        SourceProject sourceProject = projectAccessService.requireCanCreateTestRun(projectId);
+        projectAccessService.requireCanCreateTestRun(projectId);
 
-        // Check if there is an UP EXTERNAL runtime
+        // Check if there is an UP runtime
         var upRuntime = sourceRuntimeRepository
                 .findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP);
 
@@ -225,10 +242,15 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
             throw new BadRequestException(AUTO_RUNTIME_DISABLED_MESSAGE);
         }
 
-        // AUTO mode Phase 1 skeleton — detect and materialise, but cannot run
-        processAutoRuntimePhase2(sourceProject);
-        // processAutoRuntimePhase2 always throws — this line is unreachable
-        throw new BadRequestException(AUTO_RUNTIME_PHASE_2_READY_MESSAGE);
+        // No UP runtime and auto is enabled — capability check
+        EnvironmentCapabilityReport cap = orchestratorFactory.getLastReport();
+        if (cap != null && !cap.canAutoStart()) {
+            throw new BadRequestException(
+                    "No UP runtime found and environment cannot auto-start. " +
+                    "Register an External Runtime or check GET /runtime/environment for details.");
+        }
+        throw new BadRequestException(
+                "No UP runtime found. Register an External Runtime via POST /runtime/external or start an auto-runtime.");
     }
 
     // ── Start / Rebuild (AUTO runtime skeleton) ───────────────────────────────
@@ -237,14 +259,16 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     @Transactional
     public RuntimeActionResponse startRuntime(UUID projectId) {
         SourceProject sourceProject = projectAccessService.requireCanManageProject(projectId);
-        return runPhase2Action(sourceProject);
+        return runOrchestratorAction(sourceProject);
     }
 
     @Override
     @Transactional
     public RuntimeActionResponse rebuildRuntime(UUID projectId) {
+        // Stop existing container if any, then start fresh
+        stopRuntime(projectId);
         SourceProject sourceProject = projectAccessService.requireCanManageProject(projectId);
-        return runPhase2Action(sourceProject);
+        return runOrchestratorAction(sourceProject);
     }
 
     // ── Stop ─────────────────────────────────────────────────────────────────
@@ -270,7 +294,6 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
         var runtimeOpt = sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId);
 
         if (runtimeOpt.isEmpty()) {
-            // No runtime — return synthetic stopped response
             return RuntimeActionResponse.builder()
                     .code(CODE_STOPPED)
                     .message("No runtime was running for this project.")
@@ -281,7 +304,6 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
         SourceRuntime runtime = runtimeOpt.get();
 
         if (runtime.getRuntimeStatus() == RuntimeStatus.STOPPED) {
-            // Already stopped — idempotent
             return RuntimeActionResponse.builder()
                     .code(CODE_STOPPED)
                     .message("Runtime was already stopped.")
@@ -289,16 +311,71 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                     .build();
         }
 
-        // Mark as STOPPED
+        // For AUTO_RUNTIME containers: delegate stop to orchestrator (handles docker rm)
+        if (runtime.getRuntimeMode() == RuntimeMode.AUTO_RUNTIME_FROM_SOURCE
+                && runtime.getContainerName() != null) {
+            SourceRuntime stopped = orchestratorFactory.getStrategy().stop(runtime);
+            log.info("[SourceRuntime] AUTO runtime stopped via orchestrator for project={} id={}", projectId, runtime.getId());
+            return RuntimeActionResponse.builder()
+                    .code(CODE_STOPPED)
+                    .message("Auto runtime stopped successfully.")
+                    .runtime(toResponse(stopped))
+                    .build();
+        }
+
+        // EXTERNAL or no container name — just mark STOPPED
         runtime.setRuntimeStatus(RuntimeStatus.STOPPED);
         runtime.setStoppedAt(LocalDateTime.now());
         sourceRuntimeRepository.save(runtime);
-
         log.info("[SourceRuntime] Runtime stopped for project={} id={}", projectId, runtime.getId());
 
         return RuntimeActionResponse.builder()
                 .code(CODE_STOPPED)
                 .message("Runtime stopped successfully.")
+                .runtime(toResponse(runtime))
+                .build();
+    }
+
+    // ── Phase 2: Environment capabilities and health-check path ───────────────
+
+    @Override
+    public EnvironmentCapabilityReport getEnvironmentCapabilities() {
+        EnvironmentCapabilityReport cached = orchestratorFactory.getLastReport();
+        if (cached != null) {
+            return cached;
+        }
+        return orchestratorFactory.reprobeAndSelect();
+    }
+
+    @Override
+    @Transactional
+    public RuntimeActionResponse updateHealthCheckPath(UUID projectId, String healthCheckPath) {
+        projectAccessService.requireCanManageProject(projectId);
+
+        if (healthCheckPath == null || healthCheckPath.isBlank()) {
+            throw new BadRequestException("healthCheckPath must not be blank. Example: /greeting");
+        }
+        if (!healthCheckPath.startsWith("/")) {
+            throw new BadRequestException("healthCheckPath must start with /. Example: /greeting");
+        }
+        if (healthCheckPath.length() > 500) {
+            throw new BadRequestException("healthCheckPath must not exceed 500 characters");
+        }
+
+        SourceRuntime runtime = sourceRuntimeRepository
+                .findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId)
+                .orElseThrow(() -> new ResourceNotFoundException("No runtime found for project: " + projectId));
+
+        String oldPath = runtime.getHealthCheckPath();
+        runtime.setHealthCheckPath(healthCheckPath);
+        sourceRuntimeRepository.save(runtime);
+
+        log.info("[SourceRuntime] Health check path updated for project={} id={}: {} -> {}",
+                projectId, runtime.getId(), oldPath, healthCheckPath);
+
+        return RuntimeActionResponse.builder()
+                .code(CODE_SUCCESS)
+                .message("Health check path updated to: " + healthCheckPath)
                 .runtime(toResponse(runtime))
                 .build();
     }
@@ -366,8 +443,9 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                 });
     }
 
-    private RuntimeActionResponse runPhase2Action(SourceProject sourceProject) {
+    private RuntimeActionResponse runOrchestratorAction(SourceProject sourceProject) {
         UUID projectId = sourceProject == null ? null : sourceProject.getId();
+
         if (!runtimeAutoProperties.isEnabled()) {
             return RuntimeActionResponse.builder()
                     .code(AUTO_RUNTIME_DISABLED_CODE)
@@ -376,49 +454,51 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                     .build();
         }
 
-        try {
-            processAutoRuntimePhase2(sourceProject);
+        // Step 1: Detect source type
+        RuntimeDetectionResult detection = runtimeDetectorService.detect(projectId);
+        if (detection == null || !detection.isSupported()) {
+            String reason = detection == null
+                    ? "Runtime detector returned no result."
+                    : detection.getMessage();
+            SourceRuntime failed = upsertRuntime(sourceProject, detection,
+                    RuntimeStatus.BUILD_FAILED, reason);
+            sourceRuntimeRepository.save(failed);
             return RuntimeActionResponse.builder()
-                    .code(AUTO_RUNTIME_NOT_IMPLEMENTED_CODE)
-                    .message(AUTO_RUNTIME_PHASE_2_READY_MESSAGE)
-                    .runtime(currentOrNotCreated(projectId))
-                    .build();
-        } catch (BadRequestException ex) {
-            String code = ex.getMessage() != null && ex.getMessage().startsWith("Auto runtime cannot start this source:")
-                    ? AUTO_RUNTIME_UNSUPPORTED_CODE
-                    : AUTO_RUNTIME_NOT_IMPLEMENTED_CODE;
-            return RuntimeActionResponse.builder()
-                    .code(code)
-                    .message(ex.getMessage())
-                    .runtime(currentOrNotCreated(projectId))
+                    .code(AUTO_RUNTIME_UNSUPPORTED_CODE)
+                    .message("Auto runtime cannot start: source type is not supported. Reason: " + reason)
+                    .runtime(toResponse(failed))
                     .build();
         }
+
+        // Step 2: Delegate to the strategy selected by RuntimeOrchestratorFactory
+        // On EC2 without docker.sock, this will be UnsupportedRuntimeOrchestrator
+        // and will set status = ENVIRONMENT_UNSUPPORTED honestly.
+        SourceRuntime result = orchestratorFactory.getStrategy().start(sourceProject, detection);
+
+        String code;
+        String message;
+        if (result.getRuntimeStatus() == RuntimeStatus.UP) {
+            code = CODE_SUCCESS;
+            message = "Runtime started successfully. URL: " + result.getPublicBaseUrl();
+        } else if (result.getRuntimeStatus() == RuntimeStatus.ENVIRONMENT_UNSUPPORTED) {
+            code = CODE_ENVIRONMENT_UNSUPPORTED;
+            message = result.getLastError();
+        } else {
+            code = AUTO_RUNTIME_NOT_IMPLEMENTED_CODE;
+            message = result.getLastError() != null ? result.getLastError() : "Runtime start did not reach UP status.";
+        }
+
+        return RuntimeActionResponse.builder()
+                .code(code)
+                .message(message)
+                .runtime(toResponse(result))
+                .build();
     }
 
     private SourceRuntimeResponse currentOrNotCreated(UUID projectId) {
         return sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId)
                 .map(this::toResponse)
                 .orElseGet(() -> notCreatedResponse(projectId));
-    }
-
-    private void processAutoRuntimePhase2(SourceProject sourceProject) {
-        UUID projectId = sourceProject.getId();
-        RuntimeDetectionResult detection = runtimeDetectorService.detect(projectId);
-        if (detection == null || !detection.isSupported()) {
-            String reason = detection == null ? "Runtime detector returned no result." : detection.getMessage();
-            SourceRuntime runtime = upsertRuntime(sourceProject, detection, RuntimeStatus.BUILD_FAILED,
-                    reason == null ? "Unsupported runtime source." : reason);
-            sourceRuntimeRepository.save(runtime);
-            throw new BadRequestException("Auto runtime cannot start this source: " + runtime.getLastError());
-        }
-
-        SourceRuntime runtime;
-        try (MaterializedRuntimeSource materialized = runtimeSourceMaterializer.materialize(projectId)) {
-            runtime = upsertRuntime(sourceProject, detection, RuntimeStatus.BUILD_FAILED,
-                    AUTO_RUNTIME_PHASE_2_READY_MESSAGE);
-        }
-        sourceRuntimeRepository.save(runtime);
-        throw new BadRequestException(AUTO_RUNTIME_PHASE_2_READY_MESSAGE);
     }
 
     private SourceRuntime upsertRuntime(SourceProject sourceProject, RuntimeDetectionResult detection,
@@ -446,17 +526,19 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     }
 
     /**
-     * Performs a lightweight HTTP GET probe against known health endpoints.
+     * Performs a lightweight HTTP GET probe against provided health endpoint paths.
      *
+     * @param baseUrl    the base URL to probe (no trailing slash).
+     * @param paths      ordered list of paths to try.
      * @return status string: {@code "UP:<path>:<statusCode>"} or {@code "DOWN:<reason>"}.
      */
-    private String probeHealth(String baseUrl) {
+    private String probeHealth(String baseUrl, List<String> paths) {
         HttpClient client = HttpClient.newBuilder()
                 .connectTimeout(HEALTH_CHECK_TIMEOUT)
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
 
-        for (String path : HEALTH_CHECK_PATHS) {
+        for (String path : paths) {
             try {
                 String url = baseUrl + path;
                 HttpRequest req = HttpRequest.newBuilder()
@@ -477,6 +559,11 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
             }
         }
         return "DOWN:no_healthy_endpoint";
+    }
+
+    /** Convenience overload using the default paths list. */
+    private String probeHealth(String baseUrl) {
+        return probeHealth(baseUrl, HEALTH_CHECK_PATHS);
     }
 
     // ── Response builders ─────────────────────────────────────────────────────

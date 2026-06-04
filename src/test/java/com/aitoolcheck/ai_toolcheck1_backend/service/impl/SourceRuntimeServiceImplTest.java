@@ -5,6 +5,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.config.properties.RuntimeAutoProper
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.MaterializedRuntimeSource;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.RuntimeDetectionResult;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.req.RegisterExternalRuntimeRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentCapability;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeType;
@@ -16,6 +18,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceRuntimeRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuntimeDetectorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuntimeSourceMaterializer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.runtime.RuntimeOrchestratorFactory;
+import com.aitoolcheck.ai_toolcheck1_backend.service.runtime.RuntimeOrchestratorStrategy;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -24,6 +28,7 @@ import org.mockito.ArgumentCaptor;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -57,6 +62,8 @@ class SourceRuntimeServiceImplTest {
     private RuntimeAutoProperties runtimeAutoProperties;
     private RuntimeDetectorService runtimeDetectorService;
     private RuntimeSourceMaterializer runtimeSourceMaterializer;
+    private RuntimeOrchestratorFactory orchestratorFactory;
+    private RuntimeOrchestratorStrategy orchestratorStrategy;
     private SourceRuntimeServiceImpl service;
     private UUID projectId;
     private SourceProject project;
@@ -71,12 +78,18 @@ class SourceRuntimeServiceImplTest {
         runtimeAutoProperties = new RuntimeAutoProperties();
         runtimeDetectorService = mock(RuntimeDetectorService.class);
         runtimeSourceMaterializer = mock(RuntimeSourceMaterializer.class);
+        orchestratorFactory = mock(RuntimeOrchestratorFactory.class);
+        orchestratorStrategy = mock(RuntimeOrchestratorStrategy.class);
+        when(orchestratorFactory.getStrategy()).thenReturn(orchestratorStrategy);
+        when(orchestratorFactory.getLastReport()).thenReturn(null);
+
         service = new SourceRuntimeServiceImpl(
                 sourceRuntimeRepository,
                 projectAccessService,
                 runtimeAutoProperties,
                 runtimeDetectorService,
-                runtimeSourceMaterializer
+                runtimeSourceMaterializer,
+                orchestratorFactory
         );
         projectId = UUID.randomUUID();
         project = new SourceProject();
@@ -389,97 +402,50 @@ class SourceRuntimeServiceImplTest {
     }
 
     @Test
-    void autoRuntimeEnabled_supportedMaven_detectsAndMaterializesButDoesNotBuildDocker() throws Exception {
+    void autoRuntimeEnabled_noUpRuntime_ensureRuntimeReady_throwsNoUpRuntimeError() {
         runtimeAutoProperties.setEnabled(true);
-        Path root = Files.createDirectories(tempDir.resolve("runtime-source"));
-        when(runtimeDetectorService.detect(projectId)).thenReturn(supportedMaven());
-        when(runtimeSourceMaterializer.materialize(projectId)).thenReturn(MaterializedRuntimeSource.builder()
-                .projectId(projectId)
-                .rootDir(root)
-                .materializedFiles(List.of("pom.xml"))
-                .build());
-        // No UP runtime
         when(sourceRuntimeRepository
                 .findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP))
                 .thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> service.ensureRuntimeReady(projectId))
                 .isInstanceOf(BadRequestException.class)
-                .hasMessageContaining("Docker runtime build/start is not implemented yet");
-
-        verify(runtimeDetectorService).detect(projectId);
-        verify(runtimeSourceMaterializer).materialize(projectId);
-        verify(sourceRuntimeRepository).save(any(SourceRuntime.class));
+                .hasMessageContaining("No UP runtime found");
     }
 
     @Test
-    void autoRuntimeEnabled_unsupportedSource_persistsLastError() {
+    void startRuntime_unsupportedSource_savesBuildFailedRuntime() {
         runtimeAutoProperties.setEnabled(true);
-        when(runtimeDetectorService.detect(projectId)).thenReturn(RuntimeDetectionResult.builder()
-                .runtimeType(RuntimeType.UNSUPPORTED)
+        RuntimeDetectionResult detection = RuntimeDetectionResult.builder()
                 .supported(false)
                 .message("No supported Spring Boot build file found.")
-                .build());
-        when(sourceRuntimeRepository
-                .findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP))
-                .thenReturn(Optional.empty());
+                .build();
+        when(runtimeDetectorService.detect(projectId)).thenReturn(detection);
 
-        assertThatThrownBy(() -> service.ensureRuntimeReady(projectId))
-                .isInstanceOf(BadRequestException.class)
-                .hasMessageContaining("Auto runtime cannot start this source");
+        var response = service.startRuntime(projectId);
 
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.AUTO_RUNTIME_UNSUPPORTED_CODE);
         ArgumentCaptor<SourceRuntime> captor = ArgumentCaptor.forClass(SourceRuntime.class);
         verify(sourceRuntimeRepository).save(captor.capture());
-        assertThat(captor.getValue().getRuntimeType()).isEqualTo(RuntimeType.UNSUPPORTED);
         assertThat(captor.getValue().getRuntimeStatus()).isEqualTo(RuntimeStatus.BUILD_FAILED);
         assertThat(captor.getValue().getLastError()).contains("No supported Spring Boot build file found");
-        verify(runtimeSourceMaterializer, never()).materialize(any());
     }
 
     @Test
-    void autoRuntimeEnabled_supportedSource_doesNotMarkRuntimeUp() throws Exception {
+    void startRuntime_supportedSource_delegatesToOrchestrator() {
         runtimeAutoProperties.setEnabled(true);
-        Path root = Files.createDirectories(tempDir.resolve("runtime-source"));
         when(runtimeDetectorService.detect(projectId)).thenReturn(supportedMaven());
-        when(runtimeSourceMaterializer.materialize(projectId)).thenReturn(MaterializedRuntimeSource.builder()
-                .projectId(projectId)
-                .rootDir(root)
-                .materializedFiles(List.of("pom.xml"))
-                .build());
-        when(sourceRuntimeRepository
-                .findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP))
-                .thenReturn(Optional.empty());
+        SourceRuntime expectedResult = SourceRuntime.builder()
+                .sourceProject(project)
+                .runtimeStatus(RuntimeStatus.ENVIRONMENT_UNSUPPORTED)
+                .lastError("Docker not available")
+                .build();
+        when(orchestratorStrategy.start(any(), any())).thenReturn(expectedResult);
 
-        assertThatThrownBy(() -> service.ensureRuntimeReady(projectId))
-                .isInstanceOf(BadRequestException.class);
+        var response = service.startRuntime(projectId);
 
-        ArgumentCaptor<SourceRuntime> captor = ArgumentCaptor.forClass(SourceRuntime.class);
-        verify(sourceRuntimeRepository).save(captor.capture());
-        assertThat(captor.getValue().getRuntimeStatus()).isNotEqualTo(RuntimeStatus.UP);
-        assertThat(captor.getValue().getRuntimeStatus()).isEqualTo(RuntimeStatus.BUILD_FAILED);
-        assertThat(captor.getValue().getInternalBaseUrl()).isNull();
-        assertThat(captor.getValue().getPublicBaseUrl()).isNull();
-    }
-
-    @Test
-    void autoRuntimeEnabled_supportedSource_cleansMaterializedTempDir() throws Exception {
-        runtimeAutoProperties.setEnabled(true);
-        Path root = Files.createDirectories(tempDir.resolve("runtime-source"));
-        Files.writeString(root.resolve("pom.xml"), "spring-boot-starter");
-        when(runtimeDetectorService.detect(projectId)).thenReturn(supportedMaven());
-        when(runtimeSourceMaterializer.materialize(projectId)).thenReturn(MaterializedRuntimeSource.builder()
-                .projectId(projectId)
-                .rootDir(root)
-                .materializedFiles(List.of("pom.xml"))
-                .build());
-        when(sourceRuntimeRepository
-                .findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP))
-                .thenReturn(Optional.empty());
-
-        assertThatThrownBy(() -> service.ensureRuntimeReady(projectId))
-                .isInstanceOf(BadRequestException.class);
-
-        assertThat(Files.exists(root)).isFalse();
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.CODE_ENVIRONMENT_UNSUPPORTED);
+        verify(orchestratorStrategy).start(eq(project), any());
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────────
@@ -508,4 +474,150 @@ class SourceRuntimeServiceImplTest {
                 .configFilePath("src/main/resources/application.yml")
                 .build();
     }
+
+    // ── Phase 2: updateHealthCheckPath ─────────────────────────────────────────
+
+    @Test
+    void updateHealthCheckPath_valid_updatesAndReturnsSuccess() {
+        SourceRuntime runtime = buildExternalRuntime(RuntimeStatus.UP, "http://example.com:8081");
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(Optional.of(runtime));
+
+        var response = service.updateHealthCheckPath(projectId, "/greeting");
+
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.CODE_SUCCESS);
+        assertThat(runtime.getHealthCheckPath()).isEqualTo("/greeting");
+        verify(sourceRuntimeRepository).save(runtime);
+    }
+
+    @Test
+    void updateHealthCheckPath_blank_throwsBadRequest() {
+        assertThatThrownBy(() -> service.updateHealthCheckPath(projectId, ""))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("healthCheckPath must not be blank");
+    }
+
+    @Test
+    void updateHealthCheckPath_missingLeadingSlash_throwsBadRequest() {
+        assertThatThrownBy(() -> service.updateHealthCheckPath(projectId, "greeting"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("must start with /");
+    }
+
+    @Test
+    void updateHealthCheckPath_whenNoRuntime_throwsNotFound() {
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(Optional.empty());
+
+        assertThatThrownBy(() -> service.updateHealthCheckPath(projectId, "/greeting"))
+                .isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    // ── Phase 2: getEnvironmentCapabilities ───────────────────────────────────
+
+    @Test
+    void getEnvironmentCapabilities_returnsCachedReportWhenAvailable() {
+        EnvironmentCapabilityReport cached = EnvironmentCapabilityReport.builder()
+                .available(EnumSet.of(EnvironmentCapability.WRITABLE_TEMP_DIR))
+                .missing(EnumSet.of(EnvironmentCapability.DOCKER_CLI, EnvironmentCapability.DOCKER_SOCKET,
+                        EnvironmentCapability.JDK, EnvironmentCapability.MAVEN, EnvironmentCapability.GRADLE))
+                .summary("UNSUPPORTED: no docker socket, JRE-only.")
+                .probedAt(LocalDateTime.now())
+                .build();
+        when(orchestratorFactory.getLastReport()).thenReturn(cached);
+
+        var result = service.getEnvironmentCapabilities();
+
+        assertThat(result).isSameAs(cached);
+        verify(orchestratorFactory, org.mockito.Mockito.never()).reprobeAndSelect();
+    }
+
+    @Test
+    void getEnvironmentCapabilities_reprobesWhenNoCachedReport() {
+        when(orchestratorFactory.getLastReport()).thenReturn(null);
+        EnvironmentCapabilityReport fresh = EnvironmentCapabilityReport.builder()
+                .available(EnumSet.of(EnvironmentCapability.WRITABLE_TEMP_DIR))
+                .missing(EnumSet.of(EnvironmentCapability.DOCKER_CLI))
+                .summary("UNSUPPORTED")
+                .probedAt(LocalDateTime.now())
+                .build();
+        when(orchestratorFactory.reprobeAndSelect()).thenReturn(fresh);
+
+        var result = service.getEnvironmentCapabilities();
+
+        assertThat(result).isSameAs(fresh);
+        verify(orchestratorFactory).reprobeAndSelect();
+    }
+
+    // ── Phase 2: startRuntime with orchestrator ────────────────────────────────
+
+    @Test
+    void startRuntime_disabled_returnsDisabledCode() {
+        runtimeAutoProperties.setEnabled(false);
+        // No need to set up detector — should short-circuit
+
+        var response = service.startRuntime(projectId);
+
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.AUTO_RUNTIME_DISABLED_CODE);
+        verifyNoInteractions(runtimeDetectorService);
+        verifyNoInteractions(orchestratorStrategy);
+    }
+
+    @Test
+    void startRuntime_enabled_unsupportedDetection_returnsBuildFailedCode() {
+        runtimeAutoProperties.setEnabled(true);
+        RuntimeDetectionResult unsupported = RuntimeDetectionResult.builder()
+                .supported(false)
+                .message("No pom.xml or build.gradle found.")
+                .build();
+        when(runtimeDetectorService.detect(projectId)).thenReturn(unsupported);
+
+        var response = service.startRuntime(projectId);
+
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.AUTO_RUNTIME_UNSUPPORTED_CODE);
+        verifyNoInteractions(orchestratorStrategy);
+    }
+
+    @Test
+    void startRuntime_enabled_orchestratorReturnsEnvironmentUnsupported_returnsCorrectCode() {
+        runtimeAutoProperties.setEnabled(true);
+        when(runtimeDetectorService.detect(projectId)).thenReturn(supportedMaven());
+
+        SourceRuntime unsupportedRuntime = SourceRuntime.builder()
+                .sourceProject(project)
+                .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                .runtimeStatus(RuntimeStatus.ENVIRONMENT_UNSUPPORTED)
+                .runtimeType(RuntimeType.SPRING_BOOT_MAVEN)
+                .lastError("UNSUPPORTED: Docker socket not mounted.")
+                .build();
+        when(orchestratorStrategy.start(any(), any())).thenReturn(unsupportedRuntime);
+
+        var response = service.startRuntime(projectId);
+
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.CODE_ENVIRONMENT_UNSUPPORTED);
+        assertThat(response.getRuntime().getRuntimeStatus()).isEqualTo(RuntimeStatus.ENVIRONMENT_UNSUPPORTED);
+        assertThat(response.getRuntime().getPublicBaseUrl()).isNull();
+    }
+
+    @Test
+    void startRuntime_enabled_orchestratorReturnsUp_returnsSuccessCode() {
+        runtimeAutoProperties.setEnabled(true);
+        when(runtimeDetectorService.detect(projectId)).thenReturn(supportedMaven());
+
+        SourceRuntime upRuntime = SourceRuntime.builder()
+                .sourceProject(project)
+                .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                .runtimeStatus(RuntimeStatus.UP)
+                .runtimeType(RuntimeType.SPRING_BOOT_MAVEN)
+                .publicBaseUrl("http://127.0.0.1:18080/api")
+                .build();
+        when(orchestratorStrategy.start(any(), any())).thenReturn(upRuntime);
+
+        var response = service.startRuntime(projectId);
+
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.CODE_SUCCESS);
+        assertThat(response.getRuntime().getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
+        assertThat(response.getRuntime().getPublicBaseUrl()).isEqualTo("http://127.0.0.1:18080/api");
+    }
 }
+
