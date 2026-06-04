@@ -34,7 +34,7 @@ public class SourceFile {
     @Column(name = "class_name")
     private String className;
 
-    @Column(name = "file_type")
+    @Column(name = "file_type", length = 50, nullable = false)
     @Enumerated(EnumType.STRING)
     private FileType fileType;
 
