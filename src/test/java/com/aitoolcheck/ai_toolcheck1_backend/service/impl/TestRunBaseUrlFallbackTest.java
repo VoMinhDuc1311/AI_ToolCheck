@@ -97,6 +97,23 @@ class TestRunBaseUrlFallbackTest {
 
         projectId = UUID.randomUUID();
         project = buildProject(projectId, null, null);
+
+        when(sourceRuntimeService.resolveBaseUrlForTestRun(any(), any(), any()))
+                .thenAnswer(invocation -> {
+                    String reqUrl = invocation.getArgument(1);
+                    String defUrl = invocation.getArgument(2);
+
+                    if (reqUrl != null && !reqUrl.trim().isEmpty()) {
+                        if (reqUrl.equals("not-a-url")) {
+                            throw new BadRequestException("Invalid URL");
+                        }
+                        return reqUrl.trim();
+                    }
+                    if (defUrl != null && !defUrl.trim().isEmpty()) {
+                        return defUrl.trim();
+                    }
+                    throw new BadRequestException("No runtime base URL provided. Provide External Base URL or start a Source Runtime.");
+                });
     }
 
     // ── B1: request.baseUrl provided → use it ────────────────────────────────
@@ -145,32 +162,28 @@ class TestRunBaseUrlFallbackTest {
     }
 
     @Test
-    void createTestRun_autoRuntime_returnsClearDisabledError() {
+    void createTestRun_autoRuntime_resolvesBaseUrlSuccessfully() {
+        // In Phase 1, autoRuntime is supported if baseUrl is provided (or resolved via other tiers)
         when(projectAccessService.requireCanCreateTestRun(projectId)).thenReturn(project);
-        when(sourceRuntimeService.ensureRuntimeReady(projectId))
-                .thenThrow(new BadRequestException("Auto runtime from uploaded source is not enabled yet. Use External Base URL."));
+        stubSaveAndItems("http://override.example.com");
+
+        CreateTestRunRequest request = buildRequest("http://override.example.com", null);
+        request.setRuntimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE);
+
+        var response = service.create(request);
+        assertThat(response.getBaseUrl()).isEqualTo("http://override.example.com");
+    }
+
+    @Test
+    void createTestRun_autoRuntime_noBaseUrl_throwsClearError() {
+        when(projectAccessService.requireCanCreateTestRun(projectId)).thenReturn(project);
 
         CreateTestRunRequest request = buildRequest(null, null);
         request.setRuntimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE);
 
         assertThatThrownBy(() -> service.create(request))
                 .isInstanceOf(BadRequestException.class)
-                .hasMessageContaining("Auto runtime from uploaded source is not enabled yet");
-    }
-
-    @Test
-    void autoRuntime_doesNotFallbackToExternalBaseUrlSilently() {
-        project.setDefaultTargetBaseUrl("http://project-default.example.com");
-        when(projectAccessService.requireCanCreateTestRun(projectId)).thenReturn(project);
-        when(sourceRuntimeService.ensureRuntimeReady(projectId))
-                .thenThrow(new BadRequestException("Auto runtime from uploaded source is not enabled yet. Use External Base URL."));
-
-        CreateTestRunRequest request = buildRequest("http://override.example.com", null);
-        request.setRuntimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE);
-
-        assertThatThrownBy(() -> service.create(request))
-                .isInstanceOf(BadRequestException.class)
-                .hasMessageContaining("Auto runtime from uploaded source is not enabled yet");
+                .hasMessageContaining("No runtime base URL provided");
     }
 
     // ── B2: no request.baseUrl → fallback to project.defaultTargetBaseUrl ────
@@ -200,7 +213,7 @@ class TestRunBaseUrlFallbackTest {
 
         assertThatThrownBy(() -> service.create(request))
                 .isInstanceOf(BadRequestException.class)
-                .hasMessageContaining("baseUrl is required");
+                .hasMessageContaining("No runtime base URL provided");
     }
 
     // ── B4: request.baseUrl overrides project default ─────────────────────────
@@ -233,7 +246,7 @@ class TestRunBaseUrlFallbackTest {
         // Must throw 400 — must NOT silently use repositoryUrl
         assertThatThrownBy(() -> service.create(request))
                 .isInstanceOf(BadRequestException.class)
-                .hasMessageContaining("baseUrl is required");
+                .hasMessageContaining("No runtime base URL provided");
     }
 
     // ── B6: blank request.baseUrl treated as missing → fallback ───────────────

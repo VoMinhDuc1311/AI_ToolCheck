@@ -121,13 +121,10 @@ public class TestRunServiceImpl implements TestRunService {
         String runName = normalizeRequiredText(request.getRunName(), "runName");
         String description = normalizeOptionalText(request.getDescription());
         RuntimeMode runtimeMode = resolveRuntimeMode(request.getRuntimeMode());
-        if (runtimeMode == RuntimeMode.AUTO_RUNTIME_FROM_SOURCE) {
-            sourceRuntimeService.ensureRuntimeReady(sourceProject.getId());
-            throw new BadRequestException("Auto runtime from uploaded source is not enabled yet. Use External Base URL.");
-        }
-        // Resolve effective baseUrl: request → project.defaultTargetBaseUrl → 400.
+        // Resolve effective baseUrl: request → UP SourceRuntime → project.defaultTargetBaseUrl → 400.
         // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
-        String baseUrl = resolveBaseUrl(request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
+        String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
+                sourceProject.getId(), request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
         List<TestCase> resolvedCases = resolveTestCases(request, sourceProject.getId());
 
@@ -179,14 +176,10 @@ public class TestRunServiceImpl implements TestRunService {
         log.debug("Found SourceProject: id={}, name={}", sourceProject.getId(), sourceProject.getProjectName());
 
         RuntimeMode runtimeMode = resolveRuntimeMode(request.getRuntimeMode());
-        if (runtimeMode == RuntimeMode.AUTO_RUNTIME_FROM_SOURCE) {
-            sourceRuntimeService.ensureRuntimeReady(sourceProject.getId());
-            throw new BadRequestException("Auto runtime from uploaded source is not enabled yet. Use External Base URL.");
-        }
-
-        // Resolve effective baseUrl: request → project.defaultTargetBaseUrl → 400.
+        // Resolve effective baseUrl: request → UP SourceRuntime → project.defaultTargetBaseUrl → 400.
         // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
-        String baseUrl = resolveBaseUrl(request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
+        String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
+                sourceProject.getId(), request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
         // Resolve and validate test cases
         List<UUID> testCaseIds = request.getTestCaseIds();
