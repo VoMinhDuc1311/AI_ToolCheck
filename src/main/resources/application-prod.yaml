@@ -89,3 +89,10 @@ runtime:
     build-timeout-seconds: ${RUNTIME_AUTO_BUILD_TIMEOUT_SECONDS:300}
     startup-timeout-seconds: ${RUNTIME_AUTO_STARTUP_TIMEOUT_SECONDS:120}
     max-active-runtimes: ${RUNTIME_AUTO_MAX_ACTIVE_RUNTIMES:5}
+
+# Schema compatibility migrator — runs at startup to ensure DB schema matches the Java model.
+# This is the mechanism that converts source_file.file_type from MySQL ENUM to VARCHAR(50).
+# Disable only if you have already applied the schema change manually and want to skip the check.
+app:
+  schema-compat:
+    enabled: ${APP_SCHEMA_COMPAT_ENABLED:true}
