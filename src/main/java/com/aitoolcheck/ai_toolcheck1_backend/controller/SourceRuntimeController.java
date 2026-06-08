@@ -2,9 +2,12 @@ package com.aitoolcheck.ai_toolcheck1_backend.controller;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.req.RegisterExternalRuntimeRequest;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.req.StartRuntimeRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.RuntimeActionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -116,14 +119,37 @@ public class SourceRuntimeController {
     @Operation(
             summary = "Start source runtime (AUTO mode)",
             description = "Phase 2: Probes the host environment and attempts to start an auto-runtime. "
-                    + "On current EC2 (no docker.sock): sets runtimeStatus=ENVIRONMENT_UNSUPPORTED with clear instructions. "
-                    + "NEVER returns runtimeStatus=UP unless the container is genuinely reachable. "
-                    + "For external runtimes, use POST /external instead.",
+                    + "Accepts an optional body or query param to select the build strategy: "
+                    + "AUTO (default), UPLOADED_DOCKERFILE_ONLY, GENERATED_DOCKERFILE, AUTO_WITH_FALLBACK. "
+                    + "Example: POST /runtime/start?buildStrategy=GENERATED_DOCKERFILE. "
+                    + "NEVER returns runtimeStatus=UP unless the container is genuinely reachable.",
             operationId = "startSourceRuntime"
     )
-    public ResponseEntity<ApiResponse<RuntimeActionResponse>> startRuntime(@PathVariable UUID projectId) {
-        RuntimeActionResponse data = sourceRuntimeService.startRuntime(projectId);
+    public ResponseEntity<ApiResponse<RuntimeActionResponse>> startRuntime(
+            @PathVariable UUID projectId,
+            @RequestBody(required = false) StartRuntimeRequest body,
+            @RequestParam(required = false) String buildStrategy) {
+
+        BuildStrategy strategy = resolveStrategy(buildStrategy, body);
+        RuntimeActionResponse data = sourceRuntimeService.startRuntime(projectId, strategy);
         return ResponseEntity.ok(response(data.getCode(), data.getMessage(), data));
+    }
+
+    BuildStrategy resolveStrategy(String queryParam, StartRuntimeRequest body) {
+        // Query param takes precedence over body
+        if (queryParam != null && !queryParam.isBlank()) {
+            try {
+                return BuildStrategy.valueOf(queryParam.toUpperCase());
+            } catch (IllegalArgumentException e) {
+                throw new BadRequestException(
+                        "Invalid buildStrategy: '" + queryParam + "'. "
+                        + "Valid values: AUTO, UPLOADED_DOCKERFILE_ONLY, GENERATED_DOCKERFILE, AUTO_WITH_FALLBACK");
+            }
+        }
+        if (body != null && body.getBuildStrategy() != null) {
+            return body.getBuildStrategy();
+        }
+        return BuildStrategy.AUTO;
     }
 
     @PostMapping("/rebuild")

@@ -3,6 +3,8 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.runtime;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.RuntimeAutoProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.MaterializedRuntimeSource;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.RuntimeDetectionResult;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.DockerfileSource;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
@@ -51,8 +53,17 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
 
     @Override
     public SourceRuntime start(SourceProject project, RuntimeDetectionResult detection) {
+        return start(project, detection, BuildStrategy.AUTO);
+    }
+
+
+    public SourceRuntime start(SourceProject project, RuntimeDetectionResult detection, BuildStrategy strategy) {
+        BuildStrategy effective = strategy != null ? strategy : BuildStrategy.AUTO;
+        log.info("[DockerRuntimeOrchestrator] start project={} strategy={}", project.getId(), effective);
+
         SourceRuntime runtime = sourceRuntimeRepository.save(buildRuntime(project, detection, RuntimeStatus.BUILDING, null));
         runtime.setBuildStartedAt(LocalDateTime.now());
+        runtime.setBuildStrategyRequested(effective);
         sourceRuntimeRepository.save(runtime);
 
         MaterializedRuntimeSource materialized;
@@ -72,15 +83,44 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
         try {
             int appPort = detection.getDetectedPort() != null ? detection.getDetectedPort() : properties.getInternalPort();
             Path effectiveBuildRoot = resolveEffectiveBuildRoot(materialized.getRootDir(), detection);
-            Path dockerfilePath = resolveDockerfile(effectiveBuildRoot, detection, appPort);
+
             imageTag = sanitizeDockerRef(properties.getContainerPrefix()) + ":" + sanitizeDockerRef(project.getId() + "-" + System.currentTimeMillis());
             containerName = sanitizeContainerName(properties.getContainerPrefix(), project.getId(), System.currentTimeMillis());
             int hostPort = allocatePort(project.getId());
 
-            CommandResult build = runDockerBuild(effectiveBuildRoot, imageTag, dockerfilePath);
+            // ── Dockerfile selection by strategy ──────────────────────────────
+            DockerBuildPlan plan = selectDockerfile(effectiveBuildRoot, detection, appPort, effective);
+            log.info("[DockerRuntimeOrchestrator] DockerBuildPlan: source={} file={}",
+                    plan.source(), plan.dockerfilePath());
+
+            runtime.setBuildStrategyUsed(effective);
+            runtime.setDockerfileSource(plan.source());
+
+            CommandResult build = runDockerBuild(effectiveBuildRoot, imageTag, plan.dockerfilePath());
+
+            // ── AUTO_WITH_FALLBACK: if uploaded fails, retry with generated ──
+            if (!build.success() && effective == BuildStrategy.AUTO_WITH_FALLBACK
+                    && plan.source() == DockerfileSource.UPLOADED) {
+                String originalError = build.summary();
+                log.warn("[DockerRuntimeOrchestrator] Uploaded Dockerfile failed (strategy=AUTO_WITH_FALLBACK), "
+                        + "falling back to generated Dockerfile. exitCode={}", build.exitCode());
+                Path generatedDockerfile = generateDockerfileToFile(effectiveBuildRoot, detection, appPort);
+                build = runDockerBuild(effectiveBuildRoot, imageTag, generatedDockerfile);
+                runtime.setDockerfileSource(DockerfileSource.GENERATED);
+                String fallbackReason = "Uploaded Dockerfile failed (exitCode=" + build.exitCode()
+                        + "). Fell back to generated Dockerfile. Original error: " + tail(originalError, 500);
+                runtime.setFallbackReason(fallbackReason);
+                log.info("[DockerRuntimeOrchestrator] Fallback build result: success={}", build.success());
+            }
+
             if (!build.success()) {
                 cleanupContainerAndImage(containerName, imageTag);
-                return failRuntime(runtime, RuntimeStatus.BUILD_FAILED, "docker build failed: " + build.summary());
+                String suggestion = plan.source() == DockerfileSource.UPLOADED
+                        ? " Uploaded Dockerfile failed. Use buildStrategy=GENERATED_DOCKERFILE or "
+                          + "AUTO_WITH_FALLBACK to let AI ToolCheck generate a correct Dockerfile."
+                        : "";
+                return failRuntime(runtime, RuntimeStatus.BUILD_FAILED,
+                        "docker build failed: " + build.summary() + suggestion);
             }
 
             runtime.setBuildFinishedAt(LocalDateTime.now());
@@ -151,16 +191,7 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
         this.healthProbe = healthProbe;
     }
 
-    /**
-     * Resolves the effective build root directory from the materialized source root
-     * and the detected project root sub-path.
-     *
-     * <p>For a nested ZIP layout (e.g. {@code aitc-standard-springboot-api/pom.xml}),
-     * {@code detection.getProjectRoot()} will be {@code "aitc-standard-springboot-api"}
-     * and the returned path will be {@code materializedRoot/aitc-standard-springboot-api}.
-     * For a flat layout, {@code detection.getProjectRoot()} is {@code null} and
-     * the materialized root itself is returned unchanged.
-     */
+
     Path resolveEffectiveBuildRoot(Path materializedRoot, RuntimeDetectionResult detection) throws IOException {
         String projectRoot = detection.getProjectRoot();
         if (projectRoot == null || projectRoot.isBlank()) {
@@ -177,51 +208,155 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
         return candidate;
     }
 
-    Path resolveDockerfile(Path root, RuntimeDetectionResult detection, int appPort) throws IOException {
-        Path existing = root.resolve("Dockerfile");
-        if (Files.isRegularFile(existing)) {
-            return existing;
-        }
-        Path generated = root.resolve("Dockerfile.autorun");
-        Files.writeString(generated, generateDockerfile(detection, appPort));
+    // ── Dockerfile selection by strategy ─────────────────────────────────────
+
+
+    DockerBuildPlan selectDockerfile(Path buildRoot, RuntimeDetectionResult detection,
+                                     int appPort, BuildStrategy strategy) throws IOException {
+        Path uploadedDockerfile = buildRoot.resolve("Dockerfile");
+        boolean hasUploaded = Files.isRegularFile(uploadedDockerfile);
+
+        return switch (strategy) {
+            case UPLOADED_DOCKERFILE_ONLY -> {
+                if (!hasUploaded) {
+                    throw new IOException(
+                            "buildStrategy=UPLOADED_DOCKERFILE_ONLY but no Dockerfile found in project root. "
+                            + "Upload a Dockerfile or use GENERATED_DOCKERFILE.");
+                }
+                yield new DockerBuildPlan(uploadedDockerfile, DockerfileSource.UPLOADED);
+            }
+            case GENERATED_DOCKERFILE -> {
+                Path generated = generateDockerfileToFile(buildRoot, detection, appPort);
+                yield new DockerBuildPlan(generated, DockerfileSource.GENERATED);
+            }
+            case AUTO, AUTO_WITH_FALLBACK -> {
+                if (hasUploaded) {
+                    yield new DockerBuildPlan(uploadedDockerfile, DockerfileSource.UPLOADED);
+                }
+                Path generated = generateDockerfileToFile(buildRoot, detection, appPort);
+                yield new DockerBuildPlan(generated, DockerfileSource.GENERATED);
+            }
+        };
+    }
+
+    /** Writes the generated Dockerfile to {@code buildRoot/Dockerfile.autorun} and returns the path. */
+    Path generateDockerfileToFile(Path buildRoot, RuntimeDetectionResult detection, int appPort) throws IOException {
+        boolean hasMvnw    = Files.isRegularFile(buildRoot.resolve("mvnw"));
+        boolean hasGradlew = Files.isRegularFile(buildRoot.resolve("gradlew"));
+        Path generated = buildRoot.resolve("Dockerfile.autorun");
+        Files.writeString(generated, generateDockerfile(detection, appPort, hasMvnw, hasGradlew));
         return generated;
     }
 
-    String generateDockerfile(RuntimeDetectionResult detection, int appPort) {
+    /**
+     * Generates a correct Dockerfile for the detected runtime type.
+     *
+     * <p><b>Maven rules:</b>
+     * <ul>
+     *   <li>With {@code mvnw}: use {@code eclipse-temurin:21-jdk} + {@code ./mvnw}.</li>
+     *   <li>Without {@code mvnw}: use {@code maven:3.9-eclipse-temurin-21} — which ships Maven CLI.
+     *       Never use {@code eclipse-temurin:21-jdk} alone when {@code mvn} CLI is needed.</li>
+     * </ul>
+     *
+     * <p><b>Gradle rules:</b>
+     * <ul>
+     *   <li>With {@code gradlew}: use {@code eclipse-temurin:21-jdk} + {@code ./gradlew}.</li>
+     *   <li>Without {@code gradlew}: use {@code gradle:8-jdk21}.</li>
+     * </ul>
+     */
+    String generateDockerfile(RuntimeDetectionResult detection, int appPort,
+                               boolean hasMvnw, boolean hasGradlew) {
         RuntimeType type = detection.getRuntimeType();
         if (type == RuntimeType.SPRING_BOOT_MAVEN) {
-            return """
-                    FROM eclipse-temurin:21-jdk AS build
-                    WORKDIR /app
-                    COPY . .
-                    RUN chmod +x mvnw || true
-                    RUN if [ -x ./mvnw ]; then ./mvnw -B -DskipTests clean package; else mvn -B -DskipTests clean package; fi
+            if (hasMvnw) {
+                return """
+                        FROM eclipse-temurin:21-jdk AS build
+                        WORKDIR /app
+                        COPY mvnw .
+                        COPY .mvn .mvn
+                        COPY pom.xml .
+                        COPY src ./src
+                        RUN chmod +x mvnw
+                        RUN ./mvnw -q -DskipTests clean package
 
-                    FROM eclipse-temurin:21-jre
-                    WORKDIR /app
-                    COPY --from=build /app/target/*.jar app.jar
-                    ENV SERVER_PORT=%d
-                    EXPOSE %d
-                    ENTRYPOINT ["java", "-jar", "app.jar"]
-                    """.formatted(appPort, appPort);
+                        FROM eclipse-temurin:21-jre
+                        WORKDIR /app
+                        COPY --from=build /app/target/*.jar app.jar
+                        ENV SERVER_PORT=%d
+                        EXPOSE %d
+                        ENTRYPOINT ["java", "-jar", "app.jar"]
+                        """.formatted(appPort, appPort);
+            } else {
+                // No mvnw — use the official Maven image which includes mvn CLI.
+                // NEVER use eclipse-temurin:21-jdk alone here: mvn is not installed on that image.
+                return """
+                        FROM maven:3.9-eclipse-temurin-21 AS build
+                        WORKDIR /app
+                        COPY pom.xml .
+                        COPY src ./src
+                        RUN mvn -q -DskipTests clean package
+
+                        FROM eclipse-temurin:21-jre
+                        WORKDIR /app
+                        COPY --from=build /app/target/*.jar app.jar
+                        ENV SERVER_PORT=%d
+                        EXPOSE %d
+                        ENTRYPOINT ["java", "-jar", "app.jar"]
+                        """.formatted(appPort, appPort);
+            }
         }
         if (type == RuntimeType.SPRING_BOOT_GRADLE) {
-            return """
-                    FROM eclipse-temurin:21-jdk AS build
-                    WORKDIR /app
-                    COPY . .
-                    RUN chmod +x gradlew || true
-                    RUN if [ -x ./gradlew ]; then ./gradlew -x test bootJar; else gradle -x test bootJar; fi
+            if (hasGradlew) {
+                return """
+                        FROM eclipse-temurin:21-jdk AS build
+                        WORKDIR /app
+                        COPY gradlew .
+                        COPY gradle ./gradle
+                        COPY build.gradle* .
+                        COPY settings.gradle* .
+                        COPY src ./src
+                        RUN chmod +x gradlew
+                        RUN ./gradlew -q -x test bootJar
 
-                    FROM eclipse-temurin:21-jre
-                    WORKDIR /app
-                    COPY --from=build /app/build/libs/*.jar app.jar
-                    ENV SERVER_PORT=%d
-                    EXPOSE %d
-                    ENTRYPOINT ["java", "-jar", "app.jar"]
-                    """.formatted(appPort, appPort);
+                        FROM eclipse-temurin:21-jre
+                        WORKDIR /app
+                        COPY --from=build /app/build/libs/*.jar app.jar
+                        ENV SERVER_PORT=%d
+                        EXPOSE %d
+                        ENTRYPOINT ["java", "-jar", "app.jar"]
+                        """.formatted(appPort, appPort);
+            } else {
+                return """
+                        FROM gradle:8-jdk21 AS build
+                        WORKDIR /app
+                        COPY build.gradle* .
+                        COPY settings.gradle* .
+                        COPY src ./src
+                        RUN gradle -q -x test bootJar
+
+                        FROM eclipse-temurin:21-jre
+                        WORKDIR /app
+                        COPY --from=build /app/build/libs/*.jar app.jar
+                        ENV SERVER_PORT=%d
+                        EXPOSE %d
+                        ENTRYPOINT ["java", "-jar", "app.jar"]
+                        """.formatted(appPort, appPort);
+            }
         }
         throw new IllegalArgumentException("Unsupported runtime type for Docker build: " + type);
+    }
+
+    /** Legacy 2-arg overload used by existing tests; detects wrapper from filesystem. */
+    String generateDockerfile(RuntimeDetectionResult detection, int appPort) {
+        return generateDockerfile(detection, appPort, false, false);
+    }
+
+    /** Result of Dockerfile selection: which file to use and which source it is. */
+    record DockerBuildPlan(Path dockerfilePath, DockerfileSource source) {}
+
+    private static String tail(String s, int max) {
+        if (s == null || s.isBlank()) return "";
+        return s.length() <= max ? s : s.substring(s.length() - max);
     }
 
     CommandResult runDockerBuild(Path contextDir, String imageTag, Path dockerfilePath) {
@@ -418,25 +553,12 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
         CommandResult run(int timeoutSeconds, List<String> command);
     }
 
-    /**
-     * Result of a command invocation.
-     *
-     * <ul>
-     *   <li>{@code success} — {@code true} iff the process exited with code 0 and did not time out.</li>
-     *   <li>{@code exitCode} — actual OS exit code, or {@code -1} for timeout/IO-error.</li>
-     *   <li>{@code timedOut} — {@code true} if the process was killed due to timeout.</li>
-     *   <li>{@code elapsedMs} — wall-clock milliseconds the process ran.</li>
-     *   <li>{@code stdout} / {@code stderr} — last {@value #TAIL_CHARS} characters of each stream.</li>
-     * </ul>
-     *
-     * <p><b>Critical rule:</b> {@code success()} is based solely on {@code exitCode == 0}.
-     * Non-empty {@code stderr} (e.g. Docker deprecation warnings) is NEVER treated as failure.
-     */
+
     record CommandResult(boolean success, int exitCode, String output,
                          boolean timedOut, long elapsedMs,
                          String stdout, String stderr) {
 
-        /** Legacy 3-arg constructor for command results that don't need full diagnostics. */
+
         CommandResult(boolean success, int exitCode, String output) {
             this(success, exitCode, output, false, -1, output, "");
         }
@@ -449,7 +571,7 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
             return masked.length() > 500 ? masked.substring(0, 500) : masked;
         }
 
-        /** Human-readable one-liner for log lines. */
+
         String diagnostic() {
             return String.format("exitCode=%d timedOut=%b elapsedMs=%d stdout=[%s] stderr=[%s]",
                     exitCode, timedOut, elapsedMs, tail(stdout, 300), tail(stderr, 300));
@@ -485,18 +607,7 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
     record ProbeCandidate(String path, boolean openapi) {
     }
 
-    /**
-     * Executes a command with the configured timeout.
-     *
-     * <p><b>Deadlock prevention:</b> stdout and stderr are drained concurrently
-     * by two daemon threads <em>before</em> {@code waitFor()} can block. Without
-     * this, large output (Docker build logs) fills the OS pipe buffer, causing
-     * the child process to block on write while the parent blocks on {@code waitFor} —
-     * producing a mutual deadlock that looks like a spurious timeout.
-     *
-     * <p><b>Success criterion:</b> exit code 0. Non-empty stderr (e.g. Docker
-     * deprecation warnings) is <em>never</em> treated as a failure.
-     */
+
     static class ProcessCommandExecutor implements CommandExecutor {
 
         private static final int TAIL_CHARS = CommandResult.TAIL_CHARS;
@@ -561,11 +672,7 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
             }
         }
 
-        /**
-         * Creates and returns (but does NOT start) a daemon thread that reads all bytes
-         * from {@code stream} into {@code buf}, retaining only the last {@code maxChars}
-         * characters to bound memory usage.
-         */
+        
         private Thread drainStream(java.io.InputStream stream, StringBuilder buf, int maxChars) {
             Thread t = new Thread(() -> {
                 try {

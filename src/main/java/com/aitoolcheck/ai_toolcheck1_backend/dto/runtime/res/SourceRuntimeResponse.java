@@ -1,5 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.DockerfileSource;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeType;
@@ -31,6 +33,10 @@ public class SourceRuntimeResponse {
     private String healthCheckPath;
     private String lastHealthStatus;
     private String lastError;
+    private BuildStrategy buildStrategyRequested;
+    private BuildStrategy buildStrategyUsed;
+    private DockerfileSource dockerfileSource;
+    private String fallbackReason;
     private LocalDateTime buildStartedAt;
     private LocalDateTime buildFinishedAt;
     private LocalDateTime startedAt;

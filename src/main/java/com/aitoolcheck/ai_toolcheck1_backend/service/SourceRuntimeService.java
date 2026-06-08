@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.req.RegisterExternalRun
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.RuntimeActionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 
 import java.util.List;
 import java.util.UUID;
@@ -51,10 +52,18 @@ public interface SourceRuntimeService {
     SourceRuntimeResponse ensureRuntimeReady(UUID projectId);
 
     /**
-     * For AUTO_RUNTIME_FROM_SOURCE: triggers detection + materialization skeleton.
-     * Docker build/run is Phase 2. Returns action response with honest status.
+     * For AUTO_RUNTIME_FROM_SOURCE: triggers detection + materialization + Docker build.
+     * Uses {@link BuildStrategy#AUTO} by default.
      */
     RuntimeActionResponse startRuntime(UUID projectId);
+
+    /**
+     * For AUTO_RUNTIME_FROM_SOURCE: triggers detection + materialization + Docker build
+     * using the specified {@link BuildStrategy}.
+     *
+     * <p>Null strategy defaults to {@link BuildStrategy#AUTO}.
+     */
+    RuntimeActionResponse startRuntime(UUID projectId, BuildStrategy strategy);
 
     /**
      * For AUTO_RUNTIME_FROM_SOURCE: triggers rebuild.

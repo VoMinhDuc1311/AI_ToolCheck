@@ -7,6 +7,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.RuntimeDetecti
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.req.RegisterExternalRuntimeRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.RuntimeActionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeType;
@@ -258,17 +259,22 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     @Override
     @Transactional
     public RuntimeActionResponse startRuntime(UUID projectId) {
+        return startRuntime(projectId, BuildStrategy.AUTO);
+    }
+
+    @Override
+    @Transactional
+    public RuntimeActionResponse startRuntime(UUID projectId, BuildStrategy strategy) {
         SourceProject sourceProject = projectAccessService.requireCanManageProject(projectId);
-        return runOrchestratorAction(sourceProject);
+        return runOrchestratorAction(sourceProject, strategy != null ? strategy : BuildStrategy.AUTO);
     }
 
     @Override
     @Transactional
     public RuntimeActionResponse rebuildRuntime(UUID projectId) {
-        // Stop existing container if any, then start fresh
         stopRuntime(projectId);
         SourceProject sourceProject = projectAccessService.requireCanManageProject(projectId);
-        return runOrchestratorAction(sourceProject);
+        return runOrchestratorAction(sourceProject, BuildStrategy.AUTO);
     }
 
     // ── Stop ─────────────────────────────────────────────────────────────────
@@ -443,7 +449,7 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                 });
     }
 
-    private RuntimeActionResponse runOrchestratorAction(SourceProject sourceProject) {
+    private RuntimeActionResponse runOrchestratorAction(SourceProject sourceProject, BuildStrategy strategy) {
         UUID projectId = sourceProject == null ? null : sourceProject.getId();
 
         if (!runtimeAutoProperties.isEnabled()) {
@@ -470,10 +476,15 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                     .build();
         }
 
-        // Step 2: Delegate to the strategy selected by RuntimeOrchestratorFactory
-        // On EC2 without docker.sock, this will be UnsupportedRuntimeOrchestrator
-        // and will set status = ENVIRONMENT_UNSUPPORTED honestly.
-        SourceRuntime result = orchestratorFactory.getStrategy().start(sourceProject, detection);
+        // Step 2: Delegate to the strategy selected by RuntimeOrchestratorFactory.
+        // Pass the BuildStrategy to the Docker orchestrator if it supports it.
+        SourceRuntime result;
+        var strategyImpl = orchestratorFactory.getStrategy();
+        if (strategyImpl instanceof com.aitoolcheck.ai_toolcheck1_backend.service.runtime.DockerRuntimeOrchestrator docker) {
+            result = docker.start(sourceProject, detection, strategy);
+        } else {
+            result = strategyImpl.start(sourceProject, detection);
+        }
 
         String code;
         String message;
@@ -600,6 +611,10 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                 .healthCheckPath(runtime.getHealthCheckPath())
                 .lastHealthStatus(runtime.getLastHealthStatus())
                 .lastError(runtime.getLastError())
+                .buildStrategyRequested(runtime.getBuildStrategyRequested())
+                .buildStrategyUsed(runtime.getBuildStrategyUsed())
+                .dockerfileSource(runtime.getDockerfileSource())
+                .fallbackReason(runtime.getFallbackReason())
                 .buildStartedAt(runtime.getBuildStartedAt())
                 .buildFinishedAt(runtime.getBuildFinishedAt())
                 .startedAt(runtime.getStartedAt())

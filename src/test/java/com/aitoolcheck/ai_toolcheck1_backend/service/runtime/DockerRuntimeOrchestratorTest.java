@@ -3,6 +3,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.runtime;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.RuntimeAutoProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.MaterializedRuntimeSource;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.RuntimeDetectionResult;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
@@ -107,9 +108,9 @@ class DockerRuntimeOrchestratorTest {
         Path root = materializedRoot();
         Files.writeString(root.resolve("Dockerfile"), "FROM eclipse-temurin:21-jre\n");
 
-        Path dockerfile = orchestrator.resolveDockerfile(root, supportedMaven(), 8080);
+        var plan = orchestrator.selectDockerfile(root, supportedMaven(), 8080, BuildStrategy.AUTO);
 
-        assertThat(dockerfile.getFileName().toString()).isEqualTo("Dockerfile");
+        assertThat(plan.dockerfilePath().getFileName().toString()).isEqualTo("Dockerfile");
     }
 
     @Test

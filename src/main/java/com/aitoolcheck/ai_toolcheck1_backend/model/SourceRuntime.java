@@ -1,5 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.DockerfileSource;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeType;
@@ -100,6 +102,25 @@ public class SourceRuntime {
 
     @Column(name = "last_error", columnDefinition = "TEXT")
     private String lastError;
+
+    /** The strategy the caller requested. Null for runtimes created before this feature. */
+    @Column(name = "build_strategy_requested", length = 50)
+    @Enumerated(EnumType.STRING)
+    private BuildStrategy buildStrategyRequested;
+
+    /** The strategy that was actually executed (e.g. AUTO_WITH_FALLBACK may use GENERATED). */
+    @Column(name = "build_strategy_used", length = 50)
+    @Enumerated(EnumType.STRING)
+    private BuildStrategy buildStrategyUsed;
+
+    /** Whether the uploaded or generated Dockerfile was used. */
+    @Column(name = "dockerfile_source", length = 20)
+    @Enumerated(EnumType.STRING)
+    private DockerfileSource dockerfileSource;
+
+    /** Non-null when AUTO_WITH_FALLBACK fell back to the generated Dockerfile. */
+    @Column(name = "fallback_reason", columnDefinition = "TEXT")
+    private String fallbackReason;
 
     @Column(name = "build_started_at")
     private LocalDateTime buildStartedAt;
