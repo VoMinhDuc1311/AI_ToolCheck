@@ -261,21 +261,90 @@ public class BatchRunServiceImpl implements BatchRunService {
     private SourceRuntimeResponse runRuntimeStep(BatchRunItem item, SourceProject project) {
         updateStep(item.getId(), BatchRunStep.START_RUNTIME);
         BatchRun batchRun = findBatchRun(item.getBatchRun().getId());
+        UUID batchId = batchRun.getId();
         SourceRuntimeResponse runtime;
         if (batchRun.getStartRuntime()) {
-            RuntimeActionResponse response = sourceRuntimeService.startRuntime(project.getId(), batchRun.getBuildStrategy());
+            BuildStrategy buildStrategy = batchRun.getBuildStrategy();
+            log.info("[BatchRun] runtime start batchId={} itemId={} projectId={} strategy={}",
+                    batchId, item.getId(), project.getId(), buildStrategy);
+
+            RuntimeActionResponse response = sourceRuntimeService.startRuntime(project.getId(), buildStrategy);
             runtime = response.getRuntime();
             if (runtime == null) {
                 throw new BadRequestException("Runtime start failed: startRuntime returned no runtime.");
             }
-            if (runtime.getRuntimeStatus() == RuntimeStatus.BUILDING || runtime.getRuntimeStatus() == RuntimeStatus.STARTING) {
-                RuntimeActionResponse waited = sourceRuntimeService.waitForRuntimeTerminalState(project.getId(), runtime.getId(), 300);
+
+            // ── Persist runtimeId immediately so the item always carries the runtimeId,
+            //    even if a subsequent poll times out and the item is marked FAILED.
+            if (runtime.getId() != null) {
+                attachRuntime(item.getId(), runtime.getId());
+                log.info("[BatchRun] runtime start accepted batchId={} itemId={} runtimeId={} strategy={} status={}",
+                        batchId, item.getId(), runtime.getId(), buildStrategy, runtime.getRuntimeStatus());
+            }
+
+            // ── Terminal failure immediately — no need to poll.
+            if (isTerminalFailure(runtime.getRuntimeStatus())) {
+                String err = runtime.getLastError() != null ? runtime.getLastError()
+                        : "Runtime reached terminal failure status: " + runtime.getRuntimeStatus();
+                log.warn("[BatchRun] runtime failed batchId={} itemId={} runtimeId={} status={} lastError={}",
+                        batchId, item.getId(), runtime.getId(), runtime.getRuntimeStatus(), err);
+                throw new BadRequestException("Runtime start failed: " + err);
+            }
+
+            // ── Runtime is building/starting — poll until terminal state.
+            if (runtime.getRuntimeStatus() == RuntimeStatus.BUILDING
+                    || runtime.getRuntimeStatus() == RuntimeStatus.STARTING) {
+                UUID runtimeId = runtime.getId();
+                log.info("[BatchRun] runtime polling batchId={} itemId={} runtimeId={} currentStatus={}",
+                        batchId, item.getId(), runtimeId, runtime.getRuntimeStatus());
+
+                RuntimeActionResponse waited = sourceRuntimeService.waitForRuntimeTerminalState(
+                        project.getId(), runtimeId, 300);
                 runtime = waited.getRuntime();
+
+                if (runtime != null) {
+                    log.info("[BatchRun] runtime poll result batchId={} itemId={} runtimeId={} status={} publicBaseUrl={}",
+                            batchId, item.getId(), runtimeId, runtime.getRuntimeStatus(), runtime.getPublicBaseUrl());
+                } else {
+                    log.warn("[BatchRun] runtime poll returned null batchId={} itemId={} runtimeId={}",
+                            batchId, item.getId(), runtimeId);
+                }
+
+                // Timeout produces a rich diagnostic error message.
+                if ("TIMEOUT".equals(waited.getCode())) {
+                    String latestStatus = runtime != null ? String.valueOf(runtime.getRuntimeStatus()) : "UNKNOWN";
+                    String latestHealthStatus = runtime != null ? runtime.getLastHealthStatus() : null;
+                    String lastError = runtime != null ? runtime.getLastError() : null;
+                    String publicBaseUrl = runtime != null ? runtime.getPublicBaseUrl() : null;
+                    String timeoutMsg = "Runtime failed to reach UP status after 300s."
+                            + " runtimeId=" + runtimeId
+                            + " latestStatus=" + latestStatus
+                            + (latestHealthStatus != null ? " lastHealthStatus=" + latestHealthStatus : "")
+                            + (lastError != null ? " lastError=" + lastError : "")
+                            + (publicBaseUrl != null ? " publicBaseUrl=" + publicBaseUrl : "");
+                    log.warn("[BatchRun] runtime timeout batchId={} itemId={} runtimeId={} latestStatus={} lastError={}",
+                            batchId, item.getId(), runtimeId, latestStatus, lastError);
+                    throw new BadRequestException("Runtime start failed: " + timeoutMsg);
+                }
             }
-            if (runtime == null || runtime.getRuntimeStatus() != RuntimeStatus.UP) {
-                String error = runtime != null && runtime.getLastError() != null ? runtime.getLastError() : "Runtime failed to reach UP status.";
-                throw new BadRequestException("Runtime start failed: " + error);
+
+            // ── Validate UP: must have status=UP and non-null publicBaseUrl.
+            if (runtime == null
+                    || runtime.getRuntimeStatus() != RuntimeStatus.UP
+                    || runtime.getPublicBaseUrl() == null) {
+                String latestStatus = runtime != null ? String.valueOf(runtime.getRuntimeStatus()) : "UNKNOWN";
+                String lastErr = runtime != null && runtime.getLastError() != null
+                        ? runtime.getLastError() : "Runtime failed to reach UP status.";
+                log.warn("[BatchRun] runtime not ready batchId={} itemId={} runtimeId={} latestStatus={} lastError={}",
+                        batchId, item.getId(), runtime != null ? runtime.getId() : null, latestStatus, lastErr);
+                throw new BadRequestException("Runtime start failed: " + lastErr);
             }
+
+            log.info("[BatchRun] runtime UP batchId={} itemId={} runtimeId={} publicBaseUrl={}",
+                    batchId, item.getId(), runtime.getId(), runtime.getPublicBaseUrl());
+
+            // Re-attach runtimeId after confirmed UP (defensive, in case ID changed).
+            attachRuntime(item.getId(), runtime.getId());
         } else {
             String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
                     project.getId(), batchRun.getExternalBaseUrl(), project.getDefaultTargetBaseUrl());
@@ -287,9 +356,18 @@ public class BatchRunServiceImpl implements BatchRunService {
                             .runtimeStatus(RuntimeStatus.UP)
                             .publicBaseUrl(baseUrl)
                             .build());
+            attachRuntime(item.getId(), runtime.getId());
         }
-        attachRuntime(item.getId(), runtime.getId());
         return runtime;
+    }
+
+    /** Returns true if the status represents a terminal, non-recoverable failure that requires no polling. */
+    private boolean isTerminalFailure(RuntimeStatus status) {
+        return status == RuntimeStatus.BUILD_FAILED
+                || status == RuntimeStatus.START_FAILED
+                || status == RuntimeStatus.UNHEALTHY
+                || status == RuntimeStatus.ENVIRONMENT_UNSUPPORTED
+                || status == RuntimeStatus.STOPPED;
     }
 
     private TestRunDetailResponse runCreateTestRunStep(BatchRunItem item, SourceProject project, SourceRuntimeResponse runtime) {

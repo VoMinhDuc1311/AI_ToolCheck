@@ -566,4 +566,196 @@ class BatchRunServiceImplTest {
                 .externalBaseUrl("http://external.test")
                 .build();
     }
+
+    // ── HOTFIX: BatchRun runtime polling tests ────────────────────────────────
+
+    @Test
+    void batchRun_startRuntime_persistsRuntimeIdOnItemImmediately() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        UUID runtimeId = UUID.randomUUID();
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.BUILDING).build()).build());
+        when(sourceRuntimeService.waitForRuntimeTerminalState(p1.getId(), runtimeId, 300)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.UP)
+                                .publicBaseUrl("http://52.220.34.212:18080").build()).build());
+        when(sourceRuntimeRepository.findById(runtimeId)).thenAnswer(inv -> {
+            SourceRuntime rt = new SourceRuntime(); rt.setId(runtimeId);
+            return java.util.Optional.of(rt);
+        });
+
+        service.start(batchId);
+
+        BatchRunItem item = items.values().iterator().next();
+        assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+        assertThat(item.getRuntime()).isNotNull();
+        assertThat(item.getRuntime().getId()).isEqualTo(runtimeId);
+    }
+
+    @Test
+    void batchRun_pollsReturnedRuntimeIdUntilUp() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        UUID runtimeId = UUID.randomUUID();
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.BUILDING).build()).build());
+        when(sourceRuntimeService.waitForRuntimeTerminalState(p1.getId(), runtimeId, 300)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.UP)
+                                .publicBaseUrl("http://52.220.34.212:18080").build()).build());
+        when(sourceRuntimeRepository.findById(runtimeId)).thenAnswer(inv -> {
+            SourceRuntime rt = new SourceRuntime(); rt.setId(runtimeId);
+            return java.util.Optional.of(rt);
+        });
+
+        service.start(batchId);
+
+        verify(sourceRuntimeService).waitForRuntimeTerminalState(p1.getId(), runtimeId, 300);
+    }
+
+    @Test
+    void batchRun_runtimeBecomesUp_continuesToTestRunStep() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        UUID runtimeId = UUID.randomUUID();
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.BUILDING).build()).build());
+        when(sourceRuntimeService.waitForRuntimeTerminalState(p1.getId(), runtimeId, 300)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.UP)
+                                .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                                .publicBaseUrl("http://52.220.34.212:18080").build()).build());
+        when(sourceRuntimeRepository.findById(runtimeId)).thenAnswer(inv -> {
+            SourceRuntime rt = new SourceRuntime(); rt.setId(runtimeId);
+            return java.util.Optional.of(rt);
+        });
+
+        service.start(batchId);
+
+        verify(testRunService).create(any());
+        assertThat(items.values().iterator().next().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+    }
+
+    @Test
+    void batchRun_runtimeUp_doesNotTimeout() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        UUID runtimeId = UUID.randomUUID();
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.UP)
+                                .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                                .publicBaseUrl("http://52.220.34.212:18080").build()).build());
+        when(sourceRuntimeRepository.findById(runtimeId)).thenAnswer(inv -> {
+            SourceRuntime rt = new SourceRuntime(); rt.setId(runtimeId);
+            return java.util.Optional.of(rt);
+        });
+
+        service.start(batchId);
+
+        verify(sourceRuntimeService, never()).waitForRuntimeTerminalState(any(), any(), anyInt());
+        assertThat(items.values().iterator().next().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+    }
+
+    @Test
+    void batchRun_runtimeTimeoutErrorIncludesRuntimeIdAndLatestStatus() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        UUID runtimeId = UUID.randomUUID();
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.BUILDING).build()).build());
+        when(sourceRuntimeService.waitForRuntimeTerminalState(p1.getId(), runtimeId, 300)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .code("TIMEOUT")
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.BUILDING)
+                                .lastHealthStatus("DOWN:timeout").build()).build());
+
+        service.start(batchId);
+
+        BatchRunItem item = items.values().iterator().next();
+        assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.FAILED);
+        assertThat(item.getCurrentStep()).isEqualTo(BatchRunStep.START_RUNTIME);
+        assertThat(item.getErrorMessage()).contains(runtimeId.toString());
+        assertThat(item.getErrorMessage()).contains("latestStatus=BUILDING");
+        assertThat(item.getErrorMessage()).contains("300s");
+    }
+
+    @Test
+    void batchRun_autoWithFallbackPassesBuildStrategyAndRecordsRuntimeId() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        options.setBuildStrategy(BuildStrategy.AUTO_WITH_FALLBACK);
+        UUID runtimeId = UUID.randomUUID();
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO_WITH_FALLBACK)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.UP)
+                                .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                                .publicBaseUrl("http://52.220.34.212:18080").build()).build());
+        when(sourceRuntimeRepository.findById(runtimeId)).thenAnswer(inv -> {
+            SourceRuntime rt = new SourceRuntime(); rt.setId(runtimeId);
+            return java.util.Optional.of(rt);
+        });
+
+        service.start(batchId);
+
+        verify(sourceRuntimeService).startRuntime(p1.getId(), BuildStrategy.AUTO_WITH_FALLBACK);
+        BatchRunItem item = items.values().iterator().next();
+        assertThat(item.getRuntime()).isNotNull();
+        assertThat(item.getRuntime().getId()).isEqualTo(runtimeId);
+        assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+    }
+
+    @Test
+    void batchRun_doesNotUseStaleRuntimeObjectDuringPolling() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        UUID runtimeId = UUID.randomUUID();
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.BUILDING).build()).build());
+        when(sourceRuntimeService.waitForRuntimeTerminalState(p1.getId(), runtimeId, 300)).thenReturn(
+                RuntimeActionResponse.builder()
+                        .runtime(SourceRuntimeResponse.builder()
+                                .id(runtimeId).runtimeStatus(RuntimeStatus.UP)
+                                .publicBaseUrl("http://52.220.34.212:18080").build()).build());
+        when(sourceRuntimeRepository.findById(runtimeId)).thenAnswer(inv -> {
+            SourceRuntime rt = new SourceRuntime(); rt.setId(runtimeId);
+            return java.util.Optional.of(rt);
+        });
+
+        service.start(batchId);
+
+        verify(sourceRuntimeService).waitForRuntimeTerminalState(p1.getId(), runtimeId, 300);
+        assertThat(items.values().iterator().next().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+    }
 }
