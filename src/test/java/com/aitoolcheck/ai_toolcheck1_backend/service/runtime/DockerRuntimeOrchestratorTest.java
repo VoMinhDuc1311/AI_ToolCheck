@@ -286,10 +286,68 @@ class DockerRuntimeOrchestratorTest {
                 .anySatisfy(c -> assertThat(c).contains(nestedAbsolute));
     }
 
+    // ── Docker build process result handling (hotfix) ─────────────────────────
+
+    @Test
+    void dockerBuild_stderrWarningExitZero_isSuccess() throws Exception {
+        // Orchestrator must mark runtime UP when docker build exits 0, even if stderr has content.
+        // This covers the "DEPRECATED: The legacy builder" warning case.
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+
+        // Override: build returns exitCode=0 but has non-empty stderr
+        commands.stderrWarningOnBuild = true;
+
+        SourceRuntime result = orchestrator.start(project, supportedMaven());
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
+        assertThat(result.getLastError()).isNull();
+    }
+
+    @Test
+    void dockerBuild_nonZeroExit_isBuildFailedWithExitCode() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        commands.failBuild = true; // returns exitCode=1
+
+        SourceRuntime result = orchestrator.start(project, supportedMaven());
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.BUILD_FAILED);
+        assertThat(result.getLastError()).contains("docker build failed");
+    }
+
+    @Test
+    void dockerBuild_timeoutKillsProcessAndMarksFailed() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        commands.buildTimedOut = true;
+
+        SourceRuntime result = orchestrator.start(project, supportedMaven());
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.BUILD_FAILED);
+        assertThat(result.getLastError()).contains("docker build failed");
+        assertThat(result.getLastError()).contains("timed out");
+    }
+
+    @Test
+    void dockerBuild_usesConfiguredBuildTimeout() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        properties.setBuildTimeoutSeconds(600);
+
+        orchestrator.start(project, supportedMaven());
+
+        // Check that the timeout passed to the executor for the build command equals 600
+        assertThat(commands.capturedBuildTimeout).isEqualTo(600);
+    }
+
     private static class RecordingCommandExecutor implements DockerRuntimeOrchestrator.CommandExecutor {
         private final List<List<String>> commands = new ArrayList<>();
         private boolean failBuild;
         private boolean failRun;
+        private boolean stderrWarningOnBuild;
+        private boolean buildTimedOut;
+        int capturedBuildTimeout = -1;
 
         @Override
         public DockerRuntimeOrchestrator.CommandResult run(int timeoutSeconds, List<String> command) {
@@ -297,8 +355,25 @@ class DockerRuntimeOrchestratorTest {
             if (command.equals(List.of("docker", "network", "inspect", "prod-net"))) {
                 return new DockerRuntimeOrchestrator.CommandResult(true, 0, "network exists");
             }
-            if (command.size() > 2 && command.get(1).equals("build") && failBuild) {
-                return new DockerRuntimeOrchestrator.CommandResult(false, 1, "compile error");
+            if (command.size() > 2 && command.get(1).equals("build")) {
+                capturedBuildTimeout = timeoutSeconds;
+                if (failBuild) {
+                    return new DockerRuntimeOrchestrator.CommandResult(false, 1,
+                            "compile error", false, 500L, "compile error", "");
+                }
+                if (buildTimedOut) {
+                    return new DockerRuntimeOrchestrator.CommandResult(false, -1,
+                            "Process timed out after 300000ms (limit=300s). stdout=[] stderr=[]",
+                            true, 300_000L, "", "");
+                }
+                if (stderrWarningOnBuild) {
+                    // Simulate docker build with deprecation warning on stderr but exit 0
+                    return new DockerRuntimeOrchestrator.CommandResult(true, 0,
+                            "Successfully built abc123\n[stderr] DEPRECATED: The legacy builder is deprecated",
+                            false, 1500L,
+                            "Successfully built abc123",
+                            "DEPRECATED: The legacy builder is deprecated and incompatible with Buildx.");
+                }
             }
             if (command.size() > 2 && command.get(1).equals("run") && failRun) {
                 return new DockerRuntimeOrchestrator.CommandResult(false, 1, "container crashed");
