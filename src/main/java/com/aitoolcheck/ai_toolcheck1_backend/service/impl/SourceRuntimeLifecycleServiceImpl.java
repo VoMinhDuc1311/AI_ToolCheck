@@ -5,6 +5,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.DockerfileSource;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeType;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.RuntimeStatusSnapshot;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceRuntime;
@@ -150,6 +151,20 @@ public class SourceRuntimeLifecycleServiceImpl implements SourceRuntimeLifecycle
     @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
     public Optional<SourceRuntime> findFresh(UUID runtimeId) {
         return sourceRuntimeRepository.findById(runtimeId);
+    }
+
+    @Override
+    @Transactional(readOnly = true, propagation = Propagation.REQUIRES_NEW)
+    public RuntimeStatusSnapshot findStatusSnapshot(UUID runtimeId) {
+        SourceRuntime runtime = getRuntime(runtimeId);
+        return RuntimeStatusSnapshot.builder()
+                .runtimeId(runtime.getId())
+                .status(runtime.getRuntimeStatus())
+                .publicBaseUrl(runtime.getPublicBaseUrl())
+                .lastHealthStatus(runtime.getLastHealthStatus())
+                .lastError(runtime.getLastError())
+                .updatedAt(runtime.getUpdatedAt())
+                .build();
     }
 
     @Override

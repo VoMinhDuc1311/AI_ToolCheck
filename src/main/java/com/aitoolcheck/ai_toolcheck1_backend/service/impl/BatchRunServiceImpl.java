@@ -5,23 +5,26 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.batchrun.req.CreateBatchRunRequ
 import com.aitoolcheck.ai_toolcheck1_backend.dto.batchrun.res.BatchRunItemResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.batchrun.res.BatchRunReportResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.batchrun.res.BatchRunResponse;
-import com.aitoolcheck.ai_toolcheck1_backend.dto.openapi.res.OpenApiGenerateResponse;
-import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.RuntimeActionResponse;
-import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
-import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.CreateTestRunRequest;
-import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunDetailResponse;
-import com.aitoolcheck.ai_toolcheck1_backend.enums.*;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BatchRunItemStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BatchRunStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BatchRunStep;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
-import com.aitoolcheck.ai_toolcheck1_backend.model.*;
-import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
-import com.aitoolcheck.ai_toolcheck1_backend.service.*;
+import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRun;
+import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRunItem;
+import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.BatchRunItemRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.BatchRunRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.service.BatchRunLifecycleService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.BatchRunService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.worker.BatchRunWorker;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -31,21 +34,12 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class BatchRunServiceImpl implements BatchRunService {
 
-    private static final Duration AI_JOB_TIMEOUT = Duration.ofMinutes(2);
-
     private final BatchRunRepository batchRunRepository;
     private final BatchRunItemRepository batchRunItemRepository;
     private final SourceProjectRepository sourceProjectRepository;
-    private final ApiDocumentVersionRepository apiDocumentVersionRepository;
-    private final ApiEndpointRepository apiEndpointRepository;
-    private final TestCaseRepository testCaseRepository;
-    private final AiJobLogRepository aiJobLogRepository;
-    private final SourceRuntimeRepository sourceRuntimeRepository;
-    private final TestRunRepository testRunRepository;
-    private final OpenApiGeneratorService openApiGeneratorService;
-    private final TestCaseService testCaseService;
     private final SourceRuntimeService sourceRuntimeService;
-    private final TestRunService testRunService;
+    private final BatchRunLifecycleService batchRunLifecycleService;
+    private final BatchRunWorker batchRunWorker;
 
     @Override
     @Transactional
@@ -109,23 +103,14 @@ public class BatchRunServiceImpl implements BatchRunService {
             throw new BadRequestException("BatchRun can only be started from PENDING status: " + id);
         }
 
-        markBatchRunning(id);
-        List<BatchRunItem> items = batchRunItemRepository.findByBatchRun_IdOrderByCreatedAtAsc(id);
-        for (BatchRunItem item : items) {
-            BatchRun current = findBatchRun(id);
-            if (current.getStatus() == BatchRunStatus.CANCELLED) {
-                cancelPendingItems(id);
-                break;
-            }
-            processItem(item.getId());
-        }
-        BatchRun completed = finalizeBatch(id);
-        log.info("[BatchRun] finished batchId={} status={} success={} failed={}",
-                completed.getId(), completed.getStatus(), completed.getSuccessCount(), completed.getFailedCount());
-        return toResponse(completed);
+        BatchRun running = batchRunLifecycleService.markBatchRunning(id);
+        batchRunWorker.runAsync(id);
+        log.info("[BatchRun] start accepted batchId={} dispatched=true", id);
+        return toResponse(running);
     }
 
     @Override
+    @Transactional
     public BatchRunResponse cancel(UUID id) {
         BatchRun batchRun = findBatchRun(id);
         if (batchRun.getStatus() == BatchRunStatus.CANCELLED) {
@@ -144,11 +129,11 @@ public class BatchRunServiceImpl implements BatchRunService {
             item.setCompletedAt(LocalDateTime.now());
             batchRunItemRepository.save(item);
         }
-        cancelPendingItems(id);
+        batchRunLifecycleService.cancelPendingItems(id);
 
         batchRun.setStatus(BatchRunStatus.CANCELLED);
         batchRun.setCompletedAt(LocalDateTime.now());
-        updateAggregate(batchRun);
+        refreshAggregate(batchRun);
         return toResponse(batchRunRepository.save(batchRun));
     }
 
@@ -189,328 +174,7 @@ public class BatchRunServiceImpl implements BatchRunService {
                 .build();
     }
 
-    private void processItem(UUID itemId) {
-        BatchRunItem item = markItemRunning(itemId);
-        try {
-            UUID batchId = item.getBatchRun().getId();
-            UUID projectId = item.getSourceProject().getId();
-            SourceProject project = sourceProjectRepository.findById(projectId)
-                    .orElseThrow(() -> new ResourceNotFoundException("SourceProject not found: " + projectId));
-            log.info("[BatchRun] item start batchId={} itemId={} projectId={}",
-                    batchId, item.getId(), projectId);
-
-            ApiDocumentVersion version = runOpenApiStep(item, projectId);
-            runTestCaseStep(item, projectId);
-            SourceRuntimeResponse runtime = runRuntimeStep(item, project);
-            TestRunDetailResponse testRun = runCreateTestRunStep(item, project, runtime);
-            runExecuteTestRunStep(item, testRun);
-            runStopRuntimeStep(item, projectId);
-            markItemSuccess(item.getId());
-        } catch (Exception e) {
-            markItemFailed(item.getId(), e.getMessage());
-            log.warn("[BatchRun] item failed itemId={} reason={}", itemId, e.getMessage());
-        }
-    }
-
-    private ApiDocumentVersion runOpenApiStep(BatchRunItem item, UUID projectId) {
-        updateStep(item.getId(), BatchRunStep.GENERATE_OPENAPI);
-        BatchRun batchRun = findBatchRun(item.getBatchRun().getId());
-        ApiDocumentVersion existing = latestOpenApi(projectId);
-        if (!batchRun.getGenerateOpenApi()) {
-            attachApiVersion(item.getId(), existing);
-            return existing;
-        }
-        if (existing != null && hasText(existing.getContentJson())) {
-            attachApiVersion(item.getId(), existing);
-            return existing;
-        }
-        OpenApiGenerateResponse response = openApiGeneratorService.generateAndSaveOpenApi(projectId);
-        ApiDocumentVersion generated = apiDocumentVersionRepository.findById(response.getApiDocumentVersionId())
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "Generated ApiDocumentVersion not found: " + response.getApiDocumentVersionId()));
-        attachApiVersion(item.getId(), generated);
-        return generated;
-    }
-
-    private void runTestCaseStep(BatchRunItem item, UUID projectId) {
-        updateStep(item.getId(), BatchRunStep.GENERATE_TEST_CASES);
-        BatchRun batchRun = findBatchRun(item.getBatchRun().getId());
-        if (!batchRun.getGenerateTestCases()) {
-            return;
-        }
-        long activeAiCases = testCaseRepository.countBySourceProject_IdAndGeneratedByAndActiveFlagTrueAndDeletedFlagFalse(
-                projectId, GeneratedBy.AI);
-        if (activeAiCases > 0) {
-            return;
-        }
-        if (apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrueAndStaleFlagFalse(projectId).isEmpty()) {
-            throw new BadRequestException("No active API endpoints available for AI testcase generation.");
-        }
-        testCaseService.generateTestCaseAsync(com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.GenerateTestCaseRequest.builder()
-                .projectId(projectId)
-                .overwriteExisting(false)
-                .build());
-        waitForAiJobs(projectId);
-        long generated = testCaseRepository.countBySourceProject_IdAndGeneratedByAndActiveFlagTrueAndDeletedFlagFalse(
-                projectId, GeneratedBy.AI);
-        if (generated == 0) {
-            throw new BadRequestException("AI testcase generation completed without active generated testcases.");
-        }
-    }
-
-    private SourceRuntimeResponse runRuntimeStep(BatchRunItem item, SourceProject project) {
-        updateStep(item.getId(), BatchRunStep.START_RUNTIME);
-        BatchRun batchRun = findBatchRun(item.getBatchRun().getId());
-        UUID batchId = batchRun.getId();
-        SourceRuntimeResponse runtime;
-        if (batchRun.getStartRuntime()) {
-            BuildStrategy buildStrategy = batchRun.getBuildStrategy();
-            log.info("[BatchRun] runtime start batchId={} itemId={} projectId={} strategy={}",
-                    batchId, item.getId(), project.getId(), buildStrategy);
-
-            RuntimeActionResponse response = sourceRuntimeService.startRuntime(project.getId(), buildStrategy);
-            runtime = response.getRuntime();
-            if (runtime == null) {
-                throw new BadRequestException("Runtime start failed: startRuntime returned no runtime.");
-            }
-
-            // ── Persist runtimeId immediately so the item always carries the runtimeId,
-            //    even if a subsequent poll times out and the item is marked FAILED.
-            if (runtime.getId() != null) {
-                attachRuntime(item.getId(), runtime.getId());
-                log.info("[BatchRun] runtime start accepted batchId={} itemId={} runtimeId={} strategy={} status={}",
-                        batchId, item.getId(), runtime.getId(), buildStrategy, runtime.getRuntimeStatus());
-            }
-
-            // ── Terminal failure immediately — no need to poll.
-            if (isTerminalFailure(runtime.getRuntimeStatus())) {
-                String err = runtime.getLastError() != null ? runtime.getLastError()
-                        : "Runtime reached terminal failure status: " + runtime.getRuntimeStatus();
-                log.warn("[BatchRun] runtime failed batchId={} itemId={} runtimeId={} status={} lastError={}",
-                        batchId, item.getId(), runtime.getId(), runtime.getRuntimeStatus(), err);
-                throw new BadRequestException("Runtime start failed: " + err);
-            }
-
-            // ── Runtime is building/starting — poll until terminal state.
-            if (runtime.getRuntimeStatus() == RuntimeStatus.BUILDING
-                    || runtime.getRuntimeStatus() == RuntimeStatus.STARTING) {
-                UUID runtimeId = runtime.getId();
-                log.info("[BatchRun] runtime polling batchId={} itemId={} runtimeId={} currentStatus={}",
-                        batchId, item.getId(), runtimeId, runtime.getRuntimeStatus());
-
-                RuntimeActionResponse waited = sourceRuntimeService.waitForRuntimeTerminalState(
-                        project.getId(), runtimeId, 300);
-                runtime = waited.getRuntime();
-
-                if (runtime != null) {
-                    log.info("[BatchRun] runtime poll result batchId={} itemId={} runtimeId={} status={} publicBaseUrl={}",
-                            batchId, item.getId(), runtimeId, runtime.getRuntimeStatus(), runtime.getPublicBaseUrl());
-                } else {
-                    log.warn("[BatchRun] runtime poll returned null batchId={} itemId={} runtimeId={}",
-                            batchId, item.getId(), runtimeId);
-                }
-
-                // Timeout produces a rich diagnostic error message.
-                if ("TIMEOUT".equals(waited.getCode())) {
-                    String latestStatus = runtime != null ? String.valueOf(runtime.getRuntimeStatus()) : "UNKNOWN";
-                    String latestHealthStatus = runtime != null ? runtime.getLastHealthStatus() : null;
-                    String lastError = runtime != null ? runtime.getLastError() : null;
-                    String publicBaseUrl = runtime != null ? runtime.getPublicBaseUrl() : null;
-                    String timeoutMsg = "Runtime failed to reach UP status after 300s."
-                            + " runtimeId=" + runtimeId
-                            + " latestStatus=" + latestStatus
-                            + (latestHealthStatus != null ? " lastHealthStatus=" + latestHealthStatus : "")
-                            + (lastError != null ? " lastError=" + lastError : "")
-                            + (publicBaseUrl != null ? " publicBaseUrl=" + publicBaseUrl : "");
-                    log.warn("[BatchRun] runtime timeout batchId={} itemId={} runtimeId={} latestStatus={} lastError={}",
-                            batchId, item.getId(), runtimeId, latestStatus, lastError);
-                    throw new BadRequestException("Runtime start failed: " + timeoutMsg);
-                }
-            }
-
-            // ── Validate UP: must have status=UP and non-null publicBaseUrl.
-            if (runtime == null
-                    || runtime.getRuntimeStatus() != RuntimeStatus.UP
-                    || runtime.getPublicBaseUrl() == null) {
-                String latestStatus = runtime != null ? String.valueOf(runtime.getRuntimeStatus()) : "UNKNOWN";
-                String lastErr = runtime != null && runtime.getLastError() != null
-                        ? runtime.getLastError() : "Runtime failed to reach UP status.";
-                log.warn("[BatchRun] runtime not ready batchId={} itemId={} runtimeId={} latestStatus={} lastError={}",
-                        batchId, item.getId(), runtime != null ? runtime.getId() : null, latestStatus, lastErr);
-                throw new BadRequestException("Runtime start failed: " + lastErr);
-            }
-
-            log.info("[BatchRun] runtime UP batchId={} itemId={} runtimeId={} publicBaseUrl={}",
-                    batchId, item.getId(), runtime.getId(), runtime.getPublicBaseUrl());
-
-            // Re-attach runtimeId after confirmed UP (defensive, in case ID changed).
-            attachRuntime(item.getId(), runtime.getId());
-        } else {
-            String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
-                    project.getId(), batchRun.getExternalBaseUrl(), project.getDefaultTargetBaseUrl());
-            runtime = sourceRuntimeRepository
-                    .findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(project.getId(), RuntimeStatus.UP)
-                    .map(this::toRuntimeResponse)
-                    .orElse(SourceRuntimeResponse.builder()
-                            .projectId(project.getId())
-                            .runtimeStatus(RuntimeStatus.UP)
-                            .publicBaseUrl(baseUrl)
-                            .build());
-            attachRuntime(item.getId(), runtime.getId());
-        }
-        return runtime;
-    }
-
-    /** Returns true if the status represents a terminal, non-recoverable failure that requires no polling. */
-    private boolean isTerminalFailure(RuntimeStatus status) {
-        return status == RuntimeStatus.BUILD_FAILED
-                || status == RuntimeStatus.START_FAILED
-                || status == RuntimeStatus.UNHEALTHY
-                || status == RuntimeStatus.ENVIRONMENT_UNSUPPORTED
-                || status == RuntimeStatus.STOPPED;
-    }
-
-    private TestRunDetailResponse runCreateTestRunStep(BatchRunItem item, SourceProject project, SourceRuntimeResponse runtime) {
-        updateStep(item.getId(), BatchRunStep.CREATE_TEST_RUN);
-        BatchRun batchRun = findBatchRun(item.getBatchRun().getId());
-        List<TestCase> testCases = testCaseRepository
-                .findBySourceProject_IdAndActiveFlagTrueAndDeletedFlagFalseOrderByUpdatedAtDesc(project.getId());
-        if (testCases.isEmpty()) {
-            throw new BadRequestException("No active testcases found for project: " + project.getId());
-        }
-        String baseUrl = batchRun.getStartRuntime()
-                ? null
-                : batchRun.getExternalBaseUrl();
-        TestRunDetailResponse response = testRunService.create(CreateTestRunRequest.builder()
-                .projectId(project.getId())
-                .runName(batchRun.getName() + " - " + project.getProjectName())
-                .description("BatchRun " + batchRun.getId() + " item " + item.getId())
-                .baseUrl(baseUrl)
-                .executionMode(batchRun.getExecutionMode())
-                .runtimeMode(runtime == null ? null : runtime.getRuntimeMode())
-                .includeAllActive(true)
-                .build());
-        attachTestRun(item.getId(), response.getId());
-        return response;
-    }
-
-    private void runExecuteTestRunStep(BatchRunItem item, TestRunDetailResponse testRun) {
-        updateStep(item.getId(), BatchRunStep.EXECUTE_TEST_RUN);
-        BatchRun batchRun = findBatchRun(item.getBatchRun().getId());
-        if (!batchRun.getExecuteTestRun()) {
-            return;
-        }
-        TestRunDetailResponse executed = testRunService.execute(testRun.getId());
-        if (executed.getRunStatus() == RunStatus.FAILED) {
-            throw new BadRequestException("TestRun execution failed: " + executed.getId());
-        }
-    }
-
-    private void runStopRuntimeStep(BatchRunItem item, UUID projectId) {
-        updateStep(item.getId(), BatchRunStep.STOP_RUNTIME);
-        BatchRun batchRun = findBatchRun(item.getBatchRun().getId());
-        if (!batchRun.getStopRuntimeAfterRun()) {
-            return;
-        }
-        try {
-            sourceRuntimeService.stopRuntime(projectId);
-        } catch (Exception e) {
-            appendItemWarning(item.getId(), "stopRuntime failed: " + e.getMessage());
-        }
-    }
-
-    private void waitForAiJobs(UUID projectId) {
-        LocalDateTime deadline = LocalDateTime.now().plus(AI_JOB_TIMEOUT);
-        while (LocalDateTime.now().isBefore(deadline)) {
-            List<AiJobLog> pending = aiJobLogRepository
-                    .findBySourceProject_IdAndJobTypeAndExecutionStatusInOrderByStartedAtDesc(
-                            projectId,
-                            JobType.TEST_CASE_GENERATION,
-                            List.of(ExecutionStatus.PENDING, ExecutionStatus.RUNNING));
-            if (pending.isEmpty()) {
-                List<AiJobLog> failed = aiJobLogRepository
-                        .findBySourceProject_IdAndJobTypeAndExecutionStatusInOrderByStartedAtDesc(
-                                projectId,
-                                JobType.TEST_CASE_GENERATION,
-                                List.of(ExecutionStatus.FAILED));
-                if (!failed.isEmpty()) {
-                    throw new BadRequestException("AI testcase generation failed: " + failed.get(0).getErrorMessage());
-                }
-                return;
-            }
-            try {
-                Thread.sleep(1000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                throw new BadRequestException("Interrupted while waiting for AI testcase generation.");
-            }
-        }
-        throw new BadRequestException("Timed out waiting for AI testcase generation.");
-    }
-
-    @Transactional
-    protected BatchRunItem markItemRunning(UUID itemId) {
-        BatchRunItem item = findItem(itemId);
-        item.setStatus(BatchRunItemStatus.RUNNING);
-        item.setStartedAt(LocalDateTime.now());
-        item.setErrorMessage(null);
-        return batchRunItemRepository.save(item);
-    }
-
-    @Transactional
-    protected void updateStep(UUID itemId, BatchRunStep step) {
-        BatchRunItem item = findItem(itemId);
-        item.setCurrentStep(step);
-        batchRunItemRepository.save(item);
-        log.info("[BatchRun] step batchId={} itemId={} projectId={} step={}",
-                item.getBatchRun().getId(), itemId, item.getSourceProject().getId(), step);
-    }
-
-    @Transactional
-    protected void markItemSuccess(UUID itemId) {
-        BatchRunItem item = findItem(itemId);
-        item.setCurrentStep(BatchRunStep.DONE);
-        item.setStatus(BatchRunItemStatus.SUCCESS);
-        item.setCompletedAt(LocalDateTime.now());
-        batchRunItemRepository.save(item);
-    }
-
-    @Transactional
-    protected void markItemFailed(UUID itemId, String message) {
-        BatchRunItem item = findItem(itemId);
-        item.setStatus(BatchRunItemStatus.FAILED);
-        item.setErrorMessage(message);
-        item.setCompletedAt(LocalDateTime.now());
-        batchRunItemRepository.save(item);
-    }
-
-    @Transactional
-    protected void markBatchRunning(UUID id) {
-        BatchRun batchRun = findBatchRun(id);
-        batchRun.setStatus(BatchRunStatus.RUNNING);
-        batchRun.setStartedAt(LocalDateTime.now());
-        batchRunRepository.save(batchRun);
-    }
-
-    @Transactional
-    protected BatchRun finalizeBatch(UUID id) {
-        BatchRun batchRun = findBatchRun(id);
-        updateAggregate(batchRun);
-        if (batchRun.getStatus() == BatchRunStatus.CANCELLED) {
-            return batchRunRepository.save(batchRun);
-        }
-        if (batchRun.getSuccessCount() > 0 && batchRun.getFailedCount() == 0) {
-            batchRun.setStatus(BatchRunStatus.COMPLETED);
-        } else if (batchRun.getSuccessCount() > 0) {
-            batchRun.setStatus(BatchRunStatus.PARTIAL);
-        } else {
-            batchRun.setStatus(BatchRunStatus.FAILED);
-        }
-        batchRun.setCompletedAt(LocalDateTime.now());
-        return batchRunRepository.save(batchRun);
-    }
-
-    private void updateAggregate(BatchRun batchRun) {
+    private void refreshAggregate(BatchRun batchRun) {
         UUID id = batchRun.getId();
         batchRun.setSuccessCount((int) batchRunItemRepository.countByBatchRun_IdAndStatus(id, BatchRunItemStatus.SUCCESS));
         batchRun.setFailedCount((int) batchRunItemRepository.countByBatchRun_IdAndStatus(id, BatchRunItemStatus.FAILED));
@@ -518,60 +182,9 @@ public class BatchRunServiceImpl implements BatchRunService {
         batchRun.setRunningCount((int) batchRunItemRepository.countByBatchRun_IdAndStatus(id, BatchRunItemStatus.RUNNING));
     }
 
-    private void cancelPendingItems(UUID batchRunId) {
-        List<BatchRunItem> pending = batchRunItemRepository.findByBatchRun_IdAndStatusInOrderByCreatedAtAsc(
-                batchRunId, List.of(BatchRunItemStatus.PENDING));
-        for (BatchRunItem item : pending) {
-            item.setStatus(BatchRunItemStatus.CANCELLED);
-            item.setCompletedAt(LocalDateTime.now());
-            batchRunItemRepository.save(item);
-        }
-    }
-
-    private ApiDocumentVersion latestOpenApi(UUID projectId) {
-        List<ApiDocumentVersion> versions =
-                apiDocumentVersionRepository.findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId);
-        return versions.isEmpty() ? null : versions.get(0);
-    }
-
-    private void attachApiVersion(UUID itemId, ApiDocumentVersion version) {
-        if (version == null) return;
-        BatchRunItem item = findItem(itemId);
-        item.setApiDocumentVersion(version);
-        batchRunItemRepository.save(item);
-    }
-
-    private void attachRuntime(UUID itemId, UUID runtimeId) {
-        if (runtimeId == null) return;
-        sourceRuntimeRepository.findById(runtimeId).ifPresent(runtime -> {
-            BatchRunItem item = findItem(itemId);
-            item.setRuntime(runtime);
-            batchRunItemRepository.save(item);
-        });
-    }
-
-    private void attachTestRun(UUID itemId, UUID testRunId) {
-        BatchRunItem item = findItem(itemId);
-        TestRun testRun = testRunRepository.findById(testRunId)
-                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found: " + testRunId));
-        item.setTestRun(testRun);
-        batchRunItemRepository.save(item);
-    }
-
-    private void appendItemWarning(UUID itemId, String warning) {
-        BatchRunItem item = findItem(itemId);
-        item.setErrorMessage(appendMessage(item.getErrorMessage(), warning));
-        batchRunItemRepository.save(item);
-    }
-
     private BatchRun findBatchRun(UUID id) {
         return batchRunRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("BatchRun not found: " + id));
-    }
-
-    private BatchRunItem findItem(UUID id) {
-        return batchRunItemRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("BatchRunItem not found: " + id));
     }
 
     private BatchRunResponse toResponse(BatchRun batchRun) {
@@ -611,17 +224,6 @@ public class BatchRunServiceImpl implements BatchRunService {
                 .completedAt(item.getCompletedAt())
                 .createdAt(item.getCreatedAt())
                 .updatedAt(item.getUpdatedAt())
-                .build();
-    }
-
-    private SourceRuntimeResponse toRuntimeResponse(SourceRuntime runtime) {
-        return SourceRuntimeResponse.builder()
-                .id(runtime.getId())
-                .projectId(runtime.getSourceProject().getId())
-                .runtimeMode(runtime.getRuntimeMode())
-                .runtimeStatus(runtime.getRuntimeStatus())
-                .runtimeType(runtime.getRuntimeType())
-                .publicBaseUrl(runtime.getPublicBaseUrl())
                 .build();
     }
 
