@@ -12,7 +12,9 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Optional;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -39,39 +41,156 @@ public class RuntimeDetectorServiceImpl implements RuntimeDetectorService {
 
     RuntimeDetectionResult detectFiles(List<SourceFile> sourceFiles) {
         List<SourceFile> files = sourceFiles == null ? List.of() : sourceFiles;
-        Optional<SourceFile> configFile = findConfigFile(files);
+
+        // ── Detect a common top-level prefix (nested ZIP layout) ────────────
+        // Example: all paths start with "aitc-standard-springboot-api/" ⟹ prefix = "aitc-standard-springboot-api"
+        String detectedProjectRoot = detectCommonTopLevelPrefix(files);
+
+        // Build a view that strips the prefix so existing matchers work unchanged
+        List<SourceFile> strippedView = applyPrefixStrip(files, detectedProjectRoot);
+
+        Optional<SourceFile> configFile = findConfigFile(strippedView);
         ConfigMetadata config = configFile
                 .map(file -> parseConfig(normalizedPath(file.getFilePath()), file))
                 .orElse(ConfigMetadata.empty());
 
-        Optional<SourceFile> pom = findByNormalizedPath(files, "pom.xml");
+        Optional<SourceFile> pom = findByNormalizedPath(strippedView, "pom.xml");
         if (pom.isPresent() && hasSpringBootMavenEvidence(safeContent(pom.get()))) {
             return supported(RuntimeType.SPRING_BOOT_MAVEN, "Spring Boot Maven project detected.",
-                    pom.get(), configFile.orElse(null), config);
+                    pom.get(), configFile.orElse(null), config, detectedProjectRoot);
         }
 
-        Optional<SourceFile> gradle = findGradleBuildFile(files);
+        Optional<SourceFile> gradle = findGradleBuildFile(strippedView);
         if (gradle.isPresent() && hasSpringBootGradleEvidence(safeContent(gradle.get()))) {
             return supported(RuntimeType.SPRING_BOOT_GRADLE, "Spring Boot Gradle project detected.",
-                    gradle.get(), configFile.orElse(null), config);
+                    gradle.get(), configFile.orElse(null), config, detectedProjectRoot);
         }
 
         if (pom.isPresent()) {
             return unsupported("Maven project found, but no Spring Boot evidence was detected.",
-                    pom.get(), configFile.orElse(null), config);
+                    pom.get(), configFile.orElse(null), config, detectedProjectRoot);
         }
 
         if (gradle.isPresent()) {
             return unsupported("Gradle project found, but no Spring Boot evidence was detected.",
-                    gradle.get(), configFile.orElse(null), config);
+                    gradle.get(), configFile.orElse(null), config, detectedProjectRoot);
         }
 
-        return unsupported("No supported Spring Boot build file found.",
-                null, configFile.orElse(null), config);
+        // No build file at the (possibly stripped) root — check whether multiple
+        // top-level directories exist that each look like build roots, so the
+        // error is actionable.
+        List<String> candidates = findCandidateBuildRoots(files);
+        if (candidates.size() > 1) {
+            String list = candidates.stream().sorted().collect(Collectors.joining(", "));
+            return unsupported(
+                    "Multiple potential Spring Boot build roots found: [" + list + "]. "
+                    + "Cannot determine which to build. Ensure exactly one build root is present in the ZIP.",
+                    null, configFile.orElse(null), config, detectedProjectRoot);
+        }
+
+        return unsupported(
+                "No supported Spring Boot build file found. Checked root and nested directories.",
+                null, configFile.orElse(null), config, detectedProjectRoot);
+    }
+
+    // ── Nested prefix helpers ────────────────────────────────────────────────
+
+    /**
+     * Returns the common top-level directory prefix shared by all source-file paths,
+     * or {@code null} if files are at root or no consistent prefix exists.
+     *
+     * <p>Rules:
+     * <ul>
+     *   <li>At least one file must exist and all must share the same first path segment.</li>
+     *   <li>That segment must not be the only segment (file is not directly under root).</li>
+     * </ul>
+     */
+    String detectCommonTopLevelPrefix(List<SourceFile> files) {
+        if (files == null || files.isEmpty()) {
+            return null;
+        }
+        Set<String> firstSegments = files.stream()
+                .map(f -> firstSegment(normalizedPath(f.getFilePath())))
+                .filter(s -> !s.isBlank())
+                .collect(Collectors.toSet());
+
+        if (firstSegments.size() != 1) {
+            return null; // mixed or empty first segments — treat as root layout
+        }
+        String prefix = firstSegments.iterator().next();
+
+        // If every file path equals the prefix (no '/' after it), it is a root file
+        boolean allAtRoot = files.stream().allMatch(f -> normalizedPath(f.getFilePath()).equals(prefix));
+        if (allAtRoot) {
+            return null;
+        }
+        return prefix;
+    }
+
+    /**
+     * Returns the first path segment (the top-level directory name) of a normalized path.
+     * E.g. {@code "aitc-standard-springboot-api/pom.xml"} → {@code "aitc-standard-springboot-api"}.
+     * Root files (no '/') return the path itself.
+     */
+    private String firstSegment(String normalizedPath) {
+        int slash = normalizedPath.indexOf('/');
+        return slash < 0 ? normalizedPath : normalizedPath.substring(0, slash);
+    }
+
+    /**
+     * Creates a synthetic list of {@link SourceFile} instances with the common
+     * prefix stripped from their file paths, so existing matchers work unchanged.
+     * If {@code prefix} is {@code null}, returns the original list.
+     */
+    private List<SourceFile> applyPrefixStrip(List<SourceFile> files, String prefix) {
+        if (prefix == null || prefix.isBlank()) {
+            return files;
+        }
+        String stripTarget = prefix + "/";
+        return files.stream()
+                .map(f -> {
+                    String path = normalizedPath(f.getFilePath());
+                    if (!path.startsWith(stripTarget)) {
+                        return f; // defensive: keep as-is
+                    }
+                    String strippedPath = path.substring(stripTarget.length());
+                    if (strippedPath.isBlank()) {
+                        return f;
+                    }
+                    String strippedName = strippedPath.contains("/")
+                            ? strippedPath.substring(strippedPath.lastIndexOf('/') + 1)
+                            : strippedPath;
+                    return SourceFile.builder()
+                            .filePath(strippedPath)
+                            .fileName(strippedName)
+                            .fileType(f.getFileType())
+                            .sourceContent(f.getSourceContent())
+                            .activeFlag(f.getActiveFlag())
+                            .deletedFlag(f.getDeletedFlag())
+                            .build();
+                })
+                .toList();
+    }
+
+    /**
+     * Scans all source files for any that look like build roots (pom.xml, build.gradle,
+     * build.gradle.kts) and returns their immediate parent directory names.
+     * Used to give an informative error when multiple build roots are present.
+     */
+    private List<String> findCandidateBuildRoots(List<SourceFile> files) {
+        return files.stream()
+                .map(f -> normalizedPath(f.getFilePath()))
+                .filter(p -> {
+                    String name = p.contains("/") ? p.substring(p.lastIndexOf('/') + 1) : p;
+                    return name.equals("pom.xml") || name.equals("build.gradle") || name.equals("build.gradle.kts");
+                })
+                .map(p -> p.contains("/") ? firstSegment(p) : "<root>")
+                .distinct()
+                .toList();
     }
 
     private RuntimeDetectionResult supported(RuntimeType runtimeType, String message, SourceFile buildFile,
-                                             SourceFile configFile, ConfigMetadata config) {
+                                             SourceFile configFile, ConfigMetadata config, String projectRoot) {
         return RuntimeDetectionResult.builder()
                 .runtimeType(runtimeType)
                 .supported(true)
@@ -80,11 +199,12 @@ public class RuntimeDetectorServiceImpl implements RuntimeDetectorService {
                 .contextPath(config.contextPath())
                 .buildFilePath(buildFile == null ? null : buildFile.getFilePath())
                 .configFilePath(configFile == null ? null : configFile.getFilePath())
+                .projectRoot(projectRoot)
                 .build();
     }
 
     private RuntimeDetectionResult unsupported(String message, SourceFile buildFile, SourceFile configFile,
-                                               ConfigMetadata config) {
+                                               ConfigMetadata config, String projectRoot) {
         return RuntimeDetectionResult.builder()
                 .runtimeType(RuntimeType.UNSUPPORTED)
                 .supported(false)
@@ -93,6 +213,7 @@ public class RuntimeDetectorServiceImpl implements RuntimeDetectorService {
                 .contextPath(config.contextPath())
                 .buildFilePath(buildFile == null ? null : buildFile.getFilePath())
                 .configFilePath(configFile == null ? null : configFile.getFilePath())
+                .projectRoot(projectRoot)
                 .build();
     }
 
