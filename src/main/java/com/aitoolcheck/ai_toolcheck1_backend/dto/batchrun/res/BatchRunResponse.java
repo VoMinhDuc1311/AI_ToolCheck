@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.batchrun.res;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.BatchRunStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 import lombok.*;
 
 import java.time.LocalDateTime;
@@ -24,6 +25,7 @@ public class BatchRunResponse {
     private LocalDateTime completedAt;
     private UUID createdBy;
     private String errorMessage;
+    private BuildStrategy buildStrategy;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

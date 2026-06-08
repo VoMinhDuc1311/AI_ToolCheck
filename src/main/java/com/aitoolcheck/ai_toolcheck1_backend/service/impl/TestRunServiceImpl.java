@@ -124,7 +124,7 @@ public class TestRunServiceImpl implements TestRunService {
         // Resolve effective baseUrl: request → UP SourceRuntime → project.defaultTargetBaseUrl → 400.
         // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
         String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
-                sourceProject.getId(), request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
+                sourceProject.getId(), runtimeMode, request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
         List<TestCase> resolvedCases = resolveTestCases(request, sourceProject.getId());
 
@@ -179,7 +179,7 @@ public class TestRunServiceImpl implements TestRunService {
         // Resolve effective baseUrl: request → UP SourceRuntime → project.defaultTargetBaseUrl → 400.
         // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
         String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
-                sourceProject.getId(), request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
+                sourceProject.getId(), runtimeMode, request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
         // Resolve and validate test cases
         List<UUID> testCaseIds = request.getTestCaseIds();

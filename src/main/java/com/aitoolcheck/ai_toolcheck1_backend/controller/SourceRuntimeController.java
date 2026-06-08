@@ -128,10 +128,18 @@ public class SourceRuntimeController {
     public ResponseEntity<ApiResponse<RuntimeActionResponse>> startRuntime(
             @PathVariable UUID projectId,
             @RequestBody(required = false) StartRuntimeRequest body,
-            @RequestParam(required = false) String buildStrategy) {
+            @RequestParam(required = false) String buildStrategy,
+            @RequestParam(required = false, defaultValue = "false") Boolean wait) {
 
         BuildStrategy strategy = resolveStrategy(buildStrategy, body);
+        boolean shouldWait = (wait != null && wait) || (body != null && body.getWait() != null && body.getWait());
+
         RuntimeActionResponse data = sourceRuntimeService.startRuntime(projectId, strategy);
+
+        if (shouldWait && data.getRuntime() != null && data.getRuntime().getId() != null) {
+            data = sourceRuntimeService.waitForRuntimeTerminalState(projectId, data.getRuntime().getId(), 300);
+        }
+
         return ResponseEntity.ok(response(data.getCode(), data.getMessage(), data));
     }
 

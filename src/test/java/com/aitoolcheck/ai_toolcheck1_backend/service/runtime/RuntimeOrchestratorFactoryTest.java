@@ -29,9 +29,12 @@ class RuntimeOrchestratorFactoryTest {
         RuntimeOrchestratorFactory factory = new RuntimeOrchestratorFactory(
                 detector,
                 mock(SourceRuntimeRepository.class),
+                mock(com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository.class),
                 mock(ApiEndpointRepository.class),
                 mock(RuntimeSourceMaterializer.class),
-                enabledDockerProperties()
+                enabledDockerProperties(),
+                mock(com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService.class),
+                mock(RuntimeStartWorker.class)
         );
 
         factory.reprobeAndSelect();
@@ -47,9 +50,12 @@ class RuntimeOrchestratorFactoryTest {
         RuntimeOrchestratorFactory factory = new RuntimeOrchestratorFactory(
                 detector,
                 mock(SourceRuntimeRepository.class),
+                mock(com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository.class),
                 mock(ApiEndpointRepository.class),
                 mock(RuntimeSourceMaterializer.class),
-                enabledDockerProperties()
+                enabledDockerProperties(),
+                mock(com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService.class),
+                mock(RuntimeStartWorker.class)
         );
 
         factory.reprobeAndSelect();

@@ -77,6 +77,7 @@ public class BatchRunServiceImpl implements BatchRunService {
                 .maxConcurrency(options.safeMaxConcurrency())
                 .maxRetries(options.safeMaxRetries())
                 .executionMode(options.safeExecutionMode())
+                .buildStrategy(options.safeBuildStrategy())
                 .externalBaseUrl(blankToNull(options.getExternalBaseUrl()))
                 .build();
         BatchRun saved = batchRunRepository.save(batchRun);
@@ -262,10 +263,18 @@ public class BatchRunServiceImpl implements BatchRunService {
         BatchRun batchRun = findBatchRun(item.getBatchRun().getId());
         SourceRuntimeResponse runtime;
         if (batchRun.getStartRuntime()) {
-            RuntimeActionResponse response = sourceRuntimeService.startRuntime(project.getId());
+            RuntimeActionResponse response = sourceRuntimeService.startRuntime(project.getId(), batchRun.getBuildStrategy());
             runtime = response.getRuntime();
+            if (runtime == null) {
+                throw new BadRequestException("Runtime start failed: startRuntime returned no runtime.");
+            }
+            if (runtime.getRuntimeStatus() == RuntimeStatus.BUILDING || runtime.getRuntimeStatus() == RuntimeStatus.STARTING) {
+                RuntimeActionResponse waited = sourceRuntimeService.waitForRuntimeTerminalState(project.getId(), runtime.getId(), 300);
+                runtime = waited.getRuntime();
+            }
             if (runtime == null || runtime.getRuntimeStatus() != RuntimeStatus.UP) {
-                throw new BadRequestException("Runtime start failed: " + response.getMessage());
+                String error = runtime != null && runtime.getLastError() != null ? runtime.getLastError() : "Runtime failed to reach UP status.";
+                throw new BadRequestException("Runtime start failed: " + error);
             }
         } else {
             String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
@@ -501,6 +510,7 @@ public class BatchRunServiceImpl implements BatchRunService {
                 .completedAt(batchRun.getCompletedAt())
                 .createdBy(batchRun.getCreatedBy())
                 .errorMessage(batchRun.getErrorMessage())
+                .buildStrategy(batchRun.getBuildStrategy())
                 .createdAt(batchRun.getCreatedAt())
                 .updatedAt(batchRun.getUpdatedAt())
                 .build();

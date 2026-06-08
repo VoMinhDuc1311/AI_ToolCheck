@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.model;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.BatchRunStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 import jakarta.persistence.*;
 import lombok.*;
 
@@ -87,6 +88,10 @@ public class BatchRun {
     @Enumerated(EnumType.STRING)
     private com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode executionMode;
 
+    @Column(name = "build_strategy", nullable = false, length = 50)
+    @Enumerated(EnumType.STRING)
+    private BuildStrategy buildStrategy;
+
     @Column(name = "external_base_url", length = 500)
     private String externalBaseUrl;
 
@@ -118,6 +123,7 @@ public class BatchRun {
         if (maxConcurrency == null) maxConcurrency = 1;
         if (maxRetries == null) maxRetries = 1;
         if (executionMode == null) executionMode = com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode.READ_ONLY;
+        if (buildStrategy == null) buildStrategy = BuildStrategy.AUTO;
     }
 
     @PreUpdate

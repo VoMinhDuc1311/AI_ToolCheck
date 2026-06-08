@@ -52,5 +52,20 @@ class RuntimeBeanWiringTest {
         RuntimeSourceMaterializer runtimeSourceMaterializer() {
             return mock(RuntimeSourceMaterializer.class);
         }
+
+        @Bean
+        com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository sourceUploadVersionRepository() {
+            return mock(com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository.class);
+        }
+
+        @Bean
+        com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService sourceRuntimeLifecycleService() {
+            return mock(com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService.class);
+        }
+
+        @Bean
+        RuntimeStartWorker runtimeStartWorker() {
+            return mock(RuntimeStartWorker.class);
+        }
     }
 }

@@ -12,6 +12,7 @@ public enum RuntimeStatus {
      */
     ENVIRONMENT_UNSUPPORTED,
     STARTING,
+    START_FAILED,
     UP,
     UNHEALTHY,
     STOPPING,

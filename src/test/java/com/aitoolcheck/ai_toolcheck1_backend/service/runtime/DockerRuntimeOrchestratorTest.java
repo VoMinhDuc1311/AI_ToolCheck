@@ -27,6 +27,7 @@ import java.util.UUID;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -36,6 +37,8 @@ class DockerRuntimeOrchestratorTest {
     private ApiEndpointRepository endpointRepository;
     private RuntimeSourceMaterializer materializer;
     private RuntimeAutoProperties properties;
+    private com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService lifecycleService;
+    private RuntimeStartWorker runtimeStartWorker;
     private DockerRuntimeOrchestrator orchestrator;
     private RecordingCommandExecutor commands;
     private SourceProject project;
@@ -48,6 +51,9 @@ class DockerRuntimeOrchestratorTest {
         runtimeRepository = mock(SourceRuntimeRepository.class);
         endpointRepository = mock(ApiEndpointRepository.class);
         materializer = mock(RuntimeSourceMaterializer.class);
+        lifecycleService = mock(com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService.class);
+        runtimeStartWorker = mock(RuntimeStartWorker.class);
+
         properties = new RuntimeAutoProperties();
         properties.setEnabled(true);
         properties.getDocker().setEnabled(true);
@@ -57,10 +63,92 @@ class DockerRuntimeOrchestratorTest {
         properties.setPortMin(18080);
         properties.setPortMax(18080);
         properties.setStartTimeoutSeconds(1);
+
         when(runtimeRepository.save(any(SourceRuntime.class))).thenAnswer(inv -> inv.getArgument(0));
         when(endpointRepository.findBySourceProjectIdAndActiveFlagTrue(any())).thenReturn(List.of());
 
-        orchestrator = new DockerRuntimeOrchestrator(runtimeRepository, endpointRepository, materializer, properties);
+        final SourceRuntime[] activeRuntime = new SourceRuntime[1];
+        org.mockito.Mockito.when(lifecycleService.createBuildingRuntime(any(), any(), any())).thenAnswer(inv -> {
+            SourceProject p = inv.getArgument(0);
+            BuildStrategy s = inv.getArgument(2);
+            SourceRuntime r = SourceRuntime.builder()
+                    .id(UUID.randomUUID())
+                    .sourceProject(p)
+                    .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                    .runtimeStatus(RuntimeStatus.BUILDING)
+                    .buildStrategyRequested(s)
+                    .build();
+            activeRuntime[0] = r;
+            return r;
+        });
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.BUILD_FAILED);
+                activeRuntime[0].setLastError(inv.getArgument(1));
+            }
+            return null;
+        }).when(lifecycleService).markBuildFailed(any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.STARTING);
+                activeRuntime[0].setContainerName(inv.getArgument(1));
+                activeRuntime[0].setImageName(inv.getArgument(2));
+                activeRuntime[0].setDockerfileSource(inv.getArgument(3));
+                activeRuntime[0].setBuildStrategyUsed(inv.getArgument(4));
+                activeRuntime[0].setFallbackReason(inv.getArgument(5));
+            }
+            return null;
+        }).when(lifecycleService).markStarting(any(), any(), any(), any(), any(), any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.START_FAILED);
+                activeRuntime[0].setLastError(inv.getArgument(1));
+            }
+            return null;
+        }).when(lifecycleService).markStartFailed(any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.UNHEALTHY);
+                activeRuntime[0].setLastHealthStatus(inv.getArgument(1));
+                activeRuntime[0].setLastError(inv.getArgument(2));
+            }
+            return null;
+        }).when(lifecycleService).markUnhealthy(any(), any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.UP);
+                activeRuntime[0].setPublicBaseUrl(inv.getArgument(1));
+                activeRuntime[0].setDetectedPort(inv.getArgument(2));
+                activeRuntime[0].setContainerName(inv.getArgument(3));
+                activeRuntime[0].setLastHealthStatus(inv.getArgument(4));
+            }
+            return null;
+        }).when(lifecycleService).markUp(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any(), any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            UUID runtimeId = inv.getArgument(0);
+            SourceProject p = inv.getArgument(1);
+            RuntimeDetectionResult det = inv.getArgument(2);
+            BuildStrategy strat = inv.getArgument(3);
+            DockerRuntimeOrchestrator orch = inv.getArgument(4);
+            orch.runStartSynchronously(runtimeId, p, det, strat);
+            return null;
+        }).when(runtimeStartWorker).runStartAsync(any(), any(), any(), any(), any());
+
+        orchestrator = new DockerRuntimeOrchestrator(
+                runtimeRepository,
+                mock(com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository.class),
+                endpointRepository,
+                materializer,
+                properties,
+                lifecycleService,
+                runtimeStartWorker
+        );
         commands = new RecordingCommandExecutor();
         orchestrator.setCommandExecutor(commands);
         orchestrator.setHealthProbe((url, timeout) -> 200);
@@ -79,13 +167,15 @@ class DockerRuntimeOrchestratorTest {
         assertThat(commands.commands.stream()
                 .filter(command -> command.size() > 2 && command.get(1).equals("run"))
                 .toList()).anySatisfy(command -> {
-            assertThat(command).containsExactly(
+            assertThat(command).containsSubsequence(
                     "docker", "run", "-d",
-                    "--name", command.get(4),
+                    "--name", command.get(4)
+            );
+            assertThat(command).contains(
                     "-p", "18080:8080",
                     "--network", "prod-net",
                     "--restart", "no",
-                    command.get(command.size() - 1)
+                    "-l", "ai-toolcheck.managed=true"
             );
         });
         assertThat(commands.commands.stream().flatMap(List::stream)).doesNotContain("sh", "-c");
@@ -152,7 +242,7 @@ class DockerRuntimeOrchestratorTest {
 
         SourceRuntime result = orchestrator.start(project, supportedMaven());
 
-        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.UNHEALTHY);
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.START_FAILED);
         assertThat(result.getLastError()).contains("docker run failed");
         assertThat(commands.commands).anyMatch(command -> command.contains("rm") && command.contains("-f"));
     }
@@ -166,8 +256,65 @@ class DockerRuntimeOrchestratorTest {
         SourceRuntime result = orchestrator.start(project, supportedMaven());
 
         assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.UNHEALTHY);
-        assertThat(result.getLastHealthStatus()).isEqualTo("DOWN:HEALTH_DOWN");
+        assertThat(result.getLastHealthStatus()).isEqualTo("DOWN:timeout");
         assertThat(commands.commands).anyMatch(command -> command.contains("rm") && command.contains("-f"));
+    }
+
+    @Test
+    void asyncDispatchRejected_marksRuntimeBuildFailed() {
+        org.mockito.Mockito.doThrow(new org.springframework.core.task.TaskRejectedException("queue full"))
+                .when(runtimeStartWorker).runStartAsync(any(), any(), any(), any(), any());
+
+        SourceRuntime result = orchestrator.start(project, supportedMaven());
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.BUILD_FAILED);
+        assertThat(result.getLastError()).contains("dispatch failed");
+    }
+
+    @Test
+    void stopDuringStarting_cleansContainerAndDoesNotMarkUp() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        when(lifecycleService.isStartCancelled(any()))
+                .thenReturn(false, false, false, true);
+
+        orchestrator.start(project, supportedMaven());
+
+        assertThat(commands.commands).anyMatch(command -> command.contains("rm") && command.contains("-f"));
+        verify(lifecycleService, never()).markUp(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any(), any(), any());
+    }
+
+    @Test
+    void workerBeforeMarkUp_checksRuntimeStillActive() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        when(lifecycleService.isStartCancelled(any()))
+                .thenReturn(false, false, false, false, false, false, true);
+
+        orchestrator.start(project, supportedMaven());
+
+        assertThat(commands.commands).anyMatch(command -> command.contains("rm") && command.contains("-f"));
+        verify(lifecycleService, never()).markUp(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any(), any(), any());
+    }
+
+    @Test
+    void startupHealthProbe_usesCustomHealthPathFirst() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        SourceRuntime runtime = SourceRuntime.builder()
+                .healthCheckPath("/greeting")
+                .build();
+        when(lifecycleService.findFresh(any())).thenReturn(java.util.Optional.of(runtime));
+        List<String> probed = new ArrayList<>();
+        orchestrator.setHealthProbe((url, timeout) -> {
+            probed.add(url);
+            return url.endsWith("/greeting") ? 200 : 404;
+        });
+
+        SourceRuntime result = orchestrator.start(project, supportedMaven());
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
+        assertThat(probed.get(0)).endsWith("/greeting");
     }
 
     @Test
