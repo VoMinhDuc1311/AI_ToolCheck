@@ -5,7 +5,9 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRun;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseAssertionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestFailureAnalysisRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
@@ -55,8 +57,10 @@ class TestRunStaleGuardTest {
                 testRunRepository,
                 testRunItemRepository,
                 mock(TestCaseRepository.class),
+                mock(TestCaseAssertionRepository.class),
                 mock(SourceProjectRepository.class),
                 mock(TestResultRepository.class),
+                mock(ApiEndpointRepository.class),
                 mock(TestRequestBuilder.class),
                 mock(TestHttpExecutor.class),
                 new ObjectMapper(),

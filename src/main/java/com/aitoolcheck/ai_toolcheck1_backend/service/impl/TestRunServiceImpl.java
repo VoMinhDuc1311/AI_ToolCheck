@@ -22,6 +22,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
+import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseAssertion;
@@ -29,11 +30,14 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestResult;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRun;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRunItem;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseAssertionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuleEngineService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
@@ -83,8 +87,10 @@ public class TestRunServiceImpl implements TestRunService {
     private final TestRunRepository testRunRepository;
     private final TestRunItemRepository testRunItemRepository;
     private final TestCaseRepository testCaseRepository;
+    private final TestCaseAssertionRepository testCaseAssertionRepository;
     private final SourceProjectRepository sourceProjectRepository;
     private final TestResultRepository testResultRepository;
+    private final ApiEndpointRepository apiEndpointRepository;
     private final TestRequestBuilder testRequestBuilder;
     private final TestHttpExecutor testHttpExecutor;
     private final ObjectMapper objectMapper;
@@ -382,7 +388,7 @@ public class TestRunServiceImpl implements TestRunService {
         }
 
         if (!performPreflightCheck(preflightRun, preflightItems)) {
-            throw new BadRequestException("Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.");
+            throw new BadRequestException(preflightRun.getPreflightSummary() != null ? preflightRun.getPreflightSummary() : "Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.");
         }
 
         ExecutionContext executionContext = transactionTemplate.execute(status -> {
@@ -857,39 +863,253 @@ public class TestRunServiceImpl implements TestRunService {
         if (safeItems.isEmpty()) {
             testRun.setPreflightStatus("SKIPPED");
             testRun.setPreflightSummary("No safe GET/HEAD test cases selected for preflight.");
+            testRunRepository.save(testRun);
             return true;
         }
 
-        boolean all404 = true;
-        for (TestRunItem item : safeItems) {
-            TestCaseInput input = item.getTestCase().getTestCaseInput();
+        UUID projectId = testRun.getSourceProject().getId();
+        String baseUrl = testRun.getBaseUrl();
+
+        // Fetch assertions to check if selected test cases are negative/non-2xx expected
+        List<UUID> testCaseIds = items.stream()
+                .map(TestRunItem::getTestCase)
+                .filter(java.util.Objects::nonNull)
+                .map(TestCase::getId)
+                .toList();
+        Map<UUID, List<TestCaseAssertion>> assertionsByTestCase = new HashMap<>();
+        if (!testCaseIds.isEmpty()) {
             try {
-                PreparedHttpRequestResponse prepared = testRequestBuilder.build(testRun.getBaseUrl(), input);
-                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
-                if (executed.statusCode() != 404) {
-                    all404 = false;
-                    break;
+                List<TestCaseAssertion> assertions = testCaseAssertionRepository.findByTestCase_IdIn(testCaseIds);
+                if (assertions != null) {
+                    for (TestCaseAssertion assertion : assertions) {
+                        assertionsByTestCase.computeIfAbsent(assertion.getTestCase().getId(), k -> new ArrayList<>()).add(assertion);
+                    }
                 }
             } catch (Exception e) {
-                all404 = false;
+                log.warn("Failed to fetch test case assertions for preflight check", e);
+            }
+        }
+
+        boolean allSelectedAreNegativeOrNon2xx = true;
+        for (TestRunItem item : items) {
+            TestCase testCase = item.getTestCase();
+            if (testCase != null && !isNegativeOrNon2xxExpected(testCase, assertionsByTestCase.get(testCase.getId()))) {
+                allSelectedAreNegativeOrNon2xx = false;
                 break;
             }
         }
 
-        if (all404) {
-            String error = "Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.";
-            testRun.setRunStatus(RunStatus.FAILED);
-            testRun.setPreflightStatus("FAILED");
-            testRun.setPreflightSummary(error);
-            String desc = testRun.getDescription();
-            testRun.setDescription(desc == null ? error : desc + "\n\nPreflight Error: " + error);
+        // Retrieve runtime health details
+        String customHealthPath = null;
+        boolean isRuntimeHealthy = false;
+        try {
+            SourceRuntimeResponse currentRuntime = sourceRuntimeService.getCurrentRuntime(projectId);
+            if (currentRuntime != null) {
+                customHealthPath = currentRuntime.getHealthCheckPath();
+                if (currentRuntime.getRuntimeStatus() == com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus.UP) {
+                    isRuntimeHealthy = true;
+                } else if (currentRuntime.getLastHealthStatus() != null && currentRuntime.getLastHealthStatus().startsWith("UP:")) {
+                    isRuntimeHealthy = true;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to retrieve runtime status for preflight check", e);
+        }
+
+        // Build list of probes
+        List<PreflightProbe> strongProbes = new ArrayList<>();
+        List<PreflightProbe> weakProbes = new ArrayList<>();
+
+        // Weak/default health paths
+        if (customHealthPath != null && !customHealthPath.isBlank()) {
+            weakProbes.add(new PreflightProbe(customHealthPath, "Custom Health Path: " + customHealthPath));
+        }
+        for (String healthPath : List.of("/actuator/health", "/health", "/healthz", "/")) {
+            if (customHealthPath == null || !customHealthPath.equalsIgnoreCase(healthPath)) {
+                weakProbes.add(new PreflightProbe(healthPath, "Default Health Path: " + healthPath));
+            }
+        }
+
+        // Strong probes: Project API GET endpoints without variables
+        try {
+            List<ApiEndpoint> apiEndpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
+            if (apiEndpoints != null) {
+                for (ApiEndpoint ep : apiEndpoints) {
+                    if ((ep.getHttpMethod() == com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET
+                            || ep.getHttpMethod() == com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.HEAD)
+                            && ep.getEndpointPath() != null) {
+                        String path = ep.getEndpointPath();
+                        if (!path.contains("{") && !path.contains("}")) {
+                            strongProbes.add(new PreflightProbe(path, "API Endpoint: GET " + path));
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to fetch project api endpoints for preflight check", e);
+        }
+
+        // Strong probes: Selected positive test cases with GET/HEAD and expected 2xx
+        for (TestRunItem item : items) {
+            TestCase testCase = item.getTestCase();
+            if (testCase != null && testCase.getTestCaseInput() != null) {
+                TestCaseInput input = testCase.getTestCaseInput();
+                String method = input.getHttpMethod().name();
+                if (("GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method))
+                        && !isNegativeOrNon2xxExpected(testCase, assertionsByTestCase.get(testCase.getId()))) {
+                    try {
+                        PreparedHttpRequestResponse prepared = testRequestBuilder.build(baseUrl, input);
+                        strongProbes.add(new PreflightProbe(prepared, "Selected Positive Test Case: GET " + input.getRequestPath()));
+                    } catch (Exception e) {
+                        // ignore builder errors
+                    }
+                }
+            }
+        }
+
+        // Now run the probes
+        boolean anyPassed = false;
+        boolean anyStrongExecuted = false;
+        boolean anyStrongConnectionRefused = false;
+        boolean allStrong404 = true;
+        boolean allProbesConnectionRefused = true;
+
+        List<PreflightProbe> allProbes = new ArrayList<>();
+        allProbes.addAll(strongProbes);
+        allProbes.addAll(weakProbes);
+
+        for (PreflightProbe probe : allProbes) {
+            boolean isStrong = strongProbes.contains(probe);
+            try {
+                PreparedHttpRequestResponse prepared;
+                if (probe.preparedRequest != null) {
+                    prepared = probe.preparedRequest;
+                } else {
+                    prepared = PreparedHttpRequestResponse.builder()
+                            .method(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET)
+                            .finalUrl(baseUrl + (probe.path.startsWith("/") ? probe.path : "/" + probe.path))
+                            .baseUrl(baseUrl)
+                            .requestPath(probe.path)
+                            .build();
+                }
+
+                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
+                if (!executed.connectionError()) {
+                    allProbesConnectionRefused = false;
+                }
+
+                if (executed.statusCode() != 404 && !executed.connectionError()) {
+                    anyPassed = true;
+                    break;
+                }
+
+                if (isStrong) {
+                    anyStrongExecuted = true;
+                    if (executed.connectionError()) {
+                        anyStrongConnectionRefused = true;
+                    }
+                    if (executed.statusCode() != 404) {
+                        allStrong404 = false;
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Error executing preflight probe: " + probe.description, e);
+            }
+        }
+
+        if (anyPassed) {
+            testRun.setPreflightStatus("PASSED");
+            testRun.setPreflightSummary("At least one positive safe endpoint returned a successful status.");
             testRunRepository.save(testRun);
+            return true;
+        }
+
+        // If all probes failed to connect (connection error on everything, including / health checks)
+        if (allProbesConnectionRefused) {
+            String error = "Base URL/runtime is unreachable. Connection refused or timed out for " + baseUrl;
+            failTestRun(testRun, error);
             return false;
         }
-        testRun.setPreflightStatus("PASSED");
-        testRun.setPreflightSummary("At least one safe preflight endpoint did not return 404.");
+
+        // If strong probes were executed and they failed
+        if (anyStrongExecuted) {
+            if (allStrong404 || anyStrongConnectionRefused) {
+                String error = "Base URL/runtime does not match uploaded source. All positive safe endpoints returned 404 or connection failed.";
+                failTestRun(testRun, error);
+                return false;
+            }
+        }
+
+        // If no strong probes were executed, but runtime health is UP, we pass/skip
+        if (isRuntimeHealthy && allSelectedAreNegativeOrNon2xx) {
+            testRun.setPreflightStatus("PASSED");
+            testRun.setPreflightSummary("Runtime health is UP; selected testcase is negative expected status 404, continuing execution.");
+            testRunRepository.save(testRun);
+            return true;
+        }
+
+        // Otherwise, fail
+        String error = "Base URL/runtime does not match uploaded source. No positive safe endpoints returned success, and runtime health is not UP.";
+        failTestRun(testRun, error);
+        return false;
+    }
+
+    private void failTestRun(TestRun testRun, String error) {
+        testRun.setRunStatus(RunStatus.FAILED);
+        testRun.setPreflightStatus("FAILED");
+        testRun.setPreflightSummary(error);
+        String desc = testRun.getDescription();
+        testRun.setDescription(desc == null ? error : desc + "\n\nPreflight Error: " + error);
         testRunRepository.save(testRun);
-        return true;
+    }
+
+    private boolean isNegativeOrNon2xxExpected(TestCase testCase, List<TestCaseAssertion> assertions) {
+        if (testCase == null) {
+            return false;
+        }
+        if (testCase.getCaseType() == com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.NEGATIVE
+                || testCase.getCaseType() == com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.VALIDATION) {
+            return true;
+        }
+        if (assertions != null) {
+            for (TestCaseAssertion assertion : assertions) {
+                if (assertion.getAssertionType() == com.aitoolcheck.ai_toolcheck1_backend.enums.AssertionType.STATUS_CODE
+                        && assertion.getEnabledFlag() != Boolean.FALSE) {
+                    String val = assertion.getExpectedValue();
+                    if (val != null) {
+                        try {
+                            int statusCode = Integer.parseInt(val.trim());
+                            if (statusCode < 200 || statusCode >= 300) {
+                                return true;
+                            }
+                        } catch (NumberFormatException e) {
+                            if (!val.trim().startsWith("2")) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static class PreflightProbe {
+        final String path;
+        final PreparedHttpRequestResponse preparedRequest;
+        final String description;
+
+        PreflightProbe(String path, String description) {
+            this.path = path;
+            this.preparedRequest = null;
+            this.description = description;
+        }
+
+        PreflightProbe(PreparedHttpRequestResponse preparedRequest, String description) {
+            this.path = preparedRequest.getRequestPath();
+            this.preparedRequest = preparedRequest;
+            this.description = description;
+        }
     }
 
     private void publishTestRunNotification(TestRun testRun) {
