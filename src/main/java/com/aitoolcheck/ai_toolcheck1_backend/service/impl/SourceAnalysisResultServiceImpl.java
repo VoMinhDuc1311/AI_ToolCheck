@@ -16,6 +16,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataParserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.AnalysisSignals;
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.JavaSourceAnalyzer;
@@ -24,6 +25,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.SourceAnalysisScor
 import com.aitoolcheck.ai_toolcheck1_backend.service.analysis.SourceAnalysisSummaryBuilder;
 import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultService {
@@ -45,6 +48,7 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
     private final SourceAnalysisSummaryBuilder summaryBuilder;
     private final ProjectAccessService projectAccessService;
     private final ProjectNotificationEventPublisher notificationEventPublisher;
+    private final ApiMetadataParserService apiMetadataParserService;
 
     @Override
     @Transactional
@@ -112,6 +116,15 @@ public class SourceAnalysisResultServiceImpl implements SourceAnalysisResultServ
 
         sourceProject.setStatus(ProjectStatus.ANALYZED);
         sourceProjectRepository.save(sourceProject);
+
+        if (parserRecommended) {
+            try {
+                log.info("Triggering auto API endpoint parsing for parser-friendly project: {}", projectId);
+                apiMetadataParserService.parseProject(projectId, false);
+            } catch (Exception e) {
+                log.warn("Auto API endpoint parsing failed or was skipped for project: {} - {}", projectId, e.getMessage());
+            }
+        }
 
         notificationEventPublisher.publishForCurrentUser(
                 projectId,
