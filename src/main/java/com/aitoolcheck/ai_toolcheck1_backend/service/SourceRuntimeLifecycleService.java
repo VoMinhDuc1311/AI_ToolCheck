@@ -3,6 +3,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.DockerfileSource;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.RuntimeStatusSnapshot;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceRuntime;
 
@@ -20,6 +21,7 @@ public interface SourceRuntimeLifecycleService {
     SourceRuntime markStopping(UUID runtimeId);
     SourceRuntime markStopped(UUID runtimeId);
     Optional<SourceRuntime> findFresh(UUID runtimeId);
+    RuntimeStatusSnapshot findStatusSnapshot(UUID runtimeId);
     RuntimeStatus getFreshStatus(UUID runtimeId);
     boolean isStartCancelled(UUID runtimeId);
 }
