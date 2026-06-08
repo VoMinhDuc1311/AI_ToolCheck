@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.dto.batchrun.req;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
@@ -28,6 +29,7 @@ public class BatchRunOptionsRequest {
     private Integer maxRetries;
 
     private ExecutionMode executionMode;
+    private BuildStrategy buildStrategy;
 
     @Size(max = 500, message = "externalBaseUrl must not exceed 500 characters")
     private String externalBaseUrl;
@@ -62,5 +64,9 @@ public class BatchRunOptionsRequest {
 
     public ExecutionMode safeExecutionMode() {
         return executionMode == null ? ExecutionMode.READ_ONLY : executionMode;
+    }
+
+    public BuildStrategy safeBuildStrategy() {
+        return buildStrategy == null ? BuildStrategy.AUTO : buildStrategy;
     }
 }

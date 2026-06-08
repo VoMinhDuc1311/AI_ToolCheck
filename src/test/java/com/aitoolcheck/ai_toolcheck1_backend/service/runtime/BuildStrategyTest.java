@@ -7,6 +7,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.DockerfileSource;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceRuntime;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
@@ -35,6 +36,8 @@ class BuildStrategyTest {
     private SourceRuntimeRepository runtimeRepository;
     private RuntimeSourceMaterializer materializer;
     private RuntimeAutoProperties properties;
+    private com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService lifecycleService;
+    private RuntimeStartWorker runtimeStartWorker;
     private DockerRuntimeOrchestrator orchestrator;
     private RecordingCommandExecutor commands;
     private SourceProject project;
@@ -47,6 +50,8 @@ class BuildStrategyTest {
         runtimeRepository = mock(SourceRuntimeRepository.class);
         ApiEndpointRepository endpointRepository = mock(ApiEndpointRepository.class);
         materializer = mock(RuntimeSourceMaterializer.class);
+        lifecycleService = mock(com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService.class);
+        runtimeStartWorker = mock(RuntimeStartWorker.class);
 
         properties = new RuntimeAutoProperties();
         properties.setEnabled(true);
@@ -62,7 +67,88 @@ class BuildStrategyTest {
         when(runtimeRepository.save(any(SourceRuntime.class))).thenAnswer(inv -> inv.getArgument(0));
         when(endpointRepository.findBySourceProjectIdAndActiveFlagTrue(any())).thenReturn(List.of());
 
-        orchestrator = new DockerRuntimeOrchestrator(runtimeRepository, endpointRepository, materializer, properties);
+        final SourceRuntime[] activeRuntime = new SourceRuntime[1];
+        org.mockito.Mockito.when(lifecycleService.createBuildingRuntime(any(), any(), any())).thenAnswer(inv -> {
+            SourceProject p = inv.getArgument(0);
+            BuildStrategy s = inv.getArgument(2);
+            SourceRuntime r = SourceRuntime.builder()
+                    .id(UUID.randomUUID())
+                    .sourceProject(p)
+                    .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                    .runtimeStatus(RuntimeStatus.BUILDING)
+                    .buildStrategyRequested(s)
+                    .build();
+            activeRuntime[0] = r;
+            return r;
+        });
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.BUILD_FAILED);
+                activeRuntime[0].setLastError(inv.getArgument(1));
+            }
+            return null;
+        }).when(lifecycleService).markBuildFailed(any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.STARTING);
+                activeRuntime[0].setContainerName(inv.getArgument(1));
+                activeRuntime[0].setImageName(inv.getArgument(2));
+                activeRuntime[0].setDockerfileSource(inv.getArgument(3));
+                activeRuntime[0].setBuildStrategyUsed(inv.getArgument(4));
+                activeRuntime[0].setFallbackReason(inv.getArgument(5));
+            }
+            return null;
+        }).when(lifecycleService).markStarting(any(), any(), any(), any(), any(), any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.START_FAILED);
+                activeRuntime[0].setLastError(inv.getArgument(1));
+            }
+            return null;
+        }).when(lifecycleService).markStartFailed(any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.UNHEALTHY);
+                activeRuntime[0].setLastHealthStatus(inv.getArgument(1));
+                activeRuntime[0].setLastError(inv.getArgument(2));
+            }
+            return null;
+        }).when(lifecycleService).markUnhealthy(any(), any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            if (activeRuntime[0] != null) {
+                activeRuntime[0].setRuntimeStatus(RuntimeStatus.UP);
+                activeRuntime[0].setPublicBaseUrl(inv.getArgument(1));
+                activeRuntime[0].setDetectedPort(inv.getArgument(2));
+                activeRuntime[0].setContainerName(inv.getArgument(3));
+                activeRuntime[0].setLastHealthStatus(inv.getArgument(4));
+            }
+            return null;
+        }).when(lifecycleService).markUp(any(), any(), org.mockito.ArgumentMatchers.anyInt(), any(), any(), any());
+
+        org.mockito.Mockito.doAnswer(inv -> {
+            UUID runtimeId = inv.getArgument(0);
+            SourceProject p = inv.getArgument(1);
+            RuntimeDetectionResult det = inv.getArgument(2);
+            BuildStrategy strat = inv.getArgument(3);
+            DockerRuntimeOrchestrator orch = inv.getArgument(4);
+            orch.runStartSynchronously(runtimeId, p, det, strat);
+            return null;
+        }).when(runtimeStartWorker).runStartAsync(any(), any(), any(), any(), any());
+
+        orchestrator = new DockerRuntimeOrchestrator(
+                runtimeRepository,
+                mock(com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository.class),
+                endpointRepository,
+                materializer,
+                properties,
+                lifecycleService,
+                runtimeStartWorker
+        );
         commands = new RecordingCommandExecutor();
         orchestrator.setCommandExecutor(commands);
         orchestrator.setHealthProbe((url, timeout) -> 200);
@@ -171,6 +257,33 @@ class BuildStrategyTest {
         assertThat(result.getDockerfileSource()).isEqualTo(DockerfileSource.GENERATED);
         assertThat(result.getFallbackReason()).contains("Uploaded Dockerfile failed");
         assertThat(result.getBuildStrategyUsed()).isEqualTo(BuildStrategy.AUTO_WITH_FALLBACK);
+    }
+
+    @Test
+    void autoWithFallback_uploadedFails_generatedSucceeds_preservesOriginalFallbackReason() throws Exception {
+        Files.writeString(tempDir.resolve("Dockerfile"), "FROM bad-image");
+        when(materializer.materialize(project.getId())).thenReturn(materialized());
+        commands.failFirstBuild = true;
+
+        SourceRuntime result = orchestrator.start(project, mavenDetection(), BuildStrategy.AUTO_WITH_FALLBACK);
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
+        assertThat(result.getFallbackReason()).contains("Uploaded Dockerfile failed: exitCode=127");
+        assertThat(result.getFallbackReason()).contains("/bin/sh: 1: mvn: not found");
+        assertThat(result.getLastError()).isNull();
+    }
+
+    @Test
+    void autoWithFallback_bothFail_reportsBothErrors() throws Exception {
+        Files.writeString(tempDir.resolve("Dockerfile"), "FROM bad-image");
+        when(materializer.materialize(project.getId())).thenReturn(materialized());
+        commands.failBuild = true;
+
+        SourceRuntime result = orchestrator.start(project, mavenDetection(), BuildStrategy.AUTO_WITH_FALLBACK);
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.BUILD_FAILED);
+        assertThat(result.getLastError()).contains("Uploaded Dockerfile failed");
+        assertThat(result.getLastError()).contains("Generated Dockerfile failed");
     }
 
     @Test

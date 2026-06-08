@@ -98,10 +98,10 @@ class TestRunBaseUrlFallbackTest {
         projectId = UUID.randomUUID();
         project = buildProject(projectId, null, null);
 
-        when(sourceRuntimeService.resolveBaseUrlForTestRun(any(), any(), any()))
+        when(sourceRuntimeService.resolveBaseUrlForTestRun(any(), any(), any(), any()))
                 .thenAnswer(invocation -> {
-                    String reqUrl = invocation.getArgument(1);
-                    String defUrl = invocation.getArgument(2);
+                    String reqUrl = invocation.getArgument(2);
+                    String defUrl = invocation.getArgument(3);
 
                     if (reqUrl != null && !reqUrl.trim().isEmpty()) {
                         if (reqUrl.equals("not-a-url")) {

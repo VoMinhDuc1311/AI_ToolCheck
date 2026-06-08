@@ -21,6 +21,9 @@ public interface SourceRuntimeRepository extends JpaRepository<SourceRuntime, UU
     Optional<SourceRuntime> findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(
             UUID projectId, RuntimeStatus runtimeStatus);
 
+    Optional<SourceRuntime> findFirstBySourceProject_IdAndRuntimeStatusInOrderByUpdatedAtDesc(
+            UUID projectId, List<RuntimeStatus> statuses);
+
     List<SourceRuntime> findBySourceProject_IdOrderByUpdatedAtDesc(UUID projectId);
 
     long countByRuntimeStatus(RuntimeStatus runtimeStatus);

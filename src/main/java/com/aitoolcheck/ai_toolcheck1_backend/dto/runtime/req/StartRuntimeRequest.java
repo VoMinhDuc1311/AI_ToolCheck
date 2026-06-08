@@ -14,6 +14,12 @@ import lombok.Setter;
 @Builder
 public class StartRuntimeRequest {
     private BuildStrategy buildStrategy;
+    private Boolean wait;
+
+    public StartRuntimeRequest(BuildStrategy buildStrategy) {
+        this.buildStrategy = buildStrategy;
+    }
+
     public BuildStrategy effectiveStrategy() {
         return buildStrategy != null ? buildStrategy : BuildStrategy.AUTO;
     }

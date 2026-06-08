@@ -230,7 +230,7 @@ class BatchRunServiceImplTest {
         BatchRunOptionsRequest options = successOptions();
         options.setStartRuntime(true);
         UUID batchId = createReadyBatch(List.of(p1), options).getId();
-        when(sourceRuntimeService.startRuntime(p1.getId())).thenReturn(RuntimeActionResponse.builder()
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(RuntimeActionResponse.builder()
                 .message("unsupported")
                 .runtime(SourceRuntimeResponse.builder().runtimeStatus(RuntimeStatus.ENVIRONMENT_UNSUPPORTED).build())
                 .build());
@@ -240,6 +240,97 @@ class BatchRunServiceImplTest {
         BatchRunItem item = items.values().iterator().next();
         assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.FAILED);
         assertThat(item.getCurrentStep()).isEqualTo(BatchRunStep.START_RUNTIME);
+    }
+
+    @Test
+    void batchRun_passesBuildStrategyToRuntimeStart() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        options.setBuildStrategy(BuildStrategy.AUTO_WITH_FALLBACK);
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO_WITH_FALLBACK)).thenReturn(RuntimeActionResponse.builder()
+                .runtime(SourceRuntimeResponse.builder()
+                        .id(UUID.randomUUID())
+                        .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                        .runtimeStatus(RuntimeStatus.UP)
+                        .publicBaseUrl("http://runtime:18080")
+                        .build())
+                .build());
+
+        service.start(batchId);
+
+        verify(sourceRuntimeService).startRuntime(p1.getId(), BuildStrategy.AUTO_WITH_FALLBACK);
+    }
+
+    @Test
+    void batchRun_defaultBuildStrategy_isDocumentedAndTested() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(RuntimeActionResponse.builder()
+                .runtime(SourceRuntimeResponse.builder()
+                        .id(UUID.randomUUID())
+                        .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                        .runtimeStatus(RuntimeStatus.UP)
+                        .publicBaseUrl("http://runtime:18080")
+                        .build())
+                .build());
+
+        service.start(batchId);
+
+        verify(sourceRuntimeService).startRuntime(p1.getId(), BuildStrategy.AUTO);
+    }
+
+    @Test
+    void batchRun_pollingDoesNotUseStalePersistenceContext() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        UUID runtimeId = UUID.randomUUID();
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenReturn(RuntimeActionResponse.builder()
+                .runtime(SourceRuntimeResponse.builder()
+                        .id(runtimeId)
+                        .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                        .runtimeStatus(RuntimeStatus.BUILDING)
+                        .build())
+                .build());
+        when(sourceRuntimeService.waitForRuntimeTerminalState(p1.getId(), runtimeId, 300)).thenReturn(RuntimeActionResponse.builder()
+                .runtime(SourceRuntimeResponse.builder()
+                        .id(runtimeId)
+                        .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                        .runtimeStatus(RuntimeStatus.UP)
+                        .publicBaseUrl("http://runtime:18080")
+                        .build())
+                .build());
+
+        service.start(batchId);
+
+        verify(sourceRuntimeService).waitForRuntimeTerminalState(p1.getId(), runtimeId, 300);
+        assertThat(items.values().iterator().next().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+    }
+
+    @Test
+    void batchRun_autoWithFallbackRuntimeFailureOrSuccessHandled() {
+        SourceProject p1 = project("P1");
+        BatchRunOptionsRequest options = successOptions();
+        options.setStartRuntime(true);
+        options.setBuildStrategy(BuildStrategy.AUTO_WITH_FALLBACK);
+        UUID batchId = createReadyBatch(List.of(p1), options).getId();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO_WITH_FALLBACK)).thenReturn(RuntimeActionResponse.builder()
+                .runtime(SourceRuntimeResponse.builder()
+                        .runtimeStatus(RuntimeStatus.BUILD_FAILED)
+                        .lastError("uploaded and generated dockerfiles failed")
+                        .build())
+                .build());
+
+        service.start(batchId);
+
+        BatchRunItem item = items.values().iterator().next();
+        assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.FAILED);
+        assertThat(item.getErrorMessage()).contains("uploaded and generated dockerfiles failed");
     }
 
     @Test
@@ -382,6 +473,7 @@ class BatchRunServiceImplTest {
                 .maxConcurrency(options.safeMaxConcurrency())
                 .maxRetries(options.safeMaxRetries())
                 .executionMode(options.safeExecutionMode())
+                .buildStrategy(options.safeBuildStrategy())
                 .externalBaseUrl(options.getExternalBaseUrl())
                 .build();
         batchRunRepository.save(batchRun);

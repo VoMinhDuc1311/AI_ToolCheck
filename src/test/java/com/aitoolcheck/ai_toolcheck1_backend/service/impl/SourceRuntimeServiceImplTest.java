@@ -6,10 +6,12 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.MaterializedRu
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.internal.RuntimeDetectionResult;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.req.RegisterExternalRuntimeRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.RuntimeActionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentCapability;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeType;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -32,6 +34,12 @@ import java.util.EnumSet;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -39,6 +47,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -58,12 +67,14 @@ import static org.mockito.Mockito.when;
 class SourceRuntimeServiceImplTest {
 
     private SourceRuntimeRepository sourceRuntimeRepository;
+    private com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository sourceUploadVersionRepository;
     private ProjectAccessService projectAccessService;
     private RuntimeAutoProperties runtimeAutoProperties;
     private RuntimeDetectorService runtimeDetectorService;
     private RuntimeSourceMaterializer runtimeSourceMaterializer;
     private RuntimeOrchestratorFactory orchestratorFactory;
     private RuntimeOrchestratorStrategy orchestratorStrategy;
+    private com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService lifecycleService;
     private SourceRuntimeServiceImpl service;
     private UUID projectId;
     private SourceProject project;
@@ -74,22 +85,38 @@ class SourceRuntimeServiceImplTest {
     @BeforeEach
     void setUp() {
         sourceRuntimeRepository = mock(SourceRuntimeRepository.class);
+        sourceUploadVersionRepository = mock(com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository.class);
         projectAccessService = mock(ProjectAccessService.class);
         runtimeAutoProperties = new RuntimeAutoProperties();
         runtimeDetectorService = mock(RuntimeDetectorService.class);
         runtimeSourceMaterializer = mock(RuntimeSourceMaterializer.class);
         orchestratorFactory = mock(RuntimeOrchestratorFactory.class);
         orchestratorStrategy = mock(RuntimeOrchestratorStrategy.class);
+        lifecycleService = mock(com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService.class);
         when(orchestratorFactory.getStrategy()).thenReturn(orchestratorStrategy);
         when(orchestratorFactory.getLastReport()).thenReturn(null);
 
+        when(lifecycleService.createBuildingRuntime(any(), any(), any())).thenAnswer(inv -> {
+            SourceProject p = inv.getArgument(0);
+            BuildStrategy s = inv.getArgument(2);
+            return SourceRuntime.builder()
+                    .id(UUID.randomUUID())
+                    .sourceProject(p)
+                    .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                    .runtimeStatus(RuntimeStatus.BUILDING)
+                    .buildStrategyRequested(s)
+                    .build();
+        });
+
         service = new SourceRuntimeServiceImpl(
                 sourceRuntimeRepository,
+                sourceUploadVersionRepository,
                 projectAccessService,
                 runtimeAutoProperties,
                 runtimeDetectorService,
                 runtimeSourceMaterializer,
-                orchestratorFactory
+                orchestratorFactory,
+                lifecycleService
         );
         projectId = UUID.randomUUID();
         project = new SourceProject();
@@ -116,13 +143,53 @@ class SourceRuntimeServiceImplTest {
     @Test
     void getRuntime_whenExistsReturnsIt() {
         SourceRuntime existing = buildExternalRuntime(RuntimeStatus.UP, "http://localhost:8081");
-        when(sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP))
                 .thenReturn(Optional.of(existing));
 
         var response = service.getCurrentRuntime(projectId);
 
         assertThat(response.getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
         assertThat(response.getPublicBaseUrl()).isEqualTo("http://localhost:8081");
+    }
+
+    @Test
+    void getCurrentRuntime_prefersUpOverBuilding() {
+        SourceRuntime up = buildExternalRuntime(RuntimeStatus.UP, "http://up:8080");
+        SourceRuntime building = buildAutoRuntime(RuntimeStatus.BUILDING, null);
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP))
+                .thenReturn(Optional.of(up));
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.BUILDING))
+                .thenReturn(Optional.of(building));
+
+        var response = service.getCurrentRuntime(projectId);
+
+        assertThat(response.getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
+        assertThat(response.getPublicBaseUrl()).isEqualTo("http://up:8080");
+    }
+
+    @Test
+    void getCurrentRuntime_includesUnhealthyBeforeStopped() {
+        SourceRuntime unhealthy = buildAutoRuntime(RuntimeStatus.UNHEALTHY, null);
+        SourceRuntime stopped = buildAutoRuntime(RuntimeStatus.STOPPED, null);
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UNHEALTHY))
+                .thenReturn(Optional.of(unhealthy));
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(Optional.of(stopped));
+
+        var response = service.getCurrentRuntime(projectId);
+
+        assertThat(response.getRuntimeStatus()).isEqualTo(RuntimeStatus.UNHEALTHY);
+    }
+
+    @Test
+    void getCurrentRuntime_returnsLatestTerminalWhenNoActive() {
+        SourceRuntime stopped = buildAutoRuntime(RuntimeStatus.STOPPED, null);
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(Optional.of(stopped));
+
+        var response = service.getCurrentRuntime(projectId);
+
+        assertThat(response.getRuntimeStatus()).isEqualTo(RuntimeStatus.STOPPED);
     }
 
     // ── EXTERNAL: registerExternalRuntime ─────────────────────────────────────
@@ -327,6 +394,47 @@ class SourceRuntimeServiceImplTest {
         assertThat(resolved).isEqualTo("http://localhost:8080");
     }
 
+    @Test
+    void testRun_autoRuntimeWithUpRuntime_resolvesPublicBaseUrl() {
+        SourceRuntime up = buildAutoRuntime(RuntimeStatus.UP, "http://auto-runtime:18080");
+        when(sourceRuntimeRepository.findBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(List.of(up));
+
+        String resolved = service.resolveBaseUrlForTestRun(projectId, RuntimeMode.AUTO_RUNTIME_FROM_SOURCE, null, "http://project-default:9090");
+
+        assertThat(resolved).isEqualTo("http://auto-runtime:18080");
+    }
+
+    @Test
+    void testRun_autoRuntimeWhileBuilding_returnsRuntimeNotReady() {
+        SourceRuntime building = buildAutoRuntime(RuntimeStatus.BUILDING, null);
+        when(sourceRuntimeRepository.findBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(List.of(building));
+
+        assertThatThrownBy(() -> service.resolveBaseUrlForTestRun(projectId, RuntimeMode.AUTO_RUNTIME_FROM_SOURCE, null, "http://project-default:9090"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("not ready")
+                .hasMessageContaining("BUILDING");
+    }
+
+    @Test
+    void testRun_autoRuntimeWithoutUpRuntime_doesNotFallbackToProjectDefault() {
+        SourceRuntime stopped = buildAutoRuntime(RuntimeStatus.STOPPED, null);
+        when(sourceRuntimeRepository.findBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(List.of(stopped));
+
+        assertThatThrownBy(() -> service.resolveBaseUrlForTestRun(projectId, RuntimeMode.AUTO_RUNTIME_FROM_SOURCE, null, "http://project-default:9090"))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("No UP auto runtime");
+    }
+
+    @Test
+    void testRun_explicitBaseUrl_remainsBackwardCompatible() {
+        String resolved = service.resolveBaseUrlForTestRun(projectId, RuntimeMode.AUTO_RUNTIME_FROM_SOURCE, "http://explicit:8080", "http://project-default:9090");
+
+        assertThat(resolved).isEqualTo("http://explicit:8080");
+    }
+
     // ── Health check ──────────────────────────────────────────────────────────
 
     @Test
@@ -428,10 +536,8 @@ class SourceRuntimeServiceImplTest {
         var response = service.startRuntime(projectId);
 
         assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.AUTO_RUNTIME_UNSUPPORTED_CODE);
-        ArgumentCaptor<SourceRuntime> captor = ArgumentCaptor.forClass(SourceRuntime.class);
-        verify(sourceRuntimeRepository).save(captor.capture());
-        assertThat(captor.getValue().getRuntimeStatus()).isEqualTo(RuntimeStatus.BUILD_FAILED);
-        assertThat(captor.getValue().getLastError()).contains("No supported Spring Boot build file found");
+        verify(lifecycleService).createBuildingRuntime(eq(project), any(), any());
+        verify(lifecycleService).markBuildFailed(any(), org.mockito.ArgumentMatchers.contains("No supported Spring Boot build file found"));
     }
 
     @Test
@@ -460,6 +566,19 @@ class SourceRuntimeServiceImplTest {
         rt.setRuntimeMode(RuntimeMode.EXTERNAL_BASE_URL);
         rt.setRuntimeStatus(status);
         rt.setRuntimeType(RuntimeType.UNKNOWN);
+        rt.setPublicBaseUrl(baseUrl);
+        rt.setCreatedAt(LocalDateTime.now());
+        rt.setUpdatedAt(LocalDateTime.now());
+        return rt;
+    }
+
+    private SourceRuntime buildAutoRuntime(RuntimeStatus status, String baseUrl) {
+        SourceRuntime rt = new SourceRuntime();
+        rt.setId(UUID.randomUUID());
+        rt.setSourceProject(project);
+        rt.setRuntimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE);
+        rt.setRuntimeStatus(status);
+        rt.setRuntimeType(RuntimeType.SPRING_BOOT_MAVEN);
         rt.setPublicBaseUrl(baseUrl);
         rt.setCreatedAt(LocalDateTime.now());
         rt.setUpdatedAt(LocalDateTime.now());
@@ -621,6 +740,108 @@ class SourceRuntimeServiceImplTest {
         assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.CODE_SUCCESS);
         assertThat(response.getRuntime().getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
         assertThat(response.getRuntime().getPublicBaseUrl()).isEqualTo("http://127.0.0.1:18080/api");
+    }
+
+    @Test
+    void waitForRuntimeTerminalState_observesRuntimeStatusUpdatesAcrossTransactions() {
+        SourceRuntime building = buildAutoRuntime(RuntimeStatus.BUILDING, null);
+        SourceRuntime up = buildAutoRuntime(RuntimeStatus.UP, "http://runtime:18080");
+        up.setId(building.getId());
+        when(lifecycleService.findFresh(building.getId()))
+                .thenReturn(Optional.of(building))
+                .thenReturn(Optional.of(up));
+
+        var response = service.waitForRuntimeTerminalState(projectId, building.getId(), 3);
+
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.CODE_SUCCESS);
+        assertThat(response.getRuntime().getPublicBaseUrl()).isEqualTo("http://runtime:18080");
+        verify(lifecycleService, times(2)).findFresh(building.getId());
+    }
+
+    @Test
+    void duplicateStart_whenBuilding_returnsExistingRuntime() {
+        runtimeAutoProperties.setEnabled(true);
+        SourceRuntime building = buildAutoRuntime(RuntimeStatus.BUILDING, null);
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusInOrderByUpdatedAtDesc(
+                eq(projectId), any())).thenReturn(Optional.of(building));
+
+        var response = service.startRuntime(projectId);
+
+        assertThat(response.getRuntime().getId()).isEqualTo(building.getId());
+        verifyNoInteractions(runtimeDetectorService);
+        verifyNoInteractions(orchestratorStrategy);
+    }
+
+    @Test
+    void duplicateStart_whenConcurrent_returnsSameBuildingRuntime() throws Exception {
+        runtimeAutoProperties.setEnabled(true);
+        when(runtimeDetectorService.detect(projectId)).thenReturn(supportedMaven());
+        AtomicReference<SourceRuntime> active = new AtomicReference<>();
+        SourceRuntime building = buildAutoRuntime(RuntimeStatus.BUILDING, null);
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusInOrderByUpdatedAtDesc(eq(projectId), any()))
+                .thenAnswer(inv -> Optional.ofNullable(active.get()));
+        when(orchestratorStrategy.start(eq(project), any())).thenAnswer(inv -> {
+            active.set(building);
+            Thread.sleep(100);
+            return building;
+        });
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        CountDownLatch ready = new CountDownLatch(2);
+        CountDownLatch start = new CountDownLatch(1);
+        Future<?> first = executor.submit(() -> runStartAfterLatch(ready, start));
+        Future<?> second = executor.submit(() -> runStartAfterLatch(ready, start));
+        assertThat(ready.await(2, TimeUnit.SECONDS)).isTrue();
+        start.countDown();
+
+        first.get(3, TimeUnit.SECONDS);
+        second.get(3, TimeUnit.SECONDS);
+        executor.shutdownNow();
+
+        verify(orchestratorStrategy, times(1)).start(eq(project), any());
+        verify(runtimeDetectorService, times(1)).detect(projectId);
+    }
+
+    @Test
+    void duplicateStart_doesNotDispatchTwoWorkers() throws Exception {
+        duplicateStart_whenConcurrent_returnsSameBuildingRuntime();
+    }
+
+    @Test
+    void stopDuringBuilding_preventsWorkerFromMarkingUp() {
+        SourceRuntime building = buildAutoRuntime(RuntimeStatus.BUILDING, null);
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(Optional.of(building));
+        when(sourceRuntimeRepository.findById(building.getId()))
+                .thenReturn(Optional.of(building));
+
+        var response = service.stopRuntime(projectId);
+
+        assertThat(response.getCode()).isEqualTo(SourceRuntimeServiceImpl.CODE_STOPPED);
+        verify(lifecycleService).markStopped(building.getId());
+    }
+
+    @Test
+    void stopRuntime_idempotentForStoppedRuntime() {
+        SourceRuntime stopped = buildAutoRuntime(RuntimeStatus.STOPPED, null);
+        when(sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId))
+                .thenReturn(Optional.of(stopped));
+
+        var response = service.stopRuntime(projectId);
+
+        assertThat(response.getRuntime().getRuntimeStatus()).isEqualTo(RuntimeStatus.STOPPED);
+        verify(lifecycleService, never()).markStopped(any());
+    }
+
+    private RuntimeActionResponse runStartAfterLatch(CountDownLatch ready, CountDownLatch start) {
+        try {
+            ready.countDown();
+            start.await(2, TimeUnit.SECONDS);
+            return service.startRuntime(projectId);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RuntimeException(e);
+        }
     }
 }
 

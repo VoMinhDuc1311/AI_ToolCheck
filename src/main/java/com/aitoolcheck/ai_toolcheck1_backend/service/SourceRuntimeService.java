@@ -5,6 +5,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabili
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.RuntimeActionResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.BuildStrategy;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 
 import java.util.List;
 import java.util.UUID;
@@ -95,6 +96,12 @@ public interface SourceRuntimeService {
     String resolveBaseUrlForTestRun(UUID projectId, String requestBaseUrl, String projectDefaultTargetBaseUrl);
 
     /**
+     * Runtime-mode aware variant used by TestRun creation. AUTO mode requires an UP auto-runtime
+     * and never falls back to the project default target URL.
+     */
+    String resolveBaseUrlForTestRun(UUID projectId, RuntimeMode runtimeMode, String requestBaseUrl, String projectDefaultTargetBaseUrl);
+
+    /**
      * Returns the latest environment capability report for this host.
      * Probes Docker CLI, Docker socket, JDK, Maven, Gradle, and writable temp dir.
      * Results indicate whether autostart can proceed and what is missing.
@@ -111,5 +118,10 @@ public interface SourceRuntimeService {
      * @return updated action response.
      */
     RuntimeActionResponse updateHealthCheckPath(UUID projectId, String healthCheckPath);
+
+    /**
+     * Blocks and waits until the runtime reaches a terminal state (UP, BUILD_FAILED, START_FAILED, UNHEALTHY, ENVIRONMENT_UNSUPPORTED) or timeout.
+     */
+    RuntimeActionResponse waitForRuntimeTerminalState(UUID projectId, UUID runtimeId, int timeoutSeconds);
 }
 

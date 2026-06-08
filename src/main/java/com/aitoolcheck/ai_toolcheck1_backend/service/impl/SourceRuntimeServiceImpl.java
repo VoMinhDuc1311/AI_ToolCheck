@@ -16,10 +16,12 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceRuntime;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceRuntimeRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceUploadVersionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.EnvironmentCapabilityReport;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuntimeDetectorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuntimeSourceMaterializer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeLifecycleService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.runtime.RuntimeOrchestratorFactory;
 import lombok.RequiredArgsConstructor;
@@ -36,6 +38,8 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.ReentrantLock;
 
 @Service
 @RequiredArgsConstructor
@@ -72,11 +76,15 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     );
 
     private final SourceRuntimeRepository sourceRuntimeRepository;
+    private final SourceUploadVersionRepository sourceUploadVersionRepository;
     private final ProjectAccessService projectAccessService;
     private final RuntimeAutoProperties runtimeAutoProperties;
     private final RuntimeDetectorService runtimeDetectorService;
     private final RuntimeSourceMaterializer runtimeSourceMaterializer;
     private final RuntimeOrchestratorFactory orchestratorFactory;
+    private final SourceRuntimeLifecycleService lifecycleService;
+
+    private final ConcurrentHashMap<UUID, ReentrantLock> startLocks = new ConcurrentHashMap<>();
 
     // ── Read operations ──────────────────────────────────────────────────────
 
@@ -84,7 +92,7 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     @Transactional(readOnly = true)
     public SourceRuntimeResponse getCurrentRuntime(UUID projectId) {
         projectAccessService.requireCanViewProject(projectId);
-        return sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId)
+        return selectCurrentRuntime(projectId)
                 .map(this::toResponse)
                 .orElseGet(() -> notCreatedResponse(projectId));
     }
@@ -266,7 +274,16 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     @Transactional
     public RuntimeActionResponse startRuntime(UUID projectId, BuildStrategy strategy) {
         SourceProject sourceProject = projectAccessService.requireCanManageProject(projectId);
-        return runOrchestratorAction(sourceProject, strategy != null ? strategy : BuildStrategy.AUTO);
+        ReentrantLock lock = startLocks.computeIfAbsent(projectId, ignored -> new ReentrantLock());
+        lock.lock();
+        try {
+            return runOrchestratorAction(sourceProject, strategy != null ? strategy : BuildStrategy.AUTO);
+        } finally {
+            lock.unlock();
+            if (!lock.hasQueuedThreads()) {
+                startLocks.remove(projectId, lock);
+            }
+        }
     }
 
     @Override
@@ -277,21 +294,7 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
         return runOrchestratorAction(sourceProject, BuildStrategy.AUTO);
     }
 
-    // ── Stop ─────────────────────────────────────────────────────────────────
 
-    /**
-     * Stops the most recent runtime for the project.
-     *
-     * <ul>
-     *   <li>If no runtime exists → safe no-op, returns STOPPED response.</li>
-     *   <li>If runtime is already STOPPED → idempotent, returns STOPPED.</li>
-     *   <li>Otherwise → marks as STOPPED, sets stoppedAt, persists.</li>
-     * </ul>
-     *
-     * This is a best-effort operation. For EXTERNAL runtimes, the actual
-     * application process is NOT terminated (it's user-managed).
-     * For AUTO runtimes (Phase 2), Docker container teardown will happen here.
-     */
     @Override
     @Transactional
     public RuntimeActionResponse stopRuntime(UUID projectId) {
@@ -314,6 +317,28 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                     .code(CODE_STOPPED)
                     .message("Runtime was already stopped.")
                     .runtime(toResponse(runtime))
+                    .build();
+        }
+
+        if (runtime.getRuntimeStatus() == RuntimeStatus.BUILDING || runtime.getRuntimeStatus() == RuntimeStatus.STARTING) {
+            if (runtime.getRuntimeMode() == RuntimeMode.AUTO_RUNTIME_FROM_SOURCE
+                    && runtime.getContainerName() != null
+                    && !runtime.getContainerName().isBlank()) {
+                SourceRuntime stopped = orchestratorFactory.getStrategy().stop(runtime);
+                return RuntimeActionResponse.builder()
+                        .code(CODE_STOPPED)
+                        .message("Runtime start was cancelled and container cleanup was requested.")
+                        .runtime(toResponse(stopped))
+                        .build();
+            }
+            lifecycleService.markStopped(runtime.getId());
+            SourceRuntime stopped = sourceRuntimeRepository.findById(runtime.getId()).orElse(runtime);
+            log.info("[SourceRuntime] Runtime start cancelled for project={} id={} previousStatus={}",
+                    projectId, runtime.getId(), runtime.getRuntimeStatus());
+            return RuntimeActionResponse.builder()
+                    .code(CODE_STOPPED)
+                    .message("Runtime start was cancelled.")
+                    .runtime(toResponse(stopped))
                     .build();
         }
 
@@ -402,6 +427,11 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
      */
     @Override
     public String resolveBaseUrlForTestRun(UUID projectId, String requestBaseUrl, String projectDefaultTargetBaseUrl) {
+        return resolveBaseUrlForTestRun(projectId, RuntimeMode.EXTERNAL_BASE_URL, requestBaseUrl, projectDefaultTargetBaseUrl);
+    }
+
+    @Override
+    public String resolveBaseUrlForTestRun(UUID projectId, RuntimeMode runtimeMode, String requestBaseUrl, String projectDefaultTargetBaseUrl) {
         // Priority 1: explicit request URL
         String normalised = RuntimeTargetUrlValidator.normalise(requestBaseUrl);
         if (normalised != null) {
@@ -409,15 +439,25 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
             return normalised;
         }
 
-        // Priority 2: UP SourceRuntime
-        var upRuntime = sourceRuntimeRepository
-                .findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP);
-        if (upRuntime.isPresent()) {
-            String runtimeUrl = upRuntime.get().getPublicBaseUrl();
-            if (runtimeUrl != null && !runtimeUrl.isBlank()) {
-                log.info("[SourceRuntime] BaseUrl resolved from UP SourceRuntime id={} url={} for project={}",
-                        upRuntime.get().getId(), runtimeUrl, projectId);
-                return runtimeUrl;
+        if (runtimeMode == RuntimeMode.AUTO_RUNTIME_FROM_SOURCE) {
+            return resolveAutoRuntimeBaseUrl(projectId);
+        }
+
+        // Check newest runtime status first
+        var latestOpt = sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId)
+                .or(() -> sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, RuntimeStatus.UP));
+        if (latestOpt.isPresent()) {
+            SourceRuntime latest = latestOpt.get();
+            if (latest.getRuntimeStatus() == RuntimeStatus.BUILDING || latest.getRuntimeStatus() == RuntimeStatus.STARTING) {
+                throw new BadRequestException("Runtime is currently building. Please wait until it is ready or use a different baseUrl.");
+            }
+            if (latest.getRuntimeStatus() == RuntimeStatus.UP) {
+                String runtimeUrl = latest.getPublicBaseUrl();
+                if (runtimeUrl != null && !runtimeUrl.isBlank()) {
+                    log.info("[SourceRuntime] BaseUrl resolved from UP SourceRuntime id={} url={} for project={}",
+                            latest.getId(), runtimeUrl, projectId);
+                    return runtimeUrl;
+                }
             }
         }
 
@@ -460,24 +500,52 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                     .build();
         }
 
+        // Check for existing BUILDING or STARTING or UP
+        var activeOpt = sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusInOrderByUpdatedAtDesc(
+                projectId, List.of(RuntimeStatus.BUILDING, RuntimeStatus.STARTING, RuntimeStatus.UP));
+        if (activeOpt.isPresent()) {
+            SourceRuntime active = activeOpt.get();
+            if (active.getRuntimeStatus() == RuntimeStatus.BUILDING || active.getRuntimeStatus() == RuntimeStatus.STARTING) {
+                return RuntimeActionResponse.builder()
+                        .code("SUCCESS")
+                        .message("Runtime is already building/starting. Current status: " + active.getRuntimeStatus())
+                        .runtime(toResponse(active))
+                        .build();
+            }
+            if (active.getRuntimeStatus() == RuntimeStatus.UP) {
+                return RuntimeActionResponse.builder()
+                        .code("SUCCESS")
+                        .message("Runtime is already UP.")
+                        .runtime(toResponse(active))
+                        .build();
+            }
+        }
+
+        // Stop any existing active container/runtime before starting a new build
+        stopRuntime(projectId);
+
         // Step 1: Detect source type
         RuntimeDetectionResult detection = runtimeDetectorService.detect(projectId);
         if (detection == null || !detection.isSupported()) {
             String reason = detection == null
                     ? "Runtime detector returned no result."
                     : detection.getMessage();
-            SourceRuntime failed = upsertRuntime(sourceProject, detection,
-                    RuntimeStatus.BUILD_FAILED, reason);
-            sourceRuntimeRepository.save(failed);
+            UUID sourceVersionId = sourceUploadVersionRepository.findTopBySourceProjectIdOrderByVersionNoDesc(projectId)
+                    .map(com.aitoolcheck.ai_toolcheck1_backend.model.SourceUploadVersion::getId)
+                    .orElse(null);
+            SourceRuntime failed = lifecycleService.createBuildingRuntime(sourceProject, sourceVersionId, strategy);
+            lifecycleService.markBuildFailed(failed.getId(), "Auto runtime cannot start: source type is not supported. Reason: " + reason);
+
+            SourceRuntime reloaded = sourceRuntimeRepository.findById(failed.getId()).orElse(failed);
+
             return RuntimeActionResponse.builder()
                     .code(AUTO_RUNTIME_UNSUPPORTED_CODE)
                     .message("Auto runtime cannot start: source type is not supported. Reason: " + reason)
-                    .runtime(toResponse(failed))
+                    .runtime(toResponse(reloaded))
                     .build();
         }
 
         // Step 2: Delegate to the strategy selected by RuntimeOrchestratorFactory.
-        // Pass the BuildStrategy to the Docker orchestrator if it supports it.
         SourceRuntime result;
         var strategyImpl = orchestratorFactory.getStrategy();
         if (strategyImpl instanceof com.aitoolcheck.ai_toolcheck1_backend.service.runtime.DockerRuntimeOrchestrator docker) {
@@ -488,7 +556,10 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
 
         String code;
         String message;
-        if (result.getRuntimeStatus() == RuntimeStatus.UP) {
+        if (result.getRuntimeStatus() == RuntimeStatus.BUILDING || result.getRuntimeStatus() == RuntimeStatus.STARTING) {
+            code = "RUNTIME_START_ACCEPTED";
+            message = "Runtime start request accepted. Build and startup are running in the background.";
+        } else if (result.getRuntimeStatus() == RuntimeStatus.UP) {
             code = CODE_SUCCESS;
             message = "Runtime started successfully. URL: " + result.getPublicBaseUrl();
         } else if (result.getRuntimeStatus() == RuntimeStatus.ENVIRONMENT_UNSUPPORTED) {
@@ -507,7 +578,7 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
     }
 
     private SourceRuntimeResponse currentOrNotCreated(UUID projectId) {
-        return sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId)
+        return selectCurrentRuntime(projectId)
                 .map(this::toResponse)
                 .orElseGet(() -> notCreatedResponse(projectId));
     }
@@ -622,5 +693,77 @@ public class SourceRuntimeServiceImpl implements SourceRuntimeService {
                 .createdAt(runtime.getCreatedAt())
                 .updatedAt(runtime.getUpdatedAt())
                 .build();
+    }
+
+    @Override
+    public RuntimeActionResponse waitForRuntimeTerminalState(UUID projectId, UUID runtimeId, int timeoutSeconds) {
+        long limit = System.currentTimeMillis() + (timeoutSeconds * 1000L);
+        while (System.currentTimeMillis() < limit) {
+            SourceRuntime runtime = lifecycleService.findFresh(runtimeId)
+                    .orElseThrow(() -> new BadRequestException("Runtime record not found: " + runtimeId));
+            RuntimeStatus status = runtime.getRuntimeStatus();
+            if (status == RuntimeStatus.UP) {
+                return RuntimeActionResponse.builder()
+                        .code(CODE_SUCCESS)
+                        .message("Runtime started successfully (sync wait). URL: " + runtime.getPublicBaseUrl())
+                        .runtime(toResponse(runtime))
+                        .build();
+            }
+            if (status == RuntimeStatus.BUILD_FAILED || status == RuntimeStatus.START_FAILED
+                    || status == RuntimeStatus.UNHEALTHY || status == RuntimeStatus.ENVIRONMENT_UNSUPPORTED
+                    || status == RuntimeStatus.STOPPED) {
+                return RuntimeActionResponse.builder()
+                        .code("RUNTIME_START_FAILED")
+                        .message("Runtime failed to start: " + runtime.getLastError())
+                        .runtime(toResponse(runtime))
+                        .build();
+            }
+            try {
+                java.util.concurrent.TimeUnit.SECONDS.sleep(2);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("Wait interrupted", e);
+            }
+        }
+        SourceRuntime runtime = lifecycleService.findFresh(runtimeId).orElse(null);
+        return RuntimeActionResponse.builder()
+                .code("TIMEOUT")
+                .message("Timed out waiting for runtime to start after " + timeoutSeconds + " seconds.")
+                .runtime(runtime != null ? toResponse(runtime) : null)
+                .build();
+    }
+
+    private java.util.Optional<SourceRuntime> selectCurrentRuntime(UUID projectId) {
+        for (RuntimeStatus status : List.of(RuntimeStatus.UP, RuntimeStatus.STARTING, RuntimeStatus.BUILDING, RuntimeStatus.UNHEALTHY)) {
+            var runtime = sourceRuntimeRepository.findFirstBySourceProject_IdAndRuntimeStatusOrderByUpdatedAtDesc(projectId, status);
+            if (runtime.isPresent()) {
+                return runtime;
+            }
+        }
+        return sourceRuntimeRepository.findFirstBySourceProject_IdOrderByUpdatedAtDesc(projectId);
+    }
+
+    private String resolveAutoRuntimeBaseUrl(UUID projectId) {
+        List<SourceRuntime> runtimes = sourceRuntimeRepository.findBySourceProject_IdOrderByUpdatedAtDesc(projectId);
+        for (SourceRuntime runtime : runtimes) {
+            if (runtime.getRuntimeMode() == RuntimeMode.AUTO_RUNTIME_FROM_SOURCE
+                    && runtime.getRuntimeStatus() == RuntimeStatus.UP
+                    && runtime.getPublicBaseUrl() != null
+                    && !runtime.getPublicBaseUrl().isBlank()) {
+                return runtime.getPublicBaseUrl();
+            }
+        }
+        for (SourceRuntime runtime : runtimes) {
+            if (runtime.getRuntimeMode() != RuntimeMode.AUTO_RUNTIME_FROM_SOURCE) {
+                continue;
+            }
+            RuntimeStatus status = runtime.getRuntimeStatus();
+            if (status == RuntimeStatus.BUILDING || status == RuntimeStatus.STARTING) {
+                throw new BadRequestException("Auto runtime is not ready yet. Current status: " + status + ". Please wait until it is UP.");
+            }
+            String error = runtime.getLastError() == null ? "" : " Last error: " + runtime.getLastError();
+            throw new BadRequestException("No UP auto runtime is available. Latest auto runtime status: " + status + "." + error);
+        }
+        throw new BadRequestException("No UP auto runtime is available. Start an auto-runtime first or provide an explicit baseUrl.");
     }
 }
