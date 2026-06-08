@@ -41,6 +41,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -332,6 +333,62 @@ class TestRunBaseUrlFallbackTest {
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    @Test
+    void createTestRun_withExplicitTestCaseIds_createsOnlySelectedItems() {
+        when(projectAccessService.requireCanCreateTestRun(projectId)).thenReturn(project);
+        TestCase selected = testCase(project);
+        TestCase unselected = testCase(project);
+        when(testCaseRepository.findAllById(List.of(selected.getId()))).thenReturn(List.of(selected));
+        TestRun[] saved = stubSaveReturningArgument();
+
+        service.create(buildRequest("http://target.test", List.of(selected.getId())));
+
+        assertThat(saved[0].getTestRunItems()).hasSize(1);
+        assertThat(saved[0].getTestRunItems().get(0).getTestCase().getId()).isEqualTo(selected.getId());
+        assertThat(saved[0].getTestRunItems())
+                .noneMatch(item -> item.getTestCase().getId().equals(unselected.getId()));
+    }
+
+    @Test
+    void createTestRun_withExplicitTestCaseIds_preservesInputOrder() {
+        when(projectAccessService.requireCanCreateTestRun(projectId)).thenReturn(project);
+        TestCase first = testCase(project);
+        TestCase second = testCase(project);
+        when(testCaseRepository.findAllById(List.of(second.getId(), first.getId()))).thenReturn(List.of(first, second));
+        TestRun[] saved = stubSaveReturningArgument();
+
+        service.create(buildRequest("http://target.test", List.of(second.getId(), first.getId())));
+
+        assertThat(saved[0].getTestRunItems())
+                .extracting(item -> item.getTestCase().getId())
+                .containsExactly(second.getId(), first.getId());
+    }
+
+    @Test
+    void createTestRun_withoutExplicitTestCaseIds_usesExistingSelectionBehavior() {
+        when(projectAccessService.requireCanCreateTestRun(projectId)).thenReturn(project);
+        TestCase active = testCase(project);
+        when(testCaseRepository.findBySourceProject_IdAndActiveFlagTrueAndDeletedFlagFalseOrderByUpdatedAtDesc(projectId))
+                .thenReturn(List.of(active));
+        stubSaveReturningArgument();
+
+        service.create(buildRequest("http://target.test", null));
+
+        verify(testCaseRepository).findBySourceProject_IdAndActiveFlagTrueAndDeletedFlagFalseOrderByUpdatedAtDesc(projectId);
+    }
+
+    @Test
+    void createTestRun_invalidTestCaseIds_returnsClearError() {
+        when(projectAccessService.requireCanCreateTestRun(projectId)).thenReturn(project);
+        UUID missingId = UUID.randomUUID();
+        when(testCaseRepository.findAllById(List.of(missingId))).thenReturn(List.of());
+
+        assertThatThrownBy(() -> service.create(buildRequest("http://target.test", List.of(missingId))))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("testCaseId=" + missingId)
+                .hasMessageContaining("projectId=" + projectId)
+                .hasMessageContaining("not found");
+    }
     private SourceProject buildProject(UUID id, String repositoryUrl, String defaultTargetBaseUrl) {
         SourceProject p = new SourceProject();
         p.setId(id);
@@ -358,6 +415,42 @@ class TestRunBaseUrlFallbackTest {
                 .testCaseIds(testCaseIds != null ? testCaseIds : List.of())
                 .includeAllActive(true)
                 .build();
+    }
+
+    private TestRun[] stubSaveReturningArgument() {
+        TestRun[] saved = new TestRun[1];
+        when(testRunRepository.save(any(TestRun.class))).thenAnswer(inv -> {
+            TestRun run = inv.getArgument(0);
+            run.setId(UUID.randomUUID());
+            run.setCreatedAt(LocalDateTime.now());
+            run.setUpdatedAt(LocalDateTime.now());
+            if (run.getTestRunItems() != null) {
+                run.getTestRunItems().forEach(item -> {
+                    item.setId(UUID.randomUUID());
+                    item.setTestRun(run);
+                });
+            }
+            saved[0] = run;
+            return run;
+        });
+        when(testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(any())).thenAnswer(inv ->
+                saved[0] == null || saved[0].getTestRunItems() == null
+                        ? List.of()
+                        : saved[0].getTestRunItems());
+        return saved;
+    }
+
+    private TestCase testCase(SourceProject sourceProject) {
+        TestCase testCase = new TestCase();
+        testCase.setId(UUID.randomUUID());
+        testCase.setSourceProject(sourceProject);
+        testCase.setActiveFlag(true);
+        testCase.setDeletedFlag(false);
+        testCase.setRequiresWrite(false);
+        testCase.setCleanupRequired(false);
+        testCase.setCreatedAt(LocalDateTime.now());
+        testCase.setUpdatedAt(LocalDateTime.now());
+        return testCase;
     }
 
     private void stubSaveAndItems(String effectiveBaseUrl) {
@@ -395,3 +488,4 @@ class TestRunBaseUrlFallbackTest {
         when(testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(any())).thenReturn(new ArrayList<>());
     }
 }
+

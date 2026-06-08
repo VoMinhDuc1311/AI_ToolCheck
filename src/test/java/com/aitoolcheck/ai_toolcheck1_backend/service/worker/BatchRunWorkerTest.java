@@ -304,6 +304,33 @@ class BatchRunWorkerTest {
     }
 
     @Test
+    void batchWorker_testRunFailedAssertion_marksBatchFailed() {
+        UUID batchId = readyBatch(List.of(project("P1")), options(false)).getId();
+        UUID testRunId = UUID.randomUUID();
+        when(testRunService.create(any())).thenReturn(testRun(testRunId, RunStatus.PENDING));
+        when(testRunService.execute(testRunId)).thenReturn(testRun(testRunId, RunStatus.FAILED));
+
+        worker.run(batchId);
+
+        assertThat(firstItem().getStatus()).isEqualTo(BatchRunItemStatus.FAILED);
+        assertThat(batches.get(batchId).getStatus()).isEqualTo(BatchRunStatus.FAILED);
+        assertThat(firstItem().getErrorMessage()).contains("TestRun execution failed");
+    }
+
+    @Test
+    void batchWorker_testRunPassed_marksBatchCompleted() {
+        UUID batchId = readyBatch(List.of(project("P1")), options(false)).getId();
+        UUID testRunId = UUID.randomUUID();
+        when(testRunService.create(any())).thenReturn(testRun(testRunId, RunStatus.PENDING));
+        when(testRunService.execute(testRunId)).thenReturn(testRun(testRunId, RunStatus.COMPLETED));
+
+        worker.run(batchId);
+
+        assertThat(firstItem().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+        assertThat(batches.get(batchId).getStatus()).isEqualTo(BatchRunStatus.COMPLETED);
+    }
+
+    @Test
     void batchWorker_stopRuntimeAfterRunStopsRuntime() {
         SourceProject p1 = project("P1");
         BatchRun batch = readyBatch(List.of(p1), options(false));
@@ -480,6 +507,71 @@ class BatchRunWorkerTest {
         verify(testRunService).create(captor.capture());
         assertThat(captor.getValue().getRuntimeMode()).isEqualTo(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE);
         assertThat(captor.getValue().getBaseUrl()).isNull();
+    }
+
+    @Test
+    void batchWorker_usesExplicitTestCaseIdsWhenCreatingTestRun() {
+        SourceProject p1 = project("P1");
+        UUID selectedId = UUID.randomUUID();
+        BatchRun batch = readyBatch(List.of(p1), options(false));
+        batch.setTestCaseIdsJson("[\"" + selectedId + "\"]");
+        ArgumentCaptor<CreateTestRunRequest> captor = ArgumentCaptor.forClass(CreateTestRunRequest.class);
+
+        worker.run(batch.getId());
+
+        verify(testRunService).create(captor.capture());
+        assertThat(captor.getValue().getTestCaseIds()).containsExactly(selectedId);
+        assertThat(captor.getValue().getIncludeAllActive()).isFalse();
+    }
+
+    @Test
+    void batchWorker_greetingOnlyBatch_completesSuccess() {
+        SourceProject p1 = project("P1");
+        UUID greetingCaseId = UUID.randomUUID();
+        BatchRun batch = readyBatch(List.of(p1), options(true));
+        batch.setBuildStrategy(BuildStrategy.AUTO_WITH_FALLBACK);
+        batch.setStopRuntimeAfterRun(true);
+        batch.setTestCaseIdsJson("[\"" + greetingCaseId + "\"]");
+        primeRuntimeStart(p1.getId(), RuntimeStatus.UP);
+        ArgumentCaptor<CreateTestRunRequest> captor = ArgumentCaptor.forClass(CreateTestRunRequest.class);
+
+        worker.run(batch.getId());
+
+        verify(testRunService).create(captor.capture());
+        assertThat(captor.getValue().getTestCaseIds()).containsExactly(greetingCaseId);
+        assertThat(firstItem().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+        assertThat(batch.getStatus()).isEqualTo(BatchRunStatus.COMPLETED);
+        assertThat(batch.getSuccessCount()).isEqualTo(1);
+        assertThat(batch.getFailedCount()).isZero();
+    }
+
+    @Test
+    void batchWorker_allGeneratedCasesCanStillFailBatch() {
+        UUID batchId = readyBatch(List.of(project("P1")), options(false)).getId();
+        UUID testRunId = UUID.randomUUID();
+        when(testRunService.create(any())).thenReturn(testRun(testRunId, RunStatus.PENDING));
+        when(testRunService.execute(testRunId)).thenReturn(testRun(testRunId, RunStatus.FAILED));
+        ArgumentCaptor<CreateTestRunRequest> captor = ArgumentCaptor.forClass(CreateTestRunRequest.class);
+
+        worker.run(batchId);
+
+        verify(testRunService).create(captor.capture());
+        assertThat(captor.getValue().getTestCaseIds()).isNull();
+        assertThat(captor.getValue().getIncludeAllActive()).isTrue();
+        assertThat(batches.get(batchId).getStatus()).isEqualTo(BatchRunStatus.FAILED);
+    }
+
+    @Test
+    void batchWorker_doesNotFakeSuccessWhenTestRunFailed() {
+        UUID batchId = readyBatch(List.of(project("P1")), options(false)).getId();
+        UUID testRunId = UUID.randomUUID();
+        when(testRunService.create(any())).thenReturn(testRun(testRunId, RunStatus.PENDING));
+        when(testRunService.execute(testRunId)).thenReturn(testRun(testRunId, RunStatus.FAILED));
+
+        worker.run(batchId);
+
+        assertThat(firstItem().getStatus()).isEqualTo(BatchRunItemStatus.FAILED);
+        assertThat(batches.get(batchId).getStatus()).isEqualTo(BatchRunStatus.FAILED);
     }
 
     private void wireLifecycle() {

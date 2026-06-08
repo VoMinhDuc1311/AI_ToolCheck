@@ -14,9 +14,11 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRun;
 import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRunItem;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.BatchRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.BatchRunRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.BatchRunLifecycleService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.BatchRunService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
@@ -26,19 +28,32 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class BatchRunServiceImpl implements BatchRunService {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final TypeReference<List<UUID>> UUID_LIST_TYPE = new TypeReference<>() {
+    };
+
     private final BatchRunRepository batchRunRepository;
     private final BatchRunItemRepository batchRunItemRepository;
     private final SourceProjectRepository sourceProjectRepository;
+    private final TestCaseRepository testCaseRepository;
     private final SourceRuntimeService sourceRuntimeService;
     private final BatchRunLifecycleService batchRunLifecycleService;
     private final BatchRunWorker batchRunWorker;
@@ -57,6 +72,7 @@ public class BatchRunServiceImpl implements BatchRunService {
         BatchRunOptionsRequest options = request.getOptions() == null
                 ? new BatchRunOptionsRequest()
                 : request.getOptions();
+        List<UUID> selectedTestCaseIds = normalizeTestCaseIds(options.getTestCaseIds());
 
         AppUser actor = currentUserService.getCurrentUser();
 
@@ -78,6 +94,7 @@ public class BatchRunServiceImpl implements BatchRunService {
                 .executionMode(options.safeExecutionMode())
                 .buildStrategy(options.safeBuildStrategy())
                 .externalBaseUrl(blankToNull(options.getExternalBaseUrl()))
+                .testCaseIdsJson(encodeTestCaseIds(selectedTestCaseIds))
                 .createdBy(actor.getId())
                 .build();
         BatchRun saved = batchRunRepository.save(batchRun);
@@ -85,6 +102,7 @@ public class BatchRunServiceImpl implements BatchRunService {
         for (UUID projectId : request.getProjectIds()) {
             SourceProject project = sourceProjectRepository.findById(projectId)
                     .orElseThrow(() -> new ResourceNotFoundException("SourceProject not found: " + projectId));
+            validateSelectedTestCases(project.getId(), selectedTestCaseIds, saved.getExecutionMode());
             batchRunItemRepository.save(BatchRunItem.builder()
                     .batchRun(saved)
                     .sourceProject(project)
@@ -215,6 +233,7 @@ public class BatchRunServiceImpl implements BatchRunService {
                 .createdBy(batchRun.getCreatedBy())
                 .errorMessage(batchRun.getErrorMessage())
                 .buildStrategy(batchRun.getBuildStrategy())
+                .testCaseIds(decodeTestCaseIds(batchRun.getTestCaseIdsJson()))
                 .createdAt(batchRun.getCreatedAt())
                 .updatedAt(batchRun.getUpdatedAt())
                 .build();
@@ -246,6 +265,74 @@ public class BatchRunServiceImpl implements BatchRunService {
 
     private String blankToNull(String value) {
         return hasText(value) ? value.trim() : null;
+    }
+
+    private List<UUID> normalizeTestCaseIds(List<UUID> rawIds) {
+        if (rawIds == null || rawIds.isEmpty()) {
+            return List.of();
+        }
+        if (rawIds.stream().anyMatch(id -> id == null)) {
+            throw new BadRequestException("testCaseIds must not contain null values");
+        }
+        return new ArrayList<>(new LinkedHashSet<>(rawIds));
+    }
+
+    private void validateSelectedTestCases(UUID projectId, List<UUID> testCaseIds,
+                                           com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode executionMode) {
+        if (testCaseIds == null || testCaseIds.isEmpty()) {
+            return;
+        }
+
+        Map<UUID, TestCase> casesById = testCaseRepository.findAllById(testCaseIds).stream()
+                .collect(Collectors.toMap(TestCase::getId, Function.identity()));
+        for (UUID testCaseId : testCaseIds) {
+            TestCase testCase = casesById.get(testCaseId);
+            if (testCase == null) {
+                throw invalidTestCase(projectId, testCaseId, "not found");
+            }
+            UUID actualProjectId = testCase.getSourceProject() == null ? null : testCase.getSourceProject().getId();
+            if (!projectId.equals(actualProjectId)) {
+                throw invalidTestCase(projectId, testCaseId, "belongs to another project");
+            }
+            if (Boolean.TRUE.equals(testCase.getDeletedFlag())) {
+                throw invalidTestCase(projectId, testCaseId, "deleted");
+            }
+            if (!Boolean.TRUE.equals(testCase.getActiveFlag())) {
+                throw invalidTestCase(projectId, testCaseId, "not active");
+            }
+            if (executionMode == com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode.READ_ONLY
+                    && Boolean.TRUE.equals(testCase.getRequiresWrite())) {
+                throw invalidTestCase(projectId, testCaseId, "write testcase not allowed in READ_ONLY");
+            }
+        }
+    }
+
+    private BadRequestException invalidTestCase(UUID projectId, UUID testCaseId, String reason) {
+        return new BadRequestException("Invalid BatchRun testCase selection: testCaseId=" + testCaseId
+                + " projectId=" + projectId
+                + " reason=" + reason);
+    }
+
+    private String encodeTestCaseIds(List<UUID> testCaseIds) {
+        if (testCaseIds == null || testCaseIds.isEmpty()) {
+            return null;
+        }
+        try {
+            return OBJECT_MAPPER.writeValueAsString(testCaseIds);
+        } catch (JsonProcessingException e) {
+            throw new BadRequestException("Unable to persist BatchRun testCaseIds: " + e.getMessage());
+        }
+    }
+
+    private List<UUID> decodeTestCaseIds(String json) {
+        if (!hasText(json)) {
+            return List.of();
+        }
+        try {
+            return OBJECT_MAPPER.readValue(json, UUID_LIST_TYPE);
+        } catch (Exception e) {
+            throw new BadRequestException("Unable to read BatchRun testCaseIds: " + e.getMessage());
+        }
     }
 
     private boolean hasText(String value) {

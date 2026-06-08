@@ -8,6 +8,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRun;
 import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRunItem;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.worker.BatchRunWorker;
@@ -25,6 +26,7 @@ class BatchRunServiceImplTest {
     private BatchRunRepository batchRunRepository;
     private BatchRunItemRepository batchRunItemRepository;
     private SourceProjectRepository sourceProjectRepository;
+    private TestCaseRepository testCaseRepository;
     private BatchRunLifecycleService batchRunLifecycleService;
     private BatchRunWorker batchRunWorker;
     private CurrentUserService currentUserService;
@@ -34,12 +36,14 @@ class BatchRunServiceImplTest {
     private final Map<UUID, BatchRun> batches = new LinkedHashMap<>();
     private final Map<UUID, BatchRunItem> items = new LinkedHashMap<>();
     private final Map<UUID, SourceProject> projects = new LinkedHashMap<>();
+    private final Map<UUID, TestCase> testCases = new LinkedHashMap<>();
 
     @BeforeEach
     void setUp() {
         batchRunRepository = mock(BatchRunRepository.class);
         batchRunItemRepository = mock(BatchRunItemRepository.class);
         sourceProjectRepository = mock(SourceProjectRepository.class);
+        testCaseRepository = mock(TestCaseRepository.class);
         batchRunLifecycleService = mock(BatchRunLifecycleService.class);
         batchRunWorker = mock(BatchRunWorker.class);
         currentUserService = mock(CurrentUserService.class);
@@ -56,6 +60,7 @@ class BatchRunServiceImplTest {
                 batchRunRepository,
                 batchRunItemRepository,
                 sourceProjectRepository,
+                testCaseRepository,
                 mock(SourceRuntimeService.class),
                 batchRunLifecycleService,
                 batchRunWorker,
@@ -84,6 +89,83 @@ class BatchRunServiceImplTest {
 
         assertThat(response.getCreatedBy()).isEqualTo(currentUser.getId());
         assertThat(batches.get(response.getId()).getCreatedBy()).isEqualTo(currentUser.getId());
+    }
+
+    @Test
+    void createBatchRun_withTestCaseIds_persistsSelection() {
+        SourceProject p1 = project("P1");
+        TestCase tc = testCase(p1, true, false, false);
+        BatchRunOptionsRequest options = successOptions();
+        options.setTestCaseIds(List.of(tc.getId()));
+
+        var response = service.create(request(List.of(p1.getId()), options));
+
+        assertThat(response.getTestCaseIds()).containsExactly(tc.getId());
+        assertThat(batches.get(response.getId()).getTestCaseIdsJson()).contains(tc.getId().toString());
+    }
+
+    @Test
+    void createBatchRun_withoutTestCaseIds_keepsExistingBehavior() {
+        SourceProject p1 = project("P1");
+
+        var response = service.create(request(List.of(p1.getId()), successOptions()));
+
+        assertThat(response.getTestCaseIds()).isEmpty();
+        assertThat(batches.get(response.getId()).getTestCaseIdsJson()).isNull();
+    }
+
+    @Test
+    void batchRun_rejectsTestCaseFromOtherProject() {
+        SourceProject p1 = project("P1");
+        SourceProject p2 = project("P2");
+        TestCase tc = testCase(p2, true, false, false);
+        BatchRunOptionsRequest options = successOptions();
+        options.setTestCaseIds(List.of(tc.getId()));
+
+        assertThatThrownBy(() -> service.create(request(List.of(p1.getId()), options)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("testCaseId=" + tc.getId())
+                .hasMessageContaining("projectId=" + p1.getId())
+                .hasMessageContaining("belongs to another project");
+    }
+
+    @Test
+    void batchRun_rejectsInactiveTestCase() {
+        SourceProject p1 = project("P1");
+        TestCase tc = testCase(p1, false, false, false);
+        BatchRunOptionsRequest options = successOptions();
+        options.setTestCaseIds(List.of(tc.getId()));
+
+        assertThatThrownBy(() -> service.create(request(List.of(p1.getId()), options)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("testCaseId=" + tc.getId())
+                .hasMessageContaining("not active");
+    }
+
+    @Test
+    void batchRun_rejectsDeletedTestCase() {
+        SourceProject p1 = project("P1");
+        TestCase tc = testCase(p1, true, true, false);
+        BatchRunOptionsRequest options = successOptions();
+        options.setTestCaseIds(List.of(tc.getId()));
+
+        assertThatThrownBy(() -> service.create(request(List.of(p1.getId()), options)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("testCaseId=" + tc.getId())
+                .hasMessageContaining("deleted");
+    }
+
+    @Test
+    void batchRun_readOnlyRejectsRequiresWriteTestCase() {
+        SourceProject p1 = project("P1");
+        TestCase tc = testCase(p1, true, false, true);
+        BatchRunOptionsRequest options = successOptions();
+        options.setTestCaseIds(List.of(tc.getId()));
+
+        assertThatThrownBy(() -> service.create(request(List.of(p1.getId()), options)))
+                .isInstanceOf(BadRequestException.class)
+                .hasMessageContaining("testCaseId=" + tc.getId())
+                .hasMessageContaining("write testcase not allowed in READ_ONLY");
     }
 
     @Test
@@ -187,6 +269,17 @@ class BatchRunServiceImplTest {
                 .filter(item -> item.getBatchRun().getId().equals(inv.getArgument(0)))
                 .toList());
         when(sourceProjectRepository.findById(any())).thenAnswer(inv -> Optional.ofNullable(projects.get(inv.getArgument(0))));
+        when(testCaseRepository.findAllById(any())).thenAnswer(inv -> {
+            Iterable<UUID> ids = inv.getArgument(0);
+            List<TestCase> found = new ArrayList<>();
+            for (UUID id : ids) {
+                TestCase testCase = testCases.get(id);
+                if (testCase != null) {
+                    found.add(testCase);
+                }
+            }
+            return found;
+        });
     }
 
     private BatchRun createReadyBatch(List<SourceProject> sourceProjects, BatchRunOptionsRequest options) {
@@ -230,6 +323,17 @@ class BatchRunServiceImplTest {
         project.setDefaultTargetBaseUrl("http://default.test");
         projects.put(project.getId(), project);
         return project;
+    }
+
+    private TestCase testCase(SourceProject project, boolean active, boolean deleted, boolean requiresWrite) {
+        TestCase testCase = new TestCase();
+        testCase.setId(UUID.randomUUID());
+        testCase.setSourceProject(project);
+        testCase.setActiveFlag(active);
+        testCase.setDeletedFlag(deleted);
+        testCase.setRequiresWrite(requiresWrite);
+        testCases.put(testCase.getId(), testCase);
+        return testCase;
     }
 
     private CreateBatchRunRequest request(List<UUID> projectIds, BatchRunOptionsRequest options) {
