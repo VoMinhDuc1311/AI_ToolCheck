@@ -5,9 +5,13 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseAssertion;
+import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRun;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRunItem;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseAssertionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestFailureAnalysisRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
@@ -49,6 +53,9 @@ class TestRunPreflightTest {
     private SourceProject project;
     private TestRun testRun;
     private TransactionTemplate transactionTemplate;
+    private ApiEndpointRepository apiEndpointRepository;
+    private TestCaseAssertionRepository testCaseAssertionRepository;
+    private SourceRuntimeService sourceRuntimeService;
 
     @BeforeEach
     void setUp() {
@@ -65,12 +72,18 @@ class TestRunPreflightTest {
             return callback.doInTransaction(mock(org.springframework.transaction.TransactionStatus.class));
         });
 
+        apiEndpointRepository = mock(ApiEndpointRepository.class);
+        testCaseAssertionRepository = mock(TestCaseAssertionRepository.class);
+        sourceRuntimeService = mock(SourceRuntimeService.class);
+
         service = new TestRunServiceImpl(
                 testRunRepository,
                 testRunItemRepository,
                 testCaseRepository,
+                testCaseAssertionRepository,
                 mock(SourceProjectRepository.class),
                 mock(TestResultRepository.class),
+                apiEndpointRepository,
                 testRequestBuilder,
                 testHttpExecutor,
                 new ObjectMapper(),
@@ -82,7 +95,7 @@ class TestRunPreflightTest {
                 mock(ProjectNotificationEventPublisher.class),
                 mock(TestFailureAnalysisRepository.class),
                 new TestRunStaleProperties(),
-                mock(SourceRuntimeService.class)
+                sourceRuntimeService
         );
 
         projectId = UUID.randomUUID();
@@ -219,6 +232,56 @@ class TestRunPreflightTest {
         } catch (Exception e) {}
         
         assertThat(testRun.getRunStatus()).isEqualTo(RunStatus.RUNNING);
+    }
+
+    @Test
+    void preflightNegativeTestCaseExpected404_runtimeUp_passes() {
+        // Build a negative GET test case with assertion expected 404
+        TestCaseInput input = new TestCaseInput();
+        input.setHttpMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
+        input.setRequestPath("/api/users/NON_EXISTENT_ID");
+
+        TestCase testCase = new TestCase();
+        testCase.setId(UUID.randomUUID());
+        testCase.assignInput(input);
+        testCase.setCaseType(com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.NEGATIVE);
+
+        TestCaseAssertion assertion = new TestCaseAssertion();
+        assertion.setId(UUID.randomUUID());
+        assertion.setTestCase(testCase);
+        assertion.setAssertionType(com.aitoolcheck.ai_toolcheck1_backend.enums.AssertionType.STATUS_CODE);
+        assertion.setExpectedValue("404");
+        assertion.setEnabledFlag(true);
+
+        TestRunItem item = new TestRunItem();
+        item.setId(UUID.randomUUID());
+        item.setTestCase(testCase);
+
+        when(testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(testRun.getId())).thenReturn(List.of(item));
+        when(testCaseAssertionRepository.findByTestCase_IdIn(any())).thenReturn(List.of(assertion));
+
+        // Mock runtime status is UP
+        com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse runtimeResponse =
+                mock(com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse.class);
+        when(runtimeResponse.getRuntimeStatus()).thenReturn(com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus.UP);
+        when(sourceRuntimeService.getCurrentRuntime(projectId)).thenReturn(runtimeResponse);
+
+        // Preflight probe executing on default health paths return 404/connectionError
+        com.aitoolcheck.ai_toolcheck1_backend.service.runner.ExecutedHttpResponse resp404 =
+                mock(com.aitoolcheck.ai_toolcheck1_backend.service.runner.ExecutedHttpResponse.class);
+        when(resp404.statusCode()).thenReturn(404);
+        when(testHttpExecutor.execute(any())).thenReturn(resp404);
+
+        try {
+            service.execute(testRun.getId());
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        // Run status should be RUNNING because preflight PASSED
+        assertThat(testRun.getRunStatus()).isEqualTo(RunStatus.RUNNING);
+        assertThat(testRun.getPreflightStatus()).isEqualTo("PASSED");
+        assertThat(testRun.getPreflightSummary()).contains("Runtime health is UP; selected testcase is negative expected status 404, continuing execution.");
     }
 
     private TestRunItem buildItemWithMethod(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod method) {
