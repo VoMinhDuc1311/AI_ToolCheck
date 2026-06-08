@@ -7,12 +7,14 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req.CreateTestRunReques
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunDetailResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.*;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.ForbiddenException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.*;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.springframework.security.core.context.SecurityContextHolder;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -31,7 +33,9 @@ class BatchRunWorkerTest {
     private SourceRuntimeRepository sourceRuntimeRepository;
     private SourceRuntimeService sourceRuntimeService;
     private TestRunService testRunService;
+    private AppUserRepository appUserRepository;
     private BatchRunWorker worker;
+    private AppUser actor;
 
     private final Map<UUID, BatchRun> batches = new LinkedHashMap<>();
     private final Map<UUID, BatchRunItem> items = new LinkedHashMap<>();
@@ -46,6 +50,16 @@ class BatchRunWorkerTest {
         sourceRuntimeRepository = mock(SourceRuntimeRepository.class);
         sourceRuntimeService = mock(SourceRuntimeService.class);
         testRunService = mock(TestRunService.class);
+        appUserRepository = mock(AppUserRepository.class);
+        actor = AppUser.builder()
+                .id(UUID.randomUUID())
+                .email("batch.actor@example.com")
+                .passwordHash("hash")
+                .role(UserRole.MEMBER)
+                .status(UserStatus.ACTIVE)
+                .build();
+        when(appUserRepository.findById(actor.getId())).thenReturn(Optional.of(actor));
+        SecurityContextHolder.clearContext();
 
         worker = new BatchRunWorker(
                 lifecycle,
@@ -59,7 +73,8 @@ class BatchRunWorkerTest {
                 mock(OpenApiGeneratorService.class),
                 mock(TestCaseService.class),
                 sourceRuntimeService,
-                testRunService);
+                testRunService,
+                appUserRepository);
 
         wireLifecycle();
     }
@@ -110,6 +125,101 @@ class BatchRunWorkerTest {
         worker.run(batchId);
 
         verify(testRunService).create(any(CreateTestRunRequest.class));
+    }
+
+    @Test
+    void batchWorker_resolvesActorBeforeStartRuntime() {
+        SourceProject p1 = project("P1");
+        UUID batchId = readyBatch(List.of(p1), options(true)).getId();
+        primeRuntimeStart(p1.getId(), RuntimeStatus.UP);
+
+        worker.run(batchId);
+
+        verify(appUserRepository, atLeastOnce()).findById(actor.getId());
+        verify(sourceRuntimeService).startRuntime(p1.getId(), BuildStrategy.AUTO);
+    }
+
+    @Test
+    void batchWorker_startRuntimeHasAuthenticationContext() {
+        SourceProject p1 = project("P1");
+        UUID batchId = readyBatch(List.of(p1), options(true)).getId();
+        UUID runtimeId = UUID.randomUUID();
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO)).thenAnswer(inv -> {
+            assertThat(SecurityContextHolder.getContext().getAuthentication()).isNotNull();
+            assertThat(SecurityContextHolder.getContext().getAuthentication().getName()).isEqualTo(actor.getEmail());
+            return RuntimeActionResponse.builder()
+                    .runtime(SourceRuntimeResponse.builder()
+                            .id(runtimeId)
+                            .runtimeStatus(RuntimeStatus.UP)
+                            .runtimeMode(RuntimeMode.AUTO_RUNTIME_FROM_SOURCE)
+                            .publicBaseUrl("http://runtime")
+                            .build())
+                    .build();
+        });
+        when(runtimeLifecycle.findStatusSnapshot(runtimeId)).thenReturn(snapshot(runtimeId, RuntimeStatus.UP, "http://runtime"));
+
+        worker.run(batchId);
+
+        assertThat(firstItem().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+    }
+
+    @Test
+    void batchWorker_clearsSecurityContextAfterRun() {
+        UUID batchId = readyBatch(List.of(project("P1")), options(false)).getId();
+
+        worker.run(batchId);
+
+        assertThat(SecurityContextHolder.getContext().getAuthentication()).isNull();
+    }
+
+    @Test
+    void batchWorker_missingActorFailsItemWithClearError() {
+        BatchRun batch = readyBatch(List.of(project("P1")), options(true));
+        batch.setCreatedBy(null);
+
+        worker.run(batch.getId());
+
+        BatchRunItem item = firstItem();
+        assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.FAILED);
+        assertThat(item.getErrorMessage())
+                .contains("BatchRun actor is no longer authorized")
+                .contains("createdBy is missing")
+                .contains("batchId=" + batch.getId())
+                .contains("itemId=" + item.getId())
+                .contains("projectId=" + item.getSourceProject().getId())
+                .contains("currentStep=");
+        verify(sourceRuntimeService, never()).startRuntime(any(), any());
+    }
+
+    @Test
+    void batchWorker_actorWithoutProjectPermissionFailsClearly() {
+        SourceProject p1 = project("P1");
+        BatchRun batch = readyBatch(List.of(p1), options(true));
+        when(sourceRuntimeService.startRuntime(p1.getId(), BuildStrategy.AUTO))
+                .thenThrow(new ForbiddenException("You do not have permission to perform this action"));
+
+        worker.run(batch.getId());
+
+        BatchRunItem item = firstItem();
+        assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.FAILED);
+        assertThat(item.getErrorMessage())
+                .contains("You do not have permission")
+                .contains("actorUserId=" + actor.getId())
+                .contains("actorEmail=" + actor.getEmail())
+                .contains("currentStep=START_RUNTIME");
+    }
+
+    @Test
+    void batchWorker_asyncThreadWithoutHttpRequest_doesNotThrowAuthenticationRequired() {
+        SourceProject p1 = project("P1");
+        UUID batchId = readyBatch(List.of(p1), options(true)).getId();
+        primeRuntimeStart(p1.getId(), RuntimeStatus.UP);
+        SecurityContextHolder.clearContext();
+
+        worker.run(batchId);
+
+        assertThat(firstItem().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+        assertThat(firstItem().getErrorMessage()).isNull();
     }
 
     @Test
@@ -317,6 +427,7 @@ class BatchRunWorkerTest {
 
     private void wireLifecycle() {
         when(lifecycle.findBatchFresh(any())).thenAnswer(inv -> batches.get(inv.getArgument(0)));
+        when(lifecycle.findItemFresh(any())).thenAnswer(inv -> items.get(inv.getArgument(0)));
         when(lifecycle.findItemsFresh(any())).thenAnswer(inv -> items.values().stream()
                 .filter(item -> item.getBatchRun().getId().equals(inv.getArgument(0)))
                 .toList());
@@ -405,6 +516,7 @@ class BatchRunWorkerTest {
                 .executionMode(ExecutionMode.READ_ONLY)
                 .buildStrategy(BuildStrategy.AUTO)
                 .externalBaseUrl("http://external.test")
+                .createdBy(actor.getId())
                 .build();
         batches.put(batch.getId(), batch);
         for (SourceProject project : sourceProjects) {

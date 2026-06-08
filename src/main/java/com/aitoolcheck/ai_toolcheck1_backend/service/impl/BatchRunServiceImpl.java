@@ -12,12 +12,14 @@ import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRun;
 import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRunItem;
+import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.BatchRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.BatchRunRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.BatchRunLifecycleService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.BatchRunService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.worker.BatchRunWorker;
 import lombok.RequiredArgsConstructor;
@@ -40,6 +42,7 @@ public class BatchRunServiceImpl implements BatchRunService {
     private final SourceRuntimeService sourceRuntimeService;
     private final BatchRunLifecycleService batchRunLifecycleService;
     private final BatchRunWorker batchRunWorker;
+    private final CurrentUserService currentUserService;
 
     @Override
     @Transactional
@@ -54,6 +57,8 @@ public class BatchRunServiceImpl implements BatchRunService {
         BatchRunOptionsRequest options = request.getOptions() == null
                 ? new BatchRunOptionsRequest()
                 : request.getOptions();
+
+        AppUser actor = currentUserService.getCurrentUser();
 
         BatchRun batchRun = BatchRun.builder()
                 .name(request.getName().trim())
@@ -73,6 +78,7 @@ public class BatchRunServiceImpl implements BatchRunService {
                 .executionMode(options.safeExecutionMode())
                 .buildStrategy(options.safeBuildStrategy())
                 .externalBaseUrl(blankToNull(options.getExternalBaseUrl()))
+                .createdBy(actor.getId())
                 .build();
         BatchRun saved = batchRunRepository.save(batchRun);
 
@@ -101,6 +107,13 @@ public class BatchRunServiceImpl implements BatchRunService {
         }
         if (batchRun.getStatus() != BatchRunStatus.PENDING) {
             throw new BadRequestException("BatchRun can only be started from PENDING status: " + id);
+        }
+        if (batchRun.getCreatedBy() == null) {
+            AppUser actor = currentUserService.getCurrentUser();
+            batchRun.setCreatedBy(actor.getId());
+            batchRunRepository.save(batchRun);
+            log.info("[BatchRun] start actor backfilled batchId={} userId={} email={}",
+                    id, actor.getId(), actor.getEmail());
         }
 
         BatchRun running = batchRunLifecycleService.markBatchRunning(id);
