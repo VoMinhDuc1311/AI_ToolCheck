@@ -8,12 +8,21 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Repository
 public interface TestRunRepository extends JpaRepository<TestRun, UUID> {
 
     List<TestRun> findBySourceProject_IdOrderByCreatedAtDesc(UUID projectId);
+
+    @Query("""
+        SELECT run FROM TestRun run
+        JOIN FETCH run.sourceProject
+        LEFT JOIN FETCH run.sourceRuntime
+        WHERE run.id = :id
+    """)
+    Optional<TestRun> findByIdWithProjectGraph(@Param("id") UUID id);
 
     List<TestRun> findByRunStatusAndCreatedAtBefore(
             com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus runStatus,

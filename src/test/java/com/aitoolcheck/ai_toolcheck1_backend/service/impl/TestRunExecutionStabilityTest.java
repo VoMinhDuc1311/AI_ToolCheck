@@ -102,7 +102,92 @@ class TestRunExecutionStabilityTest {
         testRun.setRunStatus(RunStatus.PENDING);
 
         when(testRunRepository.findById(testRun.getId())).thenReturn(Optional.of(testRun));
+        when(testRunRepository.findByIdWithProjectGraph(testRun.getId())).thenReturn(Optional.of(testRun));
         when(testRunRepository.save(any(TestRun.class))).thenReturn(testRun);
+    }
+
+    @Test
+    void executeTestRun_doesNotDereferenceDetachedTestCaseProxy() {
+        TestRunItem graphItem = buildItem("/users", com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
+        TestRunItem detachedProxyItem = mock(TestRunItem.class);
+        when(detachedProxyItem.getId()).thenReturn(graphItem.getId());
+        when(detachedProxyItem.getTestCase()).thenThrow(new org.hibernate.LazyInitializationException("no session"));
+
+        when(testRunItemRepository.findByTestRunIdWithExecutionGraph(testRun.getId())).thenReturn(List.of(graphItem));
+        when(testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(testRun.getId())).thenReturn(List.of(detachedProxyItem));
+        when(testRunItemRepository.findByIdWithExecutionGraph(graphItem.getId())).thenReturn(Optional.of(graphItem));
+        when(testRunItemRepository.findById(graphItem.getId())).thenReturn(Optional.of(graphItem));
+
+        PreparedHttpRequestResponse prepared = mock(PreparedHttpRequestResponse.class);
+        when(testRequestBuilder.build(any(), any())).thenReturn(prepared);
+
+        ExecutedHttpResponse httpResp = mock(ExecutedHttpResponse.class);
+        when(httpResp.statusCode()).thenReturn(200);
+        when(testHttpExecutor.execute(prepared)).thenReturn(httpResp);
+
+        TestResult result = new TestResult();
+        result.setId(UUID.randomUUID());
+        result.setTestRunItem(graphItem);
+        result.setActualStatus(200);
+        when(testResultService.saveRawTestResult(eq(graphItem), any())).thenReturn(result);
+        when(ruleEngineService.evaluate(result.getId())).thenReturn(
+                com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.RuleEngineResultDto.builder()
+                        .testResultId(result.getId())
+                        .finalStatus(ResultStatus.PASS)
+                        .build());
+
+        service.execute(testRun.getId());
+
+        assertThat(graphItem.getItemStatus()).isEqualTo(ExecutionStatus.SUCCESS);
+        assertThat(testRun.getRunStatus()).isEqualTo(RunStatus.COMPLETED);
+        verify(detachedProxyItem, never()).getTestCase();
+    }
+
+    @Test
+    void executeTestRun_buildsExecutionPlanInsideTransaction() {
+        TestRunItem item = buildItem("/users", com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
+        when(testRunItemRepository.findByTestRunIdWithExecutionGraph(testRun.getId())).thenReturn(List.of(item));
+        when(testRunItemRepository.findByIdWithExecutionGraph(item.getId())).thenReturn(Optional.of(item));
+        when(testRunItemRepository.findById(item.getId())).thenReturn(Optional.of(item));
+
+        PreparedHttpRequestResponse prepared = mock(PreparedHttpRequestResponse.class);
+        when(testRequestBuilder.build(any(), any())).thenReturn(prepared);
+
+        ExecutedHttpResponse httpResp = mock(ExecutedHttpResponse.class);
+        when(httpResp.statusCode()).thenReturn(200);
+        when(testHttpExecutor.execute(prepared)).thenReturn(httpResp);
+
+        TestResult result = new TestResult();
+        result.setId(UUID.randomUUID());
+        result.setTestRunItem(item);
+        when(testResultService.saveRawTestResult(eq(item), any())).thenReturn(result);
+        when(ruleEngineService.evaluate(result.getId())).thenReturn(
+                com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.RuleEngineResultDto.builder()
+                        .finalStatus(ResultStatus.PASS)
+                        .build());
+
+        service.execute(testRun.getId());
+
+        verify(transactionTemplate, atLeastOnce()).execute(any());
+        verify(testRequestBuilder, atLeastOnce()).build(eq("http://localhost:8080"), any(TestCaseInput.class));
+        verify(testHttpExecutor, atLeastOnce()).execute(prepared);
+    }
+
+    @Test
+    void prepareTestRun_doesNotDereferenceDetachedTestCaseProxy() {
+        TestRunItem graphItem = buildItem("/users", com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET);
+        TestRunItem detachedProxyItem = mock(TestRunItem.class);
+        when(detachedProxyItem.getId()).thenReturn(graphItem.getId());
+        when(detachedProxyItem.getTestCase()).thenThrow(new org.hibernate.LazyInitializationException("no session"));
+
+        when(testRunItemRepository.findByTestRunIdWithExecutionGraph(testRun.getId())).thenReturn(List.of(graphItem));
+        when(testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(testRun.getId())).thenReturn(List.of(detachedProxyItem));
+        when(testRequestBuilder.build(any(), any())).thenReturn(mock(PreparedHttpRequestResponse.class));
+
+        var response = service.prepare(testRun.getId());
+
+        assertThat(response.getItems()).hasSize(1);
+        verify(detachedProxyItem, never()).getTestCase();
     }
 
     @Test

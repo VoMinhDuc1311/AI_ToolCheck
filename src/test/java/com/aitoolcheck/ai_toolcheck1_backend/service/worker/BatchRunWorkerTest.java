@@ -247,6 +247,63 @@ class BatchRunWorkerTest {
     }
 
     @Test
+    void batchWorker_executeTestRun_noLazyProxyNoSession() {
+        UUID batchId = readyBatch(List.of(project("P1")), options(false)).getId();
+
+        worker.run(batchId);
+
+        assertThat(firstItem().getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+        assertThat(firstItem().getErrorMessage()).isNull();
+        verify(testRunService).execute(any());
+    }
+
+    @Test
+    void batchWorker_runtimeUp_testRunCreated_executeSucceedsAndMarksItemSuccess() {
+        SourceProject p1 = project("P1");
+        UUID batchId = readyBatch(List.of(p1), options(true)).getId();
+        primeRuntimeStart(p1.getId(), RuntimeStatus.UP);
+
+        worker.run(batchId);
+
+        BatchRunItem item = firstItem();
+        assertThat(item.getRuntime()).isNotNull();
+        assertThat(item.getTestRun()).isNotNull();
+        assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+    }
+
+    @Test
+    void batchWorker_fullAutoWithFallbackFlow_reachesSuccess() {
+        SourceProject p1 = project("P1");
+        BatchRun batch = readyBatch(List.of(p1), options(true));
+        batch.setBuildStrategy(BuildStrategy.AUTO_WITH_FALLBACK);
+        batch.setStopRuntimeAfterRun(true);
+        primeRuntimeStart(p1.getId(), RuntimeStatus.UP);
+
+        worker.run(batch.getId());
+
+        BatchRunItem item = firstItem();
+        assertThat(item.getStatus()).isEqualTo(BatchRunItemStatus.SUCCESS);
+        assertThat(batch.getStatus()).isEqualTo(BatchRunStatus.COMPLETED);
+        assertThat(batch.getSuccessCount()).isEqualTo(1);
+        assertThat(batch.getFailedCount()).isEqualTo(0);
+        verify(sourceRuntimeService).startRuntime(p1.getId(), BuildStrategy.AUTO_WITH_FALLBACK);
+        verify(sourceRuntimeService).stopRuntime(p1.getId());
+    }
+
+    @Test
+    void batchWorker_executeTestRunFailureMarksItemFailedWithReason() {
+        UUID batchId = readyBatch(List.of(project("P1")), options(false)).getId();
+        UUID testRunId = UUID.randomUUID();
+        when(testRunService.create(any())).thenReturn(testRun(testRunId, RunStatus.PENDING));
+        when(testRunService.execute(testRunId)).thenThrow(new BadRequestException("execute failed"));
+
+        worker.run(batchId);
+
+        assertThat(firstItem().getStatus()).isEqualTo(BatchRunItemStatus.FAILED);
+        assertThat(firstItem().getErrorMessage()).contains("execute failed");
+    }
+
+    @Test
     void batchWorker_stopRuntimeAfterRunStopsRuntime() {
         SourceProject p1 = project("P1");
         BatchRun batch = readyBatch(List.of(p1), options(false));
