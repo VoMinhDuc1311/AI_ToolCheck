@@ -317,6 +317,141 @@ class DockerRuntimeOrchestratorTest {
         assertThat(probed.get(0)).endsWith("/greeting");
     }
 
+    // ── HOTFIX: Internal Docker health probe tests ─────────────────────────────
+
+    /**
+     * Startup health probe must use internal Docker container URL (http://containerName:port),
+     * NOT the public EC2 IP:hostPort URL.
+     */
+    @Test
+    void dockerRuntime_start_usesInternalContainerUrlForStartupHealthProbe() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+
+        List<String> probedUrls = new ArrayList<>();
+        orchestrator.setHealthProbe((url, timeout) -> {
+            probedUrls.add(url);
+            return 200;
+        });
+
+        orchestrator.start(project, supportedMaven());
+
+        // All probe URLs must start with http://<containerName>:<containerPort>
+        // i.e. NOT the public host "runtime.example.com"
+        assertThat(probedUrls).isNotEmpty();
+        assertThat(probedUrls).allSatisfy(url ->
+                assertThat(url).doesNotContain("runtime.example.com"));
+        // Container URL format: http://aitc-runtime-unsafe-<short-uuid>-<ts>:<port>/...
+        assertThat(probedUrls).allSatisfy(url ->
+                assertThat(url).startsWith("http://aitc-runtime-unsafe-"));
+    }
+
+    /**
+     * Verifies the inverse: public URL must NOT be used for startup health probing.
+     */
+    @Test
+    void dockerRuntime_start_doesNotUsePublicBaseUrlForStartupHealthProbe() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+
+        List<String> probedUrls = new ArrayList<>();
+        orchestrator.setHealthProbe((url, timeout) -> {
+            probedUrls.add(url);
+            return 200;
+        });
+
+        orchestrator.start(project, supportedMaven());
+
+        // Public host is "runtime.example.com" — must never appear in probe URLs
+        assertThat(probedUrls).noneMatch(url -> url.contains("runtime.example.com"));
+    }
+
+    /**
+     * When internal health passes, runtime must be marked UP with publicBaseUrl (not internal URL).
+     */
+    @Test
+    void dockerRuntime_start_internalHealthPasses_marksUpWithPublicBaseUrl() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        orchestrator.setHealthProbe((url, timeout) -> 200);
+
+        SourceRuntime result = orchestrator.start(project, supportedMaven());
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
+        // publicBaseUrl must use the configured publicHost, NOT the containerName
+        assertThat(result.getPublicBaseUrl()).contains("runtime.example.com");
+        assertThat(result.getPublicBaseUrl()).startsWith("http://runtime.example.com");
+    }
+
+    /**
+     * After internal health passes, DB must store publicBaseUrl (EC2 host + hostPort),
+     * NOT the internal container URL.
+     */
+    @Test
+    void dockerRuntime_start_storesPublicBaseUrlAfterInternalHealthPasses() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        orchestrator.setHealthProbe((url, timeout) -> 200);
+
+        SourceRuntime result = orchestrator.start(project, supportedMaven());
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
+        // publicBaseUrl must be http://runtime.example.com:18080 (with optional context path)
+        assertThat(result.getPublicBaseUrl()).isNotNull();
+        assertThat(result.getPublicBaseUrl()).startsWith("http://runtime.example.com:18080");
+        // Internal URL must NOT be stored
+        assertThat(result.getPublicBaseUrl()).doesNotContain("aitc-runtime-unsafe-");
+    }
+
+    /**
+     * Custom health path must be appended to the internal base URL, not the public URL.
+     */
+    @Test
+    void startupHealthProbe_usesCustomHealthPathOnInternalBaseUrlFirst() throws Exception {
+        Path root = materializedRoot();
+        when(materializer.materialize(project.getId())).thenReturn(materialized(root));
+        SourceRuntime runtimeRecord = SourceRuntime.builder()
+                .healthCheckPath("/custom-health")
+                .build();
+        when(lifecycleService.findFresh(any())).thenReturn(java.util.Optional.of(runtimeRecord));
+
+        List<String> probedUrls = new ArrayList<>();
+        orchestrator.setHealthProbe((url, timeout) -> {
+            probedUrls.add(url);
+            // Only succeed on the custom path to confirm ordering
+            return url.endsWith("/custom-health") ? 200 : 404;
+        });
+
+        SourceRuntime result = orchestrator.start(project, supportedMaven());
+
+        assertThat(result.getRuntimeStatus()).isEqualTo(RuntimeStatus.UP);
+        // First probe must hit the custom path on the internal container URL (not public host)
+        assertThat(probedUrls.get(0)).endsWith("/custom-health");
+        assertThat(probedUrls.get(0)).doesNotContain("runtime.example.com");
+        assertThat(probedUrls.get(0)).startsWith("http://aitc-runtime-unsafe-");
+    }
+
+    /**
+     * buildInternalHealthUrl returns correct format.
+     */
+    @Test
+    void buildInternalHealthUrl_returnsCorrectFormat() {
+        String url = orchestrator.buildInternalHealthUrl("aitc-runtime-06264fb4-1780892493177", 8080);
+        assertThat(url).isEqualTo("http://aitc-runtime-06264fb4-1780892493177:8080");
+    }
+
+    /**
+     * buildInternalHealthUrl must be different from buildPublicUrl.
+     */
+    @Test
+    void buildInternalHealthUrl_isDifferentFromPublicUrl() {
+        String internalUrl = orchestrator.buildInternalHealthUrl("aitc-runtime-06264fb4", 8080);
+        String publicUrl = orchestrator.buildPublicUrl(18080, null);
+        assertThat(internalUrl).isNotEqualTo(publicUrl);
+        assertThat(internalUrl).startsWith("http://aitc-runtime-06264fb4:");
+        assertThat(publicUrl).startsWith("http://runtime.example.com:");
+    }
+
     @Test
     void stopRemovesContainerAndMarksStopped() {
         SourceRuntime runtime = SourceRuntime.builder()

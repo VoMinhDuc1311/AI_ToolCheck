@@ -189,9 +189,19 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
                 cleanupContainerAndImage(containerName, imageTag);
                 return;
             }
-            // Poll health
-            String publicUrl = buildPublicUrl(hostPort, detection.getContextPath());
-            DockerRuntimeOrchestrator.ProbeResult probe = pollUntilHealthy(runtimeId, project.getId(), publicUrl, properties.getStartupTimeoutSeconds());
+
+            // --- URL separation ---
+            // publicBaseUrl: used for client-facing access and persisted to DB only after health passes.
+            // internalHealthBaseUrl: used exclusively for startup health probing over the Docker internal network.
+            // Backend and runtime containers share the same Docker network; probing via the container's
+            // internal name/port is direct and reliable — the public EC2 IP/port goes through NAT and may
+            // be blocked by security groups or routing policies, causing false DOWN:timeout results.
+            String publicBaseUrl = buildPublicUrl(hostPort, detection.getContextPath());
+            String internalHealthBaseUrl = buildInternalHealthUrl(containerName, appPort);
+            log.info("[DockerRuntimeOrchestrator] Startup health probe internalBaseUrl={} publicBaseUrl={}",
+                    internalHealthBaseUrl, publicBaseUrl);
+
+            DockerRuntimeOrchestrator.ProbeResult probe = pollUntilHealthy(runtimeId, project.getId(), internalHealthBaseUrl, properties.getStartupTimeoutSeconds());
             if (!probe.up()) {
                 cleanupContainerAndImage(containerName, imageTag);
                 if (isCancelled(runtimeId, "after health probe failure")) {
@@ -205,10 +215,11 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
                 cleanupContainerAndImage(containerName, imageTag);
                 return;
             }
-            // Mark UP in DB
+            // Mark UP in DB — persist publicBaseUrl (not internal URL) so clients can reach the container.
             try {
-                lifecycleService.markUp(runtimeId, publicUrl, appPort, containerName, probe.status(), LocalDateTime.now());
-                log.info("[DockerRuntimeOrchestrator] Async start successful for project={}, runtimeId={}, url={}", project.getId(), runtimeId, publicUrl);
+                lifecycleService.markUp(runtimeId, publicBaseUrl, appPort, containerName, probe.status(), LocalDateTime.now());
+                log.info("[DockerRuntimeOrchestrator] Async start successful for project={}, runtimeId={}, publicUrl={}",
+                        project.getId(), runtimeId, publicBaseUrl);
             } catch (Exception dbEx) {
                 log.error("[DockerRuntimeOrchestrator] CRITICAL: DB update to UP failed for runtimeId={}, containerName={}, imageTag={}: {}",
                         runtimeId, containerName, imageTag, dbEx.getMessage(), dbEx);
@@ -528,16 +539,43 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
         return base + ":" + port + suffix;
     }
 
-    ProbeResult pollUntilHealthy(UUID runtimeId, UUID projectId, String publicUrl, int timeoutSeconds) {
+    /**
+     * Builds the internal Docker network URL used exclusively for startup health probing.
+     *
+     * <p>When the backend and a runtime container share the same Docker network, Docker's
+     * embedded DNS resolves {@code containerName} directly, making this URL reachable without
+     * going through host NAT or public IPs. This avoids false DOWN:timeout failures caused by
+     * EC2 security groups or routing policies blocking inbound traffic on host-mapped ports.
+     *
+     * <p><b>This URL is NEVER persisted or returned to clients.</b> The public URL
+     * ({@link #buildPublicUrl}) is used for that purpose after health passes.
+     *
+     * @param containerName the Docker container name used as the DNS hostname within the network.
+     * @param containerPort the port the application listens on inside the container.
+     * @return internal base URL, e.g. {@code http://aitc-runtime-06264fb4-1780892493177:8080}
+     */
+    String buildInternalHealthUrl(String containerName, int containerPort) {
+        return "http://" + containerName + ":" + containerPort;
+    }
+
+    /**
+     * Polls health probe candidates against the given {@code baseUrl} until a 2xx response is
+     * received or the timeout expires.
+     *
+     * <p>For Docker startup probing, {@code baseUrl} must be the <em>internal</em> container URL
+     * (see {@link #buildInternalHealthUrl}), not the public URL. For external runtime checks the
+     * caller passes the public/external base URL directly.
+     */
+    ProbeResult pollUntilHealthy(UUID runtimeId, UUID projectId, String baseUrl, int timeoutSeconds) {
         long limit = System.currentTimeMillis() + (timeoutSeconds * 1000L);
-        log.info("[DockerRuntimeOrchestrator] Polling publicUrl={} until healthy (timeout={}s)", publicUrl, timeoutSeconds);
+        log.info("[DockerRuntimeOrchestrator] Polling baseUrl={} until healthy (timeout={}s)", baseUrl, timeoutSeconds);
 
         while (System.currentTimeMillis() < limit) {
             if (isCancelled(runtimeId, "during health polling")) {
                 return new ProbeResult(false, null, "DOWN:cancelled");
             }
             for (ProbeCandidate candidate : buildProbeCandidates(runtimeId, projectId)) {
-                String fullUrl = publicUrl;
+                String fullUrl = baseUrl;
                 if (fullUrl.endsWith("/")) {
                     fullUrl = fullUrl.substring(0, fullUrl.length() - 1);
                 }
