@@ -95,6 +95,9 @@ public class BatchRun {
     @Column(name = "external_base_url", length = 500)
     private String externalBaseUrl;
 
+    @Column(name = "test_case_ids_json", columnDefinition = "TEXT")
+    private String testCaseIdsJson;
+
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;
 

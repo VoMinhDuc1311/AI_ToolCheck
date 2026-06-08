@@ -14,6 +14,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.security.CustomUserDetails;
 import com.aitoolcheck.ai_toolcheck1_backend.service.*;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
@@ -32,6 +34,9 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class BatchRunWorker {
 
+    private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+    private static final TypeReference<List<UUID>> UUID_LIST_TYPE = new TypeReference<>() {
+    };
     private static final Duration AI_JOB_TIMEOUT = Duration.ofMinutes(2);
     private static final int RUNTIME_TIMEOUT_SECONDS = 300;
     private static final long RUNTIME_POLL_INTERVAL_MS = 2_000L;
@@ -293,9 +298,11 @@ public class BatchRunWorker {
     private TestRunDetailResponse runCreateTestRunStep(UUID batchId, UUID itemId, SourceProject project, SourceRuntimeResponse runtime) {
         markStep(batchId, itemId, BatchRunStep.CREATE_TEST_RUN);
         BatchRun batchRun = batchLifecycleService.findBatchFresh(batchId);
-        List<TestCase> testCases = testCaseRepository
-                .findBySourceProject_IdAndActiveFlagTrueAndDeletedFlagFalseOrderByUpdatedAtDesc(project.getId());
-        if (testCases.isEmpty()) {
+        List<UUID> selectedTestCaseIds = decodeTestCaseIds(batchRun.getTestCaseIdsJson());
+        boolean hasExplicitSelection = !selectedTestCaseIds.isEmpty();
+        if (!hasExplicitSelection && testCaseRepository
+                .findBySourceProject_IdAndActiveFlagTrueAndDeletedFlagFalseOrderByUpdatedAtDesc(project.getId())
+                .isEmpty()) {
             throw new BadRequestException("No active testcases found for project: " + project.getId());
         }
         String baseUrl = batchRun.getStartRuntime() ? null : batchRun.getExternalBaseUrl();
@@ -309,11 +316,12 @@ public class BatchRunWorker {
                 .baseUrl(baseUrl)
                 .executionMode(batchRun.getExecutionMode())
                 .runtimeMode(runtimeMode)
-                .includeAllActive(true)
+                .testCaseIds(hasExplicitSelection ? selectedTestCaseIds : null)
+                .includeAllActive(!hasExplicitSelection)
                 .build());
         batchLifecycleService.attachTestRun(itemId, response.getId());
-        log.info("[BatchRunWorker] testRun created batchId={} itemId={} testRunId={}",
-                batchId, itemId, response.getId());
+        log.info("[BatchRunWorker] testRun created batchId={} itemId={} testRunId={} explicitTestCaseCount={}",
+                batchId, itemId, response.getId(), hasExplicitSelection ? selectedTestCaseIds.size() : null);
         return response;
     }
 
@@ -426,6 +434,17 @@ public class BatchRunWorker {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private List<UUID> decodeTestCaseIds(String json) {
+        if (!hasText(json)) {
+            return List.of();
+        }
+        try {
+            return OBJECT_MAPPER.readValue(json, UUID_LIST_TYPE);
+        } catch (Exception e) {
+            throw new BadRequestException("Invalid BatchRun testCaseIdsJson: " + e.getMessage());
+        }
     }
 
     private record BatchRunActor(UUID userId, String email) {

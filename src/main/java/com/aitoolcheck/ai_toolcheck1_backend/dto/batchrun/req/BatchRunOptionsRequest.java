@@ -7,6 +7,9 @@ import jakarta.validation.constraints.Min;
 import jakarta.validation.constraints.Size;
 import lombok.*;
 
+import java.util.List;
+import java.util.UUID;
+
 @Getter
 @Setter
 @NoArgsConstructor
@@ -33,6 +36,8 @@ public class BatchRunOptionsRequest {
 
     @Size(max = 500, message = "externalBaseUrl must not exceed 500 characters")
     private String externalBaseUrl;
+
+    private List<UUID> testCaseIds;
 
     public boolean shouldGenerateOpenApi() {
         return generateOpenApi == null || generateOpenApi;

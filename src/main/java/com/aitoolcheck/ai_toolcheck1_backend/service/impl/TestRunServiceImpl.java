@@ -126,7 +126,10 @@ public class TestRunServiceImpl implements TestRunService {
         String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
                 sourceProject.getId(), runtimeMode, request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
-        List<TestCase> resolvedCases = resolveTestCases(request, sourceProject.getId());
+        ExecutionMode executionMode = request.getExecutionMode() == null
+                ? ExecutionMode.READ_ONLY
+                : request.getExecutionMode();
+        List<TestCase> resolvedCases = resolveTestCases(request, sourceProject.getId(), executionMode);
 
         List<TestRunItem> items = buildTestRunItems(resolvedCases);
 
@@ -137,7 +140,7 @@ public class TestRunServiceImpl implements TestRunService {
                 .description(description)
                 .baseUrl(baseUrl)
                 .environmentName(request.getEnvironmentName())
-                .executionMode(request.getExecutionMode())
+                .executionMode(executionMode)
                 .runtimeMode(runtimeMode)
                 .targetBaseUrlUsed(baseUrl)
                 .runStatus(RunStatus.PENDING)
@@ -979,36 +982,40 @@ public class TestRunServiceImpl implements TestRunService {
         return toDetailResponse(testRun, items, preparedByItemId);
     }
 
-    private List<TestCase> resolveTestCases(CreateTestRunRequest request, UUID projectId) {
+    private List<TestCase> resolveTestCases(CreateTestRunRequest request, UUID projectId, ExecutionMode executionMode) {
         List<UUID> rawIds = request.getTestCaseIds();
         boolean hasExplicitIds = rawIds != null && !rawIds.isEmpty();
         boolean includeAll = Boolean.TRUE.equals(request.getIncludeAllActive());
 
         if (hasExplicitIds) {
-            // Reject null entries before deduplication
-            if (rawIds.contains(null)) {
+            if (rawIds.stream().anyMatch(id -> id == null)) {
                 throw new BadRequestException("testCaseIds must not contain null values");
             }
 
-            // Deduplicate while preserving request order
             List<UUID> requestedIds = new ArrayList<>(new LinkedHashSet<>(rawIds));
-
-            List<TestCase> resolved = testCaseRepository
-                    .findByIdInAndSourceProject_IdAndActiveFlagTrueAndDeletedFlagFalse(
-                            requestedIds, projectId);
-
-            if (resolved.size() != requestedIds.size()) {
-                throw new BadRequestException(
-                        "Some selected test cases are missing, inactive, deleted, or not in project");
-            }
-
-            // Reorder to match explicit request order — repository does not guarantee order
             Map<UUID, TestCase> byId = new HashMap<>();
-            resolved.forEach(tc -> byId.put(tc.getId(), tc));
+            testCaseRepository.findAllById(requestedIds).forEach(tc -> byId.put(tc.getId(), tc));
 
             List<TestCase> ordered = new ArrayList<>(requestedIds.size());
             for (UUID uid : requestedIds) {
-                ordered.add(byId.get(uid));
+                TestCase testCase = byId.get(uid);
+                if (testCase == null) {
+                    throw invalidSelectedTestCase(projectId, uid, "not found");
+                }
+                UUID actualProjectId = testCase.getSourceProject() == null ? null : testCase.getSourceProject().getId();
+                if (!projectId.equals(actualProjectId)) {
+                    throw invalidSelectedTestCase(projectId, uid, "belongs to another project");
+                }
+                if (Boolean.TRUE.equals(testCase.getDeletedFlag())) {
+                    throw invalidSelectedTestCase(projectId, uid, "deleted");
+                }
+                if (!Boolean.TRUE.equals(testCase.getActiveFlag())) {
+                    throw invalidSelectedTestCase(projectId, uid, "not active");
+                }
+                if (executionMode == ExecutionMode.READ_ONLY && Boolean.TRUE.equals(testCase.getRequiresWrite())) {
+                    throw invalidSelectedTestCase(projectId, uid, "write testcase not allowed in READ_ONLY");
+                }
+                ordered.add(testCase);
             }
             return ordered;
 
@@ -1029,6 +1036,11 @@ public class TestRunServiceImpl implements TestRunService {
         }
     }
 
+    private BadRequestException invalidSelectedTestCase(UUID projectId, UUID testCaseId, String reason) {
+        return new BadRequestException("Invalid TestRun testCase selection: testCaseId=" + testCaseId
+                + " projectId=" + projectId
+                + " reason=" + reason);
+    }
     private List<TestRunItem> buildTestRunItems(List<TestCase> testCases) {
         List<TestRunItem> items = new ArrayList<>(testCases.size());
         int sortOrder = 1;
@@ -1422,3 +1434,4 @@ public class TestRunServiceImpl implements TestRunService {
         });
     }
 }
+
