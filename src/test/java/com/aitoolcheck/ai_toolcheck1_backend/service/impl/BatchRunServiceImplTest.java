@@ -4,6 +4,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.batchrun.req.BatchRunOptionsReq
 import com.aitoolcheck.ai_toolcheck1_backend.dto.batchrun.req.CreateBatchRunRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.*;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRun;
 import com.aitoolcheck.ai_toolcheck1_backend.model.BatchRunItem;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -26,7 +27,9 @@ class BatchRunServiceImplTest {
     private SourceProjectRepository sourceProjectRepository;
     private BatchRunLifecycleService batchRunLifecycleService;
     private BatchRunWorker batchRunWorker;
+    private CurrentUserService currentUserService;
     private BatchRunServiceImpl service;
+    private AppUser currentUser;
 
     private final Map<UUID, BatchRun> batches = new LinkedHashMap<>();
     private final Map<UUID, BatchRunItem> items = new LinkedHashMap<>();
@@ -39,6 +42,15 @@ class BatchRunServiceImplTest {
         sourceProjectRepository = mock(SourceProjectRepository.class);
         batchRunLifecycleService = mock(BatchRunLifecycleService.class);
         batchRunWorker = mock(BatchRunWorker.class);
+        currentUserService = mock(CurrentUserService.class);
+        currentUser = AppUser.builder()
+                .id(UUID.randomUUID())
+                .email("starter@example.com")
+                .role(UserRole.MEMBER)
+                .status(UserStatus.ACTIVE)
+                .passwordHash("hash")
+                .build();
+        when(currentUserService.getCurrentUser()).thenReturn(currentUser);
 
         service = new BatchRunServiceImpl(
                 batchRunRepository,
@@ -46,7 +58,8 @@ class BatchRunServiceImplTest {
                 sourceProjectRepository,
                 mock(SourceRuntimeService.class),
                 batchRunLifecycleService,
-                batchRunWorker);
+                batchRunWorker,
+                currentUserService);
 
         wireRepositories();
     }
@@ -61,6 +74,16 @@ class BatchRunServiceImplTest {
         assertThat(response.getStatus()).isEqualTo(BatchRunStatus.PENDING);
         assertThat(response.getTotalItems()).isEqualTo(2);
         assertThat(items.values()).hasSize(2);
+    }
+
+    @Test
+    void createBatchRun_persistsCreatedByUser() {
+        SourceProject p1 = project("P1");
+
+        var response = service.create(request(List.of(p1.getId()), defaultOptions()));
+
+        assertThat(response.getCreatedBy()).isEqualTo(currentUser.getId());
+        assertThat(batches.get(response.getId()).getCreatedBy()).isEqualTo(currentUser.getId());
     }
 
     @Test
@@ -91,6 +114,18 @@ class BatchRunServiceImplTest {
 
         verify(batchRunLifecycleService).markBatchRunning(batchId);
         verify(batchRunWorker).runAsync(batchId);
+    }
+
+    @Test
+    void startBatchRun_usesAuthenticatedStarterIfCreatedByMissing() {
+        UUID batchId = createReadyBatch(List.of(project("P1")), successOptions()).getId();
+        batches.get(batchId).setCreatedBy(null);
+
+        var response = service.start(batchId);
+
+        assertThat(response.getCreatedBy()).isEqualTo(currentUser.getId());
+        assertThat(batches.get(batchId).getCreatedBy()).isEqualTo(currentUser.getId());
+        verify(currentUserService).getCurrentUser();
     }
 
     @Test

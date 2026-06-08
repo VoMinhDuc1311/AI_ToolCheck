@@ -9,11 +9,16 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.TestRunDetailRespon
 import com.aitoolcheck.ai_toolcheck1_backend.enums.*;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.UnauthorizedException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
+import com.aitoolcheck.ai_toolcheck1_backend.security.CustomUserDetails;
 import com.aitoolcheck.ai_toolcheck1_backend.service.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContext;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Component;
 
@@ -43,6 +48,7 @@ public class BatchRunWorker {
     private final TestCaseService testCaseService;
     private final SourceRuntimeService sourceRuntimeService;
     private final TestRunService testRunService;
+    private final AppUserRepository appUserRepository;
 
     @Async("batchRunExecutor")
     public void runAsync(UUID batchId) {
@@ -75,7 +81,13 @@ public class BatchRunWorker {
         BatchRunItem started = batchLifecycleService.markItemRunning(itemId, BatchRunStep.GENERATE_OPENAPI);
         UUID projectId = started.getSourceProject().getId();
         log.info("[BatchRunWorker] item start batchId={} itemId={} projectId={}", batchId, itemId, projectId);
+        BatchRunActor actor = null;
+        SecurityContext previousContext = SecurityContextHolder.getContext();
+        boolean restored = false;
         try {
+            BatchRun batch = batchLifecycleService.findBatchFresh(batchId);
+            actor = restoreSecurityContext(batch, batchId);
+            restored = true;
             SourceProject project = sourceProjectRepository.findById(projectId)
                     .orElseThrow(() -> new ResourceNotFoundException("SourceProject not found: " + projectId));
 
@@ -89,9 +101,73 @@ public class BatchRunWorker {
             log.info("[BatchRunWorker] item success batchId={} itemId={}", batchId, itemId);
         } catch (Throwable t) {
             String message = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
-            batchLifecycleService.markItemFailed(itemId, message);
-            log.warn("[BatchRunWorker] item failed batchId={} itemId={} reason={}", batchId, itemId, message);
+            BatchRunStep currentStep = currentStep(itemId);
+            String enriched = failureMessage(message, batchId, itemId, projectId, actor, currentStep);
+            batchLifecycleService.markItemFailed(itemId, enriched);
+            log.warn("[BatchRunWorker] item failed batchId={} itemId={} projectId={} actorUserId={} actorEmail={} step={} reason={}",
+                    batchId, itemId, projectId, actor == null ? null : actor.userId(),
+                    actor == null ? null : actor.email(), currentStep, message);
+        } finally {
+            if (restored) {
+                SecurityContextHolder.clearContext();
+                log.info("[BatchRunWorker] security context cleared batchId={} itemId={} userId={} email={}",
+                        batchId, itemId, actor == null ? null : actor.userId(), actor == null ? null : actor.email());
+            }
+            if (previousContext != null && previousContext.getAuthentication() != null) {
+                SecurityContextHolder.setContext(previousContext);
+            }
         }
+    }
+
+    private BatchRunActor restoreSecurityContext(BatchRun batchRun, UUID batchId) {
+        if (batchRun.getCreatedBy() == null) {
+            throw new UnauthorizedException("BatchRun actor is no longer authorized: createdBy is missing. batchId=" + batchId);
+        }
+        AppUser user = appUserRepository.findById(batchRun.getCreatedBy())
+                .orElseThrow(() -> new UnauthorizedException(
+                        "BatchRun actor is no longer authorized: user no longer exists. batchId=" + batchId
+                                + " userId=" + batchRun.getCreatedBy()));
+        if (user.getStatus() != UserStatus.ACTIVE) {
+            throw new UnauthorizedException(
+                    "BatchRun actor is no longer authorized: user is not active. batchId=" + batchId
+                            + " userId=" + user.getId()
+                            + " email=" + user.getEmail());
+        }
+
+        CustomUserDetails userDetails = new CustomUserDetails(user);
+        UsernamePasswordAuthenticationToken authentication = new UsernamePasswordAuthenticationToken(
+                userDetails,
+                null,
+                userDetails.getAuthorities());
+        SecurityContext context = SecurityContextHolder.createEmptyContext();
+        context.setAuthentication(authentication);
+        SecurityContextHolder.setContext(context);
+
+        log.info("[BatchRunWorker] actor resolved batchId={} userId={} email={}",
+                batchId, user.getId(), user.getEmail());
+        log.info("[BatchRunWorker] security context restored batchId={} userId={} email={}",
+                batchId, user.getId(), user.getEmail());
+        return new BatchRunActor(user.getId(), user.getEmail());
+    }
+
+    private BatchRunStep currentStep(UUID itemId) {
+        try {
+            BatchRunItem item = batchLifecycleService.findItemFresh(itemId);
+            return item.getCurrentStep();
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private String failureMessage(String message, UUID batchId, UUID itemId, UUID projectId,
+                                  BatchRunActor actor, BatchRunStep currentStep) {
+        return message
+                + " batchId=" + batchId
+                + " itemId=" + itemId
+                + " projectId=" + projectId
+                + " actorUserId=" + (actor == null ? null : actor.userId())
+                + " actorEmail=" + (actor == null ? null : actor.email())
+                + " currentStep=" + currentStep;
     }
 
     private ApiDocumentVersion runOpenApiStep(UUID batchId, UUID itemId, UUID projectId) {
@@ -350,5 +426,8 @@ public class BatchRunWorker {
 
     private boolean hasText(String value) {
         return value != null && !value.isBlank();
+    }
+
+    private record BatchRunActor(UUID userId, String email) {
     }
 }
