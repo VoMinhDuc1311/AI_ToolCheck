@@ -292,10 +292,9 @@ public class TestRunServiceImpl implements TestRunService {
     public void executeTestRunAsync(UUID id) {
         log.info("Starting async execution for TestRun id: {}", id);
 
-        TestRun testRun = testRunRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
+        TestRun testRun = findRunWithProjectGraph(id);
 
-        List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
+        List<TestRunItem> items = findItemsWithExecutionGraph(id);
 
         if (!performPreflightCheck(testRun, items)) {
             log.warn("Preflight check failed for TestRun id: {}", id);
@@ -307,71 +306,45 @@ public class TestRunServiceImpl implements TestRunService {
 
         boolean anyFailed = false;
 
-        for (TestRunItem item : items) {
+        for (UUID itemId : items.stream().map(TestRunItem::getId).toList()) {
             try {
-                // Check skipped/blocked first
-                String skipReason = getSkippedReason(item, testRun.getExecutionMode());
-                if (skipReason != null) {
-                    item.setItemStatus(ExecutionStatus.FAILED);
-                    testRunItemRepository.save(item);
-                    saveSkippedResult(item.getId(), skipReason);
-                    continue;
-                }
+                ItemExecutionContext itemContext = prepareItemExecution(
+                        itemId, testRun.getBaseUrl(), testRun.getExecutionMode());
 
-                item.setItemStatus(ExecutionStatus.RUNNING);
-                testRunItemRepository.save(item);
-
-                TestCase testCase = item.getTestCase();
-                TestCaseInput input = testCase.getTestCaseInput();
-
-                if (input == null) {
-                    log.warn("TestCaseInput missing for item id: {}", item.getId());
-                    item.setItemStatus(ExecutionStatus.FAILED);
-                    testRunItemRepository.save(item);
+                if (itemContext.missingInput()) {
+                    log.warn("TestCaseInput missing for item id: {}", itemContext.itemId());
+                    markItemStatus(itemContext.itemId(), ExecutionStatus.FAILED);
+                    saveErrorResult(itemContext.itemId(), null, "TestCaseInput is missing for this test case");
                     anyFailed = true;
                     continue;
                 }
 
-                // 1. Build prepared request (pure frame — no HTTP execution)
-                // Guard: if requestPath still has unresolved {variable} placeholders, mark ERROR early.
-                String requestPath = input.getRequestPath();
-                if (requestPath != null && requestPath.matches(".*\\{[^}]+}.*")) {
-                    log.warn("[executeTestRunAsync] Unresolved path variable in requestPath='{}' for item id={}",
-                            requestPath, item.getId());
-                    item.setItemStatus(ExecutionStatus.FAILED);
-                    testRunItemRepository.save(item);
-                    anyFailed = true;
+                if (itemContext.skipReason() != null) {
+                    markItemStatus(itemContext.itemId(), ExecutionStatus.FAILED);
+                    saveSkippedResult(itemContext.itemId(), itemContext.skipReason());
                     continue;
                 }
-                PreparedHttpRequestResponse prepared = testRequestBuilder.build(
-                        testRun.getBaseUrl(), input);
 
-                // 2. Execute real HTTP via dedicated executor
-                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
+                ExecutedHttpResponse executed = testHttpExecutor.execute(itemContext.preparedRequest());
                 HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
 
-                // 3. Persist raw result (No legacy evaluation)
-                TestResult rawTestResult = testResultService.saveRawTestResult(item, actualResponse);
-
-                // 4. Evaluate using RuleEngineService (Single Source of Truth)
+                TestResult rawTestResult = saveRawResult(itemContext.itemId(), actualResponse);
                 RuleEngineResultDto ruleResult = ruleEngineService.evaluate(rawTestResult.getId());
 
                 ExecutionStatus itemStatus = resolveItemStatus(ruleResult.getFinalStatus());
-                item.setItemStatus(itemStatus);
-                testRunItemRepository.save(item);
+                markItemStatus(itemContext.itemId(), itemStatus);
 
                 if (itemStatus == ExecutionStatus.FAILED) {
                     anyFailed = true;
                 }
 
             } catch (Exception e) {
-                log.error("Error executing TestRunItem id: {}", item.getId(), e);
-                item.setItemStatus(ExecutionStatus.FAILED);
-                testRunItemRepository.save(item);
+                log.error("Error executing TestRunItem id: {}", itemId, e);
+                markItemStatus(itemId, ExecutionStatus.FAILED);
+                saveErrorResult(itemId, null, "Unexpected execution error: " + truncateSafe(e.getMessage(), 500));
                 anyFailed = true;
             }
         }
-
         testRun.setRunStatus(anyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
         testRunRepository.save(testRun);
         publishTestRunNotification(testRun);
@@ -384,8 +357,7 @@ public class TestRunServiceImpl implements TestRunService {
             throw new BadRequestException("id is required");
         }
 
-        TestRun preflightRun = testRunRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
+        TestRun preflightRun = findRunWithProjectGraph(id);
 
         if (isStale(preflightRun)) {
             String staleReason = resolveStaleReason(preflightRun);
@@ -401,7 +373,7 @@ public class TestRunServiceImpl implements TestRunService {
                 preflightRun.getSourceProject().getId(),
                 preflightRun.getExecutionMode());
 
-        List<TestRunItem> preflightItems = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
+        List<TestRunItem> preflightItems = findItemsWithExecutionGraph(id);
         if (preflightItems.isEmpty()) {
             throw new BadRequestException("TestRun has no items to execute");
         }
@@ -443,7 +415,8 @@ public class TestRunServiceImpl implements TestRunService {
 
         for (UUID itemId : executionContext.itemIds()) {
             try {
-                ItemExecutionContext itemContext = prepareItemExecution(itemId, executionContext.baseUrl());
+                ItemExecutionContext itemContext = prepareItemExecution(
+                        itemId, executionContext.baseUrl(), preflightRun.getExecutionMode());
                 testRunRealtimePublisher.publishItemStarted(
                         buildItemStartedRealtimeEvent(executionContext, itemContext, counters)
                 );
@@ -462,17 +435,9 @@ public class TestRunServiceImpl implements TestRunService {
                     continue;
                 }
 
-                // Check if skipped/blocked
-                TestRunItem currentItem = transactionTemplate.execute(status -> 
-                    testRunItemRepository.findById(itemId).orElse(null)
-                );
-                TestRun currentRun = transactionTemplate.execute(status -> 
-                    testRunRepository.findById(executionContext.runId()).orElse(null)
-                );
-                String skipReason = getSkippedReason(currentItem, currentRun != null ? currentRun.getExecutionMode() : null);
-                if (skipReason != null) {
+                if (itemContext.skipReason() != null) {
                     markItemStatus(itemId, ExecutionStatus.FAILED);
-                    saveSkippedResult(itemId, skipReason);
+                    saveSkippedResult(itemId, itemContext.skipReason());
                     RealtimeItemSnapshot completedSnapshot = loadRealtimeItemSnapshot(itemId);
                     counters.markCompleted(completedSnapshot.resultStatus());
                     testRunRealtimePublisher.publishItemCompleted(
@@ -486,12 +451,7 @@ public class TestRunServiceImpl implements TestRunService {
                 HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
 
                 // Persist raw result (No legacy evaluation)
-                TestResult rawTestResult = transactionTemplate.execute(status -> {
-                    TestRunItem item = testRunItemRepository.findById(itemContext.itemId())
-                            .orElseThrow(() -> new ResourceNotFoundException(
-                                    "TestRunItem not found with id: " + itemContext.itemId()));
-                    return testResultService.saveRawTestResult(item, actualResponse);
-                });
+                TestResult rawTestResult = saveRawResult(itemContext.itemId(), actualResponse);
 
                 // Evaluate using RuleEngineService (Single Source of Truth)
                 RuleEngineResultDto ruleResult = ruleEngineService.evaluate(rawTestResult.getId());
@@ -543,21 +503,20 @@ public class TestRunServiceImpl implements TestRunService {
         } else {
             testRunRealtimePublisher.publishRunFailed(finalRunEvent);
         }
-        publishTestRunNotification(savedRun);
+        publishTestRunNotification(findRunWithProjectGraph(savedRun.getId()));
 
         return transactionTemplate.execute(status -> {
             TestRun finalRun = testRunRepository.findById(savedRun.getId())
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "TestRun not found with id: " + savedRun.getId()));
-            List<TestRunItem> finalItems = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(finalRun.getId());
+            List<TestRunItem> finalItems = findItemsWithExecutionGraph(finalRun.getId());
             return toDetailResponse(finalRun, finalItems, Map.of());
         });
     }
 
-    private ItemExecutionContext prepareItemExecution(UUID itemId, String baseUrl) {
+    private ItemExecutionContext prepareItemExecution(UUID itemId, String baseUrl, ExecutionMode executionMode) {
         return transactionTemplate.execute(status -> {
-            TestRunItem item = testRunItemRepository.findById(itemId)
-                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+            TestRunItem item = findItemWithExecutionGraph(itemId);
 
             item.setItemStatus(ExecutionStatus.RUNNING);
             testRunItemRepository.save(item);
@@ -573,7 +532,23 @@ public class TestRunServiceImpl implements TestRunService {
                         item.getSortOrder(),
                         item.getItemStatus(),
                         null,
-                        true
+                        true,
+                        null
+                );
+            }
+
+            String skipReason = getSkippedReason(item, executionMode);
+            if (skipReason != null) {
+                return new ItemExecutionContext(
+                        item.getId(),
+                        testCase.getId(),
+                        testCase.getCaseCode(),
+                        testCase.getCaseName(),
+                        item.getSortOrder(),
+                        item.getItemStatus(),
+                        null,
+                        false,
+                        skipReason
                 );
             }
 
@@ -591,7 +566,8 @@ public class TestRunServiceImpl implements TestRunService {
                         item.getSortOrder(),
                         item.getItemStatus(),
                         null,
-                        true  // treat as missingInput so caller saves PREPARE_FAILED error
+                        true,
+                        null
                 );
             }
             PreparedHttpRequestResponse prepared = testRequestBuilder.build(baseUrl, input);
@@ -603,15 +579,48 @@ public class TestRunServiceImpl implements TestRunService {
                     item.getSortOrder(),
                     item.getItemStatus(),
                     prepared,
-                    false
+                    false,
+                    null
             );
         });
     }
 
+    private TestResult saveRawResult(UUID itemId, HttpActualResponseDto actualResponse) {
+        return transactionTemplate.execute(status -> {
+            TestRunItem item = findItemWithExecutionGraph(itemId);
+            return testResultService.saveRawTestResult(item, actualResponse);
+        });
+    }
+
+    private TestRun findRunWithProjectGraph(UUID runId) {
+        var graphResult = testRunRepository.findByIdWithProjectGraph(runId);
+        if (graphResult != null && graphResult.isPresent()) {
+            return graphResult.get();
+        }
+        return testRunRepository.findById(runId)
+                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + runId));
+    }
+
+    private List<TestRunItem> findItemsWithExecutionGraph(UUID runId) {
+        List<TestRunItem> graphItems = testRunItemRepository.findByTestRunIdWithExecutionGraph(runId);
+        if (graphItems != null && !graphItems.isEmpty()) {
+            return graphItems;
+        }
+        return testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(runId);
+    }
+
+    private TestRunItem findItemWithExecutionGraph(UUID itemId) {
+        var graphResult = testRunItemRepository.findByIdWithExecutionGraph(itemId);
+        if (graphResult != null && graphResult.isPresent()) {
+            return graphResult.get();
+        }
+        return testRunItemRepository.findById(itemId)
+                .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+    }
+
     private void markItemStatus(UUID itemId, ExecutionStatus itemStatus) {
         transactionTemplate.executeWithoutResult(status -> {
-            TestRunItem item = testRunItemRepository.findById(itemId)
-                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+            TestRunItem item = findItemWithExecutionGraph(itemId);
             item.setItemStatus(itemStatus);
             testRunItemRepository.save(item);
         });
@@ -659,8 +668,7 @@ public class TestRunServiceImpl implements TestRunService {
 
     private RealtimeItemSnapshot loadRealtimeItemSnapshot(UUID itemId) {
         return transactionTemplate.execute(status -> {
-            TestRunItem item = testRunItemRepository.findById(itemId)
-                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+            TestRunItem item = findItemWithExecutionGraph(itemId);
 
             TestCase testCase = item.getTestCase();
             TestResult result = item.getTestResult();
@@ -771,7 +779,8 @@ public class TestRunServiceImpl implements TestRunService {
             Integer sortOrder,
             ExecutionStatus itemStatus,
             PreparedHttpRequestResponse preparedRequest,
-            boolean missingInput) {
+            boolean missingInput,
+            String skipReason) {
     }
 
     private static final class RealtimeExecutionCounters {
@@ -910,13 +919,10 @@ public class TestRunServiceImpl implements TestRunService {
 
         markStaleRunsFailed();
 
-        TestRun testRun = testRunRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "TestRun not found with id: " + id));
+        TestRun testRun = findRunWithProjectGraph(id);
         projectAccessService.requireCanViewProject(testRun.getSourceProject().getId());
 
-        List<TestRunItem> items = testRunItemRepository
-                .findByTestRun_IdOrderBySortOrderAsc(id);
+        List<TestRunItem> items = findItemsWithExecutionGraph(id);
 
         return toDetailResponse(testRun, items, Map.of());
     }
@@ -949,13 +955,10 @@ public class TestRunServiceImpl implements TestRunService {
             throw new BadRequestException("id is required");
         }
 
-        TestRun testRun = testRunRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "TestRun not found with id: " + id));
+        TestRun testRun = findRunWithProjectGraph(id);
         projectAccessService.requireCanPrepareTestRun(testRun.getSourceProject().getId());
 
-        List<TestRunItem> items = testRunItemRepository
-                .findByTestRun_IdOrderBySortOrderAsc(id);
+        List<TestRunItem> items = findItemsWithExecutionGraph(id);
 
         Map<UUID, PreparedHttpRequestResponse> preparedByItemId = new HashMap<>();
 
@@ -1410,8 +1413,7 @@ public class TestRunServiceImpl implements TestRunService {
                 .build();
 
         transactionTemplate.executeWithoutResult(status -> {
-            TestRunItem item = testRunItemRepository.findById(itemId)
-                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+            TestRunItem item = findItemWithExecutionGraph(itemId);
 
             TestResult rawTestResult = testResultService.saveRawTestResult(item, skipResponse);
             rawTestResult.setResultStatus(ResultStatus.SKIPPED);
