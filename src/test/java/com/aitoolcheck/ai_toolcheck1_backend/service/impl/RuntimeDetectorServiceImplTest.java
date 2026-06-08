@@ -91,7 +91,7 @@ class RuntimeDetectorServiceImplTest {
 
         assertThat(result.isSupported()).isFalse();
         assertThat(result.getRuntimeType()).isEqualTo(RuntimeType.UNSUPPORTED);
-        assertThat(result.getMessage()).isEqualTo("No supported Spring Boot build file found.");
+        assertThat(result.getMessage()).contains("No supported Spring Boot build file found.");
     }
 
     @Test
@@ -201,5 +201,118 @@ class RuntimeDetectorServiceImplTest {
                 .activeFlag(true)
                 .deletedFlag(false)
                 .build();
+    }
+
+    // ── New tests: nested source root detection (hotfix) ──────────────────────
+
+    @Test
+    void rootPom_detectsRuntimeProjectRoot_asNull() {
+        // Root-level pom.xml — no prefix, projectRoot must be null
+        RuntimeDetectionResult result = detect(
+                file("pom.xml", FileType.BUILD, "spring-boot-starter"),
+                file("src/main/java/App.java", FileType.APPLICATION, "class App {}"));
+
+        assertThat(result.isSupported()).isTrue();
+        assertThat(result.getRuntimeType()).isEqualTo(RuntimeType.SPRING_BOOT_MAVEN);
+        assertThat(result.getProjectRoot()).isNull();
+    }
+
+    @Test
+    void nestedSingleFolderPom_detectsRuntimeProjectRoot() {
+        // All paths under "aitc-standard-springboot-api/" — detector must strip prefix and detect Maven
+        RuntimeDetectionResult result = detect(
+                file("aitc-standard-springboot-api/pom.xml", FileType.BUILD, "spring-boot-starter"),
+                file("aitc-standard-springboot-api/src/main/java/App.java", FileType.APPLICATION, "class App {}"),
+                file("aitc-standard-springboot-api/Dockerfile", FileType.BUILD, "FROM eclipse-temurin:21"));
+
+        assertThat(result.isSupported()).isTrue();
+        assertThat(result.getRuntimeType()).isEqualTo(RuntimeType.SPRING_BOOT_MAVEN);
+        assertThat(result.getProjectRoot()).isEqualTo("aitc-standard-springboot-api");
+        assertThat(result.getBuildFilePath()).isEqualTo("pom.xml"); // stripped path
+    }
+
+    @Test
+    void nestedSingleFolderDockerfile_detectsRuntimeProjectRoot() {
+        // No pom.xml, but Dockerfile with Spring evidence inside a nested folder
+        // Detection currently relies on gradle/pom; Dockerfile alone = unsupported type.
+        // This test verifies projectRoot is still correctly detected.
+        RuntimeDetectionResult result = detect(
+                file("myapp/Dockerfile", FileType.BUILD, "FROM eclipse-temurin:21-jre"),
+                file("myapp/src/main/java/App.java", FileType.APPLICATION, "class App {}"));
+
+        // Dockerfile alone without pom/gradle is UNSUPPORTED in current detection logic,
+        // but projectRoot MUST still be populated correctly.
+        assertThat(result.getProjectRoot()).isEqualTo("myapp");
+    }
+
+    @Test
+    void rootDockerfile_stillWorks() {
+        // Flat layout: Dockerfile at root, no prefix expected
+        RuntimeDetectionResult result = detect(
+                file("Dockerfile", FileType.BUILD, "FROM eclipse-temurin:21-jre"),
+                file("src/main/java/App.java", FileType.APPLICATION, "class App {}"));
+
+        // pom/gradle not present → UNSUPPORTED, but projectRoot must be null (root layout)
+        assertThat(result.getProjectRoot()).isNull();
+    }
+
+    @Test
+    void noBuildFile_returnsUnsupportedWithClearError() {
+        RuntimeDetectionResult result = detect(
+                file("src/main/java/App.java", FileType.APPLICATION, "class App {}"),
+                file("src/main/resources/application.yml", FileType.APP_CONFIG, "server:\n  port: 8080\n"));
+
+        assertThat(result.isSupported()).isFalse();
+        assertThat(result.getRuntimeType()).isEqualTo(RuntimeType.UNSUPPORTED);
+        assertThat(result.getMessage()).contains("No supported Spring Boot build file found.");
+        assertThat(result.getMessage()).contains("Checked root and nested directories");
+    }
+
+    @Test
+    void multipleBuildRoots_returnsClearAmbiguousError() {
+        // Two different top-level folders each containing a pom.xml
+        RuntimeDetectionResult result = detect(
+                file("service-a/pom.xml", FileType.BUILD, "spring-boot-starter"),
+                file("service-a/src/main/java/A.java", FileType.APPLICATION, "class A {}"),
+                file("service-b/pom.xml", FileType.BUILD, "spring-boot-starter"),
+                file("service-b/src/main/java/B.java", FileType.APPLICATION, "class B {}"));
+
+        assertThat(result.isSupported()).isFalse();
+        assertThat(result.getMessage()).contains("Multiple potential Spring Boot build roots found");
+        assertThat(result.getMessage()).contains("service-a");
+        assertThat(result.getMessage()).contains("service-b");
+    }
+
+    @Test
+    void nestedSingleFolderGradle_detectsRuntimeProjectRoot() {
+        RuntimeDetectionResult result = detect(
+                file("my-gradle-app/build.gradle", FileType.BUILD, "id 'org.springframework.boot' version '3.2.0'"),
+                file("my-gradle-app/src/main/java/App.java", FileType.APPLICATION, "class App {}"));
+
+        assertThat(result.isSupported()).isTrue();
+        assertThat(result.getRuntimeType()).isEqualTo(RuntimeType.SPRING_BOOT_GRADLE);
+        assertThat(result.getProjectRoot()).isEqualTo("my-gradle-app");
+    }
+
+    @Test
+    void detectCommonTopLevelPrefix_singleFileAtRoot_returnsNull() {
+        List<SourceFile> files = List.of(file("pom.xml", FileType.BUILD, ""));
+        assertThat(service.detectCommonTopLevelPrefix(files)).isNull();
+    }
+
+    @Test
+    void detectCommonTopLevelPrefix_allNestedUnderSameFolder_returnsPrefix() {
+        List<SourceFile> files = List.of(
+                file("project/pom.xml", FileType.BUILD, ""),
+                file("project/src/main/java/App.java", FileType.APPLICATION, ""));
+        assertThat(service.detectCommonTopLevelPrefix(files)).isEqualTo("project");
+    }
+
+    @Test
+    void detectCommonTopLevelPrefix_mixedFolders_returnsNull() {
+        List<SourceFile> files = List.of(
+                file("service-a/pom.xml", FileType.BUILD, ""),
+                file("service-b/pom.xml", FileType.BUILD, ""));
+        assertThat(service.detectCommonTopLevelPrefix(files)).isNull();
     }
 }

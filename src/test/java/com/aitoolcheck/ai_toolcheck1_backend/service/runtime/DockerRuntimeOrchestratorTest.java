@@ -221,6 +221,71 @@ class DockerRuntimeOrchestratorTest {
                 .build();
     }
 
+    // ── Nested source root tests (hotfix) ─────────────────────────────────────
+
+    @Test
+    void resolveEffectiveBuildRoot_nullProjectRoot_returnsMaterializedRoot() throws Exception {
+        Path root = materializedRoot();
+        RuntimeDetectionResult detection = supportedMaven(); // projectRoot is null
+
+        Path result = orchestrator.resolveEffectiveBuildRoot(root, detection);
+
+        assertThat(result).isEqualTo(root);
+    }
+
+    @Test
+    void resolveEffectiveBuildRoot_withProjectRoot_returnsSubDirectory() throws Exception {
+        Path root = Files.createTempDirectory(tempDir, "runtime-source-");
+        Path nested = root.resolve("aitc-standard-springboot-api");
+        Files.createDirectories(nested);
+        Files.writeString(nested.resolve("pom.xml"), "<project/>");
+
+        RuntimeDetectionResult detection = RuntimeDetectionResult.builder()
+                .runtimeType(RuntimeType.SPRING_BOOT_MAVEN)
+                .supported(true)
+                .detectedPort(8080)
+                .contextPath("/api")
+                .projectRoot("aitc-standard-springboot-api")
+                .build();
+
+        Path result = orchestrator.resolveEffectiveBuildRoot(root, detection);
+
+        assertThat(result).isEqualTo(nested);
+    }
+
+    @Test
+    void start_nestedProjectRoot_usesSubDirectoryAsDockerBuildContext() throws Exception {
+        // Set up materialized root with nested structure
+        Path root = Files.createTempDirectory(tempDir, "runtime-source-");
+        Path nested = root.resolve("aitc-standard-springboot-api");
+        Files.createDirectories(nested);
+        Files.writeString(nested.resolve("pom.xml"), "<project/>");
+
+        MaterializedRuntimeSource mat = MaterializedRuntimeSource.builder()
+                .projectId(project.getId())
+                .rootDir(root)
+                .materializedFiles(List.of("aitc-standard-springboot-api/pom.xml"))
+                .build();
+        when(materializer.materialize(project.getId())).thenReturn(mat);
+
+        RuntimeDetectionResult detection = RuntimeDetectionResult.builder()
+                .runtimeType(RuntimeType.SPRING_BOOT_MAVEN)
+                .supported(true)
+                .detectedPort(8080)
+                .contextPath("/api")
+                .projectRoot("aitc-standard-springboot-api")
+                .build();
+
+        orchestrator.start(project, detection);
+
+        // docker build command context path must point to nested subdirectory, not root
+        String nestedAbsolute = nested.toAbsolutePath().toString();
+        assertThat(commands.commands.stream()
+                .filter(c -> c.size() > 2 && c.get(1).equals("build"))
+                .toList())
+                .anySatisfy(c -> assertThat(c).contains(nestedAbsolute));
+    }
+
     private static class RecordingCommandExecutor implements DockerRuntimeOrchestrator.CommandExecutor {
         private final List<List<String>> commands = new ArrayList<>();
         private boolean failBuild;

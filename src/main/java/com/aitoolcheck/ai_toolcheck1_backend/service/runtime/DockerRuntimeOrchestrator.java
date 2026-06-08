@@ -71,12 +71,13 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
         String imageTag = null;
         try {
             int appPort = detection.getDetectedPort() != null ? detection.getDetectedPort() : properties.getInternalPort();
-            Path dockerfilePath = resolveDockerfile(materialized.getRootDir(), detection, appPort);
+            Path effectiveBuildRoot = resolveEffectiveBuildRoot(materialized.getRootDir(), detection);
+            Path dockerfilePath = resolveDockerfile(effectiveBuildRoot, detection, appPort);
             imageTag = sanitizeDockerRef(properties.getContainerPrefix()) + ":" + sanitizeDockerRef(project.getId() + "-" + System.currentTimeMillis());
             containerName = sanitizeContainerName(properties.getContainerPrefix(), project.getId(), System.currentTimeMillis());
             int hostPort = allocatePort(project.getId());
 
-            CommandResult build = runDockerBuild(materialized.getRootDir(), imageTag, dockerfilePath);
+            CommandResult build = runDockerBuild(effectiveBuildRoot, imageTag, dockerfilePath);
             if (!build.success()) {
                 cleanupContainerAndImage(containerName, imageTag);
                 return failRuntime(runtime, RuntimeStatus.BUILD_FAILED, "docker build failed: " + build.summary());
@@ -148,6 +149,32 @@ public class DockerRuntimeOrchestrator implements RuntimeOrchestratorStrategy {
 
     void setHealthProbe(HealthProbe healthProbe) {
         this.healthProbe = healthProbe;
+    }
+
+    /**
+     * Resolves the effective build root directory from the materialized source root
+     * and the detected project root sub-path.
+     *
+     * <p>For a nested ZIP layout (e.g. {@code aitc-standard-springboot-api/pom.xml}),
+     * {@code detection.getProjectRoot()} will be {@code "aitc-standard-springboot-api"}
+     * and the returned path will be {@code materializedRoot/aitc-standard-springboot-api}.
+     * For a flat layout, {@code detection.getProjectRoot()} is {@code null} and
+     * the materialized root itself is returned unchanged.
+     */
+    Path resolveEffectiveBuildRoot(Path materializedRoot, RuntimeDetectionResult detection) throws IOException {
+        String projectRoot = detection.getProjectRoot();
+        if (projectRoot == null || projectRoot.isBlank()) {
+            return materializedRoot;
+        }
+        Path candidate = materializedRoot.resolve(projectRoot).normalize();
+        if (!candidate.startsWith(materializedRoot)) {
+            throw new IOException("Detected project root escapes materialized root: " + projectRoot);
+        }
+        if (!Files.isDirectory(candidate)) {
+            throw new IOException("Detected project root does not exist as a directory: " + candidate);
+        }
+        log.info("[DockerRuntimeOrchestrator] Using nested project root as build context: {}", candidate);
+        return candidate;
     }
 
     Path resolveDockerfile(Path root, RuntimeDetectionResult detection, int appPort) throws IOException {
