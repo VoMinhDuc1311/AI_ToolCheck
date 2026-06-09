@@ -29,6 +29,8 @@ public class AiTestCaseItemDto {
     @NotBlank(message = "Test name is required")
     private String testName;
 
+    private String description;
+
     private String caseType;
 
     private String priority;
