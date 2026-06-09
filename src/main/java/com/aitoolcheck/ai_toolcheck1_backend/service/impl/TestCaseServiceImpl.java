@@ -19,6 +19,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.req.UpdateTestCas
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.res.TestCaseInputResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.*;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiPersistenceException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
@@ -89,9 +90,10 @@ public class TestCaseServiceImpl implements TestCaseService {
             {{OPENAPI_OPERATION_CONTEXT}}
 
             Rules:
-            - Generate at most 1 positive smoke testcase for GET, HEAD, or OPTIONS.
+            - Generate exactly 1 positive smoke testcase for GET, HEAD, or OPTIONS.
             - Use STATUS_CODE EQUALS first 2xx response code; default 200.
             - Do not assert exact whole response body.
+            - Do not include JSON_PATH body assertions unless the response example is stable and explicit.
             - Do not expect {} or [] unless explicit OpenAPI example says so.
             - Do not assert fixed dynamic fields: id, uuid, createdAt, updatedAt, timestamp, token.
             - If context says no stable response example is available, generate status-code-only smoke test.
@@ -185,6 +187,7 @@ public class TestCaseServiceImpl implements TestCaseService {
                 // 3. Tạo Entity TestCase (Bảng Cha)
                 TestCase testCase = TestCase.builder()
                         .caseName(itemDto.getTestName())
+                        .description(itemDto.getDescription())
                         .caseType(caseType)
                         .priorityLevel(priorityLevel)
                         .generatedBy(GeneratedBy.AI)
@@ -744,14 +747,21 @@ public class TestCaseServiceImpl implements TestCaseService {
             //    We only mark SUCCESS after parse + save both succeed.
             AiGeneratedTestCaseRequest testCaseRequest = null;
             if (safeReadEndpoint) {
+                log.info("[GenerateTestCase][Gemini] targetEndpoint={} {}", httpMethod, endpointPath);
+                log.info("[GenerateTestCase][Gemini] promptChars={}", prompt.length());
                 try {
                     rawResult = geminiApiClientService.generateText(prompt);
+                    log.info("[GenerateTestCase][Gemini] rawResponseChars={}", rawResult != null ? rawResult.length() : 0);
                 } catch (Exception providerFailure) {
+                    if (!isDeterministicFallbackAllowed(endpoint, selectedResponseStatus)) {
+                        throw providerFailure;
+                    }
                     deterministicFallbackUsed = true;
-                    testCaseRequest = buildDeterministicFallbackRequest(endpoint, selectedResponseStatus);
+                    testCaseRequest = buildDeterministicFallbackRequest(endpoint, selectedResponseStatus,
+                            "Deterministic fallback smoke testcase generated because AI provider failed.");
                     rawResult = buildDeterministicFallbackRawJson(testCaseRequest);
-                    log.warn("[GenerateTestCase] Gemini failed for safe read endpoint; using deterministic fallback. " +
-                                    "endpointId={} jobId={} method={} path={} selectedStatus={} fallbackUsed=true cause={}",
+                    log.warn("[GenerateTestCase][Fallback] provider failure, creating deterministic smoke testcase " +
+                                    "endpointId={} jobId={} method={} path={} selectedStatus={} cause={}",
                             endpointId, jobId, httpMethod, endpointPath, selectedResponseStatus,
                             providerFailure.getMessage());
                 }
@@ -761,11 +771,43 @@ public class TestCaseServiceImpl implements TestCaseService {
 
             // 5. Parse AI output
             if (!deterministicFallbackUsed) {
-                testCaseRequest = aiJsonParserService.parseTestCaseRequest(rawResult);
+                try {
+                    testCaseRequest = aiJsonParserService.parseTestCaseRequest(rawResult);
+                } catch (AiJsonParseException parseFailure) {
+                    log.error("[GenerateTestCase][Parser][ERROR] invalidJson rootCause={} rawFirst500={}",
+                            rootCauseMessage(parseFailure), firstCharsForLog(rawResult, 500));
+
+                    String repairPrompt = buildJsonRepairPrompt(endpoint, selectedResponseStatus, rawResult);
+                    log.info("[GenerateTestCase][Repair] retrying once with JSON repair prompt");
+                    String repairedRaw = geminiApiClientService.generateText(repairPrompt);
+                    log.info("[GenerateTestCase][Gemini] rawResponseChars={}", repairedRaw != null ? repairedRaw.length() : 0);
+                    try {
+                        testCaseRequest = aiJsonParserService.parseTestCaseRequest(repairedRaw);
+                        rawResult = repairedRaw;
+                        log.info("[GenerateTestCase][Repair] success");
+                    } catch (AiJsonParseException repairFailure) {
+                        log.warn("[GenerateTestCase][Repair] failed rootCause={} rawFirst500={}",
+                                rootCauseMessage(repairFailure), firstCharsForLog(repairedRaw, 500));
+                        if (!isDeterministicFallbackAllowed(endpoint, selectedResponseStatus)) {
+                            String msg = "AI response parse failed and deterministic fallback is not allowed for unsafe endpoint.";
+                            throw new AiJsonParseException(repairFailure.getErrorType(), msg, repairFailure);
+                        }
+                        deterministicFallbackUsed = true;
+                        testCaseRequest = buildDeterministicFallbackRequest(endpoint, selectedResponseStatus,
+                                "Deterministic fallback smoke testcase generated because AI returned invalid JSON.");
+                        rawResult = buildDeterministicFallbackRawJson(testCaseRequest);
+                        log.warn("[GenerateTestCase][Fallback] invalid AI JSON, creating deterministic smoke testcase");
+                    }
+                }
             }
 
             // 6. Persist test cases
             proxySelf.saveAiGeneratedTestCases(testCaseRequest, UUID.fromString(endpointId), jobId);
+            if (deterministicFallbackUsed && testCaseRequest != null && testCaseRequest.getTestCases() != null
+                    && !testCaseRequest.getTestCases().isEmpty()) {
+                log.info("[GenerateTestCase][Fallback] persisted fallback testcase endpointId={} jobId={}",
+                        endpointId, jobId);
+            }
 
             // 7. Mark job SUCCESS only after both parse AND persist succeed
             int tokenInput = prompt.length() / 4;
@@ -784,20 +826,24 @@ public class TestCaseServiceImpl implements TestCaseService {
             log.info("[GenerateTestCase] Job {} marked COMPLETED after successful parse+save. endpointId={} fallbackUsed={}",
                     jobId, endpointId, deterministicFallbackUsed);
 
+        } catch (AiJsonParseException e) {
+            String parseFailMsg = e.getMessage() != null && e.getMessage().contains("fallback is not allowed")
+                    ? e.getMessage()
+                    : "AI response parse failed: " + e.getErrorType();
+            log.error("[GenerateTestCase] {} endpointId={} jobId={}", parseFailMsg, endpointId, jobId);
+            markGenerateTestCaseJobFailed(jobId, parseFailMsg);
+            throw e;
+        } catch (AiPersistenceException e) {
+            String persistFailMsg = "Database persistence error while saving generated test cases: " + e.getMessage();
+            log.error("[GenerateTestCase] {} endpointId={} jobId={}", persistFailMsg, endpointId, jobId);
+            markGenerateTestCaseJobFailed(jobId, persistFailMsg);
+            throw e;
         } catch (Exception e) {
             String aiFailMsg = "AI provider failed while generating test cases from OpenAPI document: "
                     + e.getMessage();
             log.error("[GenerateTestCase] {} endpointId={} jobId={}", aiFailMsg, endpointId, jobId);
-            aiJobLogRepository.findById(jobId).ifPresent(job -> {
-                job.setExecutionStatus(ExecutionStatus.FAILED);
-                job.setCompletedAt(LocalDateTime.now());
-                job.setErrorMessage(aiFailMsg);
-                aiJobLogRepository.save(job);
-            });
-            if (!(e instanceof AiPersistenceException)) {
-                throw new AiPersistenceException(aiFailMsg, e);
-            }
-            throw e;
+            markGenerateTestCaseJobFailed(jobId, aiFailMsg);
+            throw new IllegalStateException(aiFailMsg, e);
         }
 
         return rawResult;
@@ -1128,7 +1174,33 @@ public class TestCaseServiceImpl implements TestCaseService {
         return method == HttpMethod.GET || method == HttpMethod.HEAD || method == HttpMethod.OPTIONS;
     }
 
-    private AiGeneratedTestCaseRequest buildDeterministicFallbackRequest(ApiEndpoint endpoint, int statusCode) {
+    private boolean isDeterministicFallbackAllowed(ApiEndpoint endpoint, int statusCode) {
+        if (endpoint == null || !isSafeReadMethod(endpoint.getHttpMethod())) {
+            return false;
+        }
+        String path = endpoint.getEndpointPath();
+        if (path == null || path.isBlank() || path.toUpperCase(java.util.Locale.ROOT).contains("UNKNOWN")) {
+            return false;
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+            return false;
+        }
+        if (endpoint.getApiParameters() != null) {
+            for (ApiParameter parameter : endpoint.getApiParameters()) {
+                boolean requiredPathParam = parameter.getParamIn() == ParamIn.PATH
+                        && Boolean.TRUE.equals(parameter.getRequiredFlag());
+                if (requiredPathParam && (parameter.getExampleValue() == null || parameter.getExampleValue().isBlank())) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private AiGeneratedTestCaseRequest buildDeterministicFallbackRequest(
+            ApiEndpoint endpoint,
+            int statusCode,
+            String description) {
         AiTestCaseAssertionDto assertion = AiTestCaseAssertionDto.builder()
                 .assertionType("STATUS_CODE")
                 .jsonPath("")
@@ -1138,6 +1210,7 @@ public class TestCaseServiceImpl implements TestCaseService {
 
         AiTestCaseItemDto item = AiTestCaseItemDto.builder()
                 .testName("Smoke: " + endpoint.getHttpMethod() + " " + endpoint.getEndpointPath() + " returns " + statusCode)
+                .description(description)
                 .caseType("SUCCESS")
                 .priority("MEDIUM")
                 .httpMethod(endpoint.getHttpMethod() != null ? endpoint.getHttpMethod() : HttpMethod.GET)
@@ -1158,6 +1231,49 @@ public class TestCaseServiceImpl implements TestCaseService {
         } catch (Exception e) {
             return "{\"test_cases\":[]}";
         }
+    }
+
+    private String buildJsonRepairPrompt(ApiEndpoint endpoint, int statusCode, String rawAiResponse) {
+        String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name() : "GET";
+        String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+        String schema = "{\"test_cases\":[{\"test_name\":\"Smoke: endpoint returns success\","
+                + "\"case_type\":\"SUCCESS\",\"priority\":\"MEDIUM\",\"http_method\":\"" + method + "\","
+                + "\"url\":\"" + path + "\",\"expected_status_code\":" + statusCode
+                + ",\"inputs\":[],\"assertions\":[{\"assertion_type\":\"STATUS_CODE\","
+                + "\"json_path\":\"\",\"comparison_operator\":\"EQUALS\",\"expected_value\":\""
+                + statusCode + "\"}]}]}";
+        return "The previous response was invalid JSON. Return valid JSON only matching this schema:\n"
+                + schema
+                + "\nDo not include markdown or explanation.\nPrevious response first 1000 chars:\n"
+                + firstCharsForLog(rawAiResponse, 1000);
+    }
+
+    private String firstCharsForLog(String value, int limit) {
+        if (value == null) {
+            return "";
+        }
+        String sanitized = value.replaceAll("[\\r\\n\\t]+", " ").trim();
+        if (sanitized.length() <= limit) {
+            return sanitized;
+        }
+        return sanitized.substring(0, limit);
+    }
+
+    private String rootCauseMessage(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current.getMessage();
+    }
+
+    private void markGenerateTestCaseJobFailed(UUID jobId, String message) {
+        aiJobLogRepository.findById(jobId).ifPresent(job -> {
+            job.setExecutionStatus(ExecutionStatus.FAILED);
+            job.setCompletedAt(LocalDateTime.now());
+            job.setErrorMessage(message);
+            aiJobLogRepository.save(job);
+        });
     }
 
     @Override

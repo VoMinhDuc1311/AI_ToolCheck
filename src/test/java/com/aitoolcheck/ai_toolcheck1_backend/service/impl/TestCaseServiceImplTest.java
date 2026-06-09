@@ -11,6 +11,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.AssertionType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ComparisonOperator;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.GeneratedBy;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocument;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ApiDocumentVersion;
@@ -489,7 +490,7 @@ class TestCaseServiceImplTest {
         String prompt = service.buildGenerateTestCasePrompt(context, endpointId.toString(), UUID.randomUUID());
 
         assertThat(prompt).contains("Return JSON only");
-        assertThat(prompt).contains("Generate at most 1 positive smoke testcase");
+        assertThat(prompt).contains("Generate exactly 1 positive smoke testcase");
         assertThat(prompt).contains("STATUS_CODE EQUALS first 2xx response code");
         assertThat(prompt).contains("Do not assert exact whole response body");
     }
@@ -575,6 +576,239 @@ class TestCaseServiceImplTest {
     }
 
     @Test
+    void specificEndpointSafeGet_whenGeminiReturnsInvalidJson_retriesRepairOnce() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        String invalidRaw = "{";
+        String repairedRaw = "{\"test_cases\":[{\"test_name\":\"Smoke repaired\",\"case_type\":\"SUCCESS\",\"priority\":\"MEDIUM\",\"http_method\":\"GET\",\"url\":\"/greeting\",\"expected_status_code\":200,\"assertions\":[{\"assertion_type\":\"STATUS_CODE\",\"comparison_operator\":\"EQUALS\",\"expected_value\":\"200\"}]}]}";
+        when(geminiApiClientService.generateText(any())).thenReturn(invalidRaw, repairedRaw);
+        when(aiJsonParserService.parseTestCaseRequest(invalidRaw)).thenThrow(invalidJson("No closing delimiter"));
+        when(aiJsonParserService.parseTestCaseRequest(repairedRaw)).thenReturn(parsedGreetingRequest("Smoke repaired"));
+
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(geminiApiClientService, times(2)).generateText(any());
+        verify(aiJsonParserService).parseTestCaseRequest(invalidRaw);
+        verify(aiJsonParserService).parseTestCaseRequest(repairedRaw);
+    }
+
+    @Test
+    void specificEndpointSafeGet_whenRepairSucceeds_persistsAiTestcase() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        String invalidRaw = "{";
+        String repairedRaw = "{\"test_cases\":[{\"test_name\":\"Smoke repaired\",\"case_type\":\"SUCCESS\",\"priority\":\"MEDIUM\",\"http_method\":\"GET\",\"url\":\"/greeting\",\"expected_status_code\":200,\"assertions\":[{\"assertion_type\":\"STATUS_CODE\",\"comparison_operator\":\"EQUALS\",\"expected_value\":\"200\"}]}]}";
+        when(geminiApiClientService.generateText(any())).thenReturn(invalidRaw, repairedRaw);
+        when(aiJsonParserService.parseTestCaseRequest(invalidRaw)).thenThrow(invalidJson("No closing delimiter"));
+        when(aiJsonParserService.parseTestCaseRequest(repairedRaw)).thenReturn(parsedGreetingRequest("Smoke repaired"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(testCaseRepository).save(captor.capture());
+        assertThat(captor.getValue().getCaseName()).isEqualTo("Smoke repaired");
+        assertThat(captor.getValue().getDescription()).isNull();
+    }
+
+    @Test
+    void specificEndpointSafeGet_whenGeminiAndRepairInvalid_createsFallbackStatusCodeTestcase() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        when(geminiApiClientService.generateText(any())).thenReturn("{", "[");
+        when(aiJsonParserService.parseTestCaseRequest(any())).thenThrow(invalidJson("No closing delimiter"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(geminiApiClientService, times(2)).generateText(any());
+        verify(testCaseRepository).save(captor.capture());
+        TestCase saved = captor.getValue();
+        assertThat(saved.getDescription())
+                .isEqualTo("Deterministic fallback smoke testcase generated because AI returned invalid JSON.");
+        assertStatus200Smoke(saved, "/greeting");
+    }
+
+    @Test
+    void parserInvalidJson_forSafeGet_doesNotFailJobWhenFallbackAllowed() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+        when(geminiApiClientService.generateText(any())).thenReturn("not json", "still not json");
+        when(aiJsonParserService.parseTestCaseRequest(any())).thenThrow(invalidJson("invalid json"));
+
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+        verify(testCaseRepository).save(any(TestCase.class));
+    }
+
+    @Test
+    void legacyInventoryItems_fallbackUsesStatusCode200() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, legacyInventoryOpenApi());
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/legacy/inventory/items");
+        when(geminiApiClientService.generateText(any())).thenReturn("{", "[");
+        when(aiJsonParserService.parseTestCaseRequest(any())).thenThrow(invalidJson("No closing delimiter"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(testCaseRepository).save(captor.capture());
+        assertStatus200Smoke(captor.getValue(), "/legacy/inventory/items");
+    }
+
+    @Test
+    void fallbackAfterInvalidJson_passesSanitizer() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+        when(geminiApiClientService.generateText(any())).thenReturn("{", "[");
+        when(aiJsonParserService.parseTestCaseRequest(any())).thenThrow(invalidJson("No closing delimiter"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(testCaseRepository).save(captor.capture());
+        assertThat(captor.getValue().getTestCaseAssertions()).isNotEmpty();
+        assertThat(captor.getValue().getTestCaseAssertions()).noneMatch(a ->
+                a.getAssertionType() == AssertionType.JSON_PATH && "{}".equals(a.getExpectedValue()));
+        assertThat(captor.getValue().getTestCaseAssertions()).noneMatch(a ->
+                a.getAssertionType() == AssertionType.JSON_PATH
+                        && a.getTargetPath() != null
+                        && a.getTargetPath().matches(".*(id|uuid|createdAt|updatedAt|timestamp|token).*"));
+    }
+
+    @Test
+    void postEndpoint_invalidJson_doesNotCreateUnsafeFallback() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.POST);
+        endpoint.setEndpointPath("/users");
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any())).thenReturn("{");
+        when(geminiApiClientService.generateText(any())).thenReturn("[");
+        when(aiJsonParserService.parseTestCaseRequest(any())).thenThrow(invalidJson("No closing delimiter"));
+
+        assertThatThrownBy(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId))
+                .isInstanceOf(AiJsonParseException.class)
+                .hasMessageContaining("fallback is not allowed");
+        verify(testCaseRepository, never()).save(any());
+    }
+
+    @Test
+    void unknownEndpoint_invalidJson_doesNotCreateUnsafeFallback() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, """
+                {"openapi":"3.0.3","paths":{"/legacy/UNKNOWN/items":{"get":{"responses":{"200":{"description":"OK"}}}}}}
+                """);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/legacy/UNKNOWN/items");
+        when(geminiApiClientService.generateText(any())).thenReturn("{", "[");
+        when(aiJsonParserService.parseTestCaseRequest(any())).thenThrow(invalidJson("No closing delimiter"));
+
+        assertThatThrownBy(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId))
+                .isInstanceOf(AiJsonParseException.class)
+                .hasMessageContaining("fallback is not allowed");
+        verify(testCaseRepository, never()).save(any());
+    }
+
+    @Test
+    void invalidAiJson_isNotReportedAsDatabasePersistenceError() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.POST);
+        endpoint.setEndpointPath("/users");
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any())).thenReturn("{");
+        when(geminiApiClientService.generateText(any())).thenReturn("[");
+        when(aiJsonParserService.parseTestCaseRequest(any())).thenThrow(invalidJson("No closing delimiter"));
+        com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog jobLog = new com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog();
+        jobLog.setId(jobId);
+        when(aiJobLogRepository.findById(jobId)).thenReturn(Optional.of(jobLog));
+
+        assertThatThrownBy(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId))
+                .isInstanceOf(AiJsonParseException.class);
+        assertThat(jobLog.getErrorMessage()).doesNotContain("Database").doesNotContain("Persistence");
+        assertThat(jobLog.getErrorMessage()).contains("AI response parse failed");
+    }
+
+    @Test
+    void modernGreeting_stillGeneratesStatusCodeTestcase() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+        String aiJson = "{\"test_cases\":[{\"test_name\":\"Smoke greeting\",\"case_type\":\"POSITIVE\",\"priority\":\"MEDIUM\",\"http_method\":\"GET\",\"url\":\"/greeting\",\"expected_status_code\":200,\"assertions\":[{\"assertion_type\":\"STATUS_CODE\",\"comparison_operator\":\"EQUALS\",\"expected_value\":\"200\"}]}]}";
+        when(geminiApiClientService.generateText(any())).thenReturn(aiJson);
+        when(aiJsonParserService.parseTestCaseRequest(aiJson)).thenReturn(parsedGreetingRequest("Smoke greeting"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(geminiApiClientService, times(1)).generateText(any());
+        verify(testCaseRepository).save(captor.capture());
+        assertStatus200Smoke(captor.getValue(), "/greeting");
+    }
+
+    @Test
     void generateTestCaseProcessing_reachesRouterAfterPromptBuild() {
         UUID jobId = UUID.randomUUID();
         ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
@@ -636,12 +870,13 @@ class TestCaseServiceImplTest {
                 .thenReturn(List.of(version));
         when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
 
-        endpoint.setHttpMethod(HttpMethod.GET);
-        endpoint.setEndpointPath("/greeting");
+        endpoint.setHttpMethod(HttpMethod.POST);
+        endpoint.setEndpointPath("/users");
 
         String aiJson = "{\"invalid_json\": true}";
-        when(geminiApiClientService.generateText(any())).thenReturn(aiJson);
-        when(aiJsonParserService.parseTestCaseRequest(aiJson))
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any())).thenReturn(aiJson);
+        when(geminiApiClientService.generateText(any())).thenReturn("{");
+        when(aiJsonParserService.parseTestCaseRequest(any()))
                 .thenThrow(new com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException(
                         com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType.INVALID_JSON_SYNTAX,
                         "JSON malformed"));
@@ -654,7 +889,7 @@ class TestCaseServiceImplTest {
         assertThrows(Exception.class, () -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
         assertEquals(com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus.FAILED, jobLog.getExecutionStatus());
         assertNotNull(jobLog.getCompletedAt());
-        assertTrue(jobLog.getErrorMessage().contains("AI provider failed"));
+        assertTrue(jobLog.getErrorMessage().contains("AI response parse failed"));
         verify(aiJobLogRepository).save(jobLog);
     }
 
@@ -669,6 +904,65 @@ class TestCaseServiceImplTest {
         doc.setSourceProject(project);
         v.setApiDocument(doc);
         return v;
+    }
+
+    private AiJsonParseException invalidJson(String message) {
+        return new AiJsonParseException(AiJsonParseException.ErrorType.INVALID_JSON_SYNTAX, message);
+    }
+
+    private AiGeneratedTestCaseRequest parsedGreetingRequest(String name) {
+        var assertion = com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseAssertionDto.builder()
+                .assertionType("STATUS_CODE")
+                .jsonPath("")
+                .comparisonOperator("EQUALS")
+                .expectedValue("200")
+                .build();
+        var item = com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiTestCaseItemDto.builder()
+                .testName(name)
+                .caseType("POSITIVE")
+                .priority("MEDIUM")
+                .httpMethod(HttpMethod.GET)
+                .url("/greeting")
+                .expectedStatusCode(200)
+                .assertions(List.of(assertion))
+                .build();
+        AiGeneratedTestCaseRequest request = new AiGeneratedTestCaseRequest();
+        request.setTestCases(List.of(item));
+        return request;
+    }
+
+    private void assertStatus200Smoke(TestCase saved, String path) {
+        assertThat(saved.getCaseType()).isEqualTo(com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.POSITIVE);
+        assertThat(saved.getRequiresWrite()).isFalse();
+        assertThat(saved.getCleanupRequired()).isFalse();
+        assertThat(saved.getTestCaseInput().getHttpMethod()).isEqualTo(HttpMethod.GET);
+        assertThat(saved.getTestCaseInput().getRequestPath()).isEqualTo(path);
+        assertThat(saved.getTestCaseAssertions()).hasSize(1);
+        TestCaseAssertion assertion = saved.getTestCaseAssertions().get(0);
+        assertThat(assertion.getAssertionType()).isEqualTo(AssertionType.STATUS_CODE);
+        assertThat(assertion.getOperator()).isEqualTo(ComparisonOperator.EQUALS);
+        assertThat(assertion.getExpectedValue()).isEqualTo("200");
+    }
+
+    private String legacyInventoryOpenApi() {
+        return """
+                {
+                  "openapi": "3.0.3",
+                  "info": {"title": "Legacy Inventory", "version": "1.0"},
+                  "paths": {
+                    "/legacy/inventory/items": {
+                      "get": {
+                        "operationId": "listInventoryItems",
+                        "summary": "List Inventory Items",
+                        "responses": {
+                          "200": {"description": "OK", "content": {"application/json": {"example": [{"sku":"SKU-1","quantity":2}]}}},
+                          "500": {"description": "Server Error"}
+                        }
+                      }
+                    }
+                  }
+                }
+                """;
     }
 
     private CreateTestCaseRequest buildCreateRequest(String name, Map<String, Object> qp,
