@@ -110,14 +110,20 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
         log.debug("[AiJsonParser] Bắt đầu parse Test Case Request - độ dài: {} ký tự", rawAiResponse.length());
 
         try {
-            // Layer 1: Trích xuất lõi JSON (Loại bỏ Markdown, tìm '{')
+            // Layer 1: Trích xuất lõi JSON (Loại bỏ Markdown, tìm '{' hoặc '[')
             String cleanJson = extractJsonBlock(rawAiResponse);
+
+            // Layer 2: Parse thành JsonNode
+            JsonNode rootNode = validateJson(cleanJson);
+
+            // Layer 3: Normalize schema linh hoạt
+            JsonNode normalizedNode = normalizeTestCaseJsonNode(rootNode);
 
             // Layer 4: Ánh xạ (Mapping) bằng ObjectMapper (Copy)
             ObjectMapper localMapper = objectMapper.copy()
                     .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
-            AiGeneratedTestCaseRequest dto = localMapper.readValue(cleanJson, AiGeneratedTestCaseRequest.class);
+            AiGeneratedTestCaseRequest dto = localMapper.treeToValue(normalizedNode, AiGeneratedTestCaseRequest.class);
 
             // Layer 5: Kích hoạt Jakarta Bean Validation
             validateDto(dto);
@@ -442,17 +448,6 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
     /**
      * Self-Healing parser dành riêng cho AI Skill 2 (Sinh Test Case).
      *
-     * <p>
-     * Pipeline:
-     * <ol>
-     * <li>Guard: kiểm tra input không rỗng.</li>
-     * <li>Tìm ranh giới mảng JSON bằng
-     * {@code indexOf('[') / lastIndexOf(']')}.</li>
-     * <li>Validate JSON Array bằng Jackson.</li>
-     * <li>Parse sang {@code List<AiTestCaseDto>} dùng {@link TypeReference} (tránh
-     * lỗi casting runtime).</li>
-     * </ol>
-     *
      * @param rawJson Chuỗi thô từ AI (có thể bọc markdown, câu chào hỏi).
      * @return Danh sách
      *         {@link com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto}
@@ -465,63 +460,37 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
             String rawJson) {
         guardAgainstBlankInput(rawJson);
 
-        // Layer 0: Normalize field-name aliases and enum aliases BEFORE parsing.
-        // This is a cheap string-level fix so Jackson can map cleanly.
-        String normalized = normalizeTestCaseAliases(rawJson);
-
-        // Layer 0b: If the response is an object wrapper, extract the inner array.
-        // Handles: {"testCases":[...]}, {"cases":[...]}, {"tests":[...]}, {"data":[...]}
-        normalized = unwrapTestCaseArray(normalized);
-
-        // Layer 1: Tìm ranh giới '[' đầu và ']' cuối
-        int startIndex = normalized.indexOf(JSON_ARRAY_OPEN);
-        int endIndex = normalized.lastIndexOf(JSON_ARRAY_CLOSE);
-
-        if (startIndex == -1 || endIndex == -1 || endIndex <= startIndex) {
-            log.error("[AiJsonParser][TestCase] Không tìm thấy mảng JSON hợp lệ. startIndex={}, endIndex={}",
-                    startIndex, endIndex);
-            throw new AiJsonParseException(
-                    ErrorType.INVALID_JSON_SYNTAX,
-                    "Invalid JSON array structure from AI: cannot find '[' or ']' delimiters.");
-        }
-
-        String cleanJson = normalized.substring(startIndex, endIndex + 1).trim();
-        if (cleanJson.isBlank()) {
-            throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "Cleaned JSON array is empty.");
-        }
-
-        log.debug("[AiJsonParser][TestCase] Extracted JSON array - length: {} chars", cleanJson.length());
-
-        // Layer 2: Validate JSON syntax bằng cách đọc thành JsonNode trước
         try {
-            JsonNode arrayNode = objectMapper.readTree(cleanJson);
-            if (!arrayNode.isArray()) {
-                throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "AI response is not a JSON array.");
+            // Layer 1: Trích xuất lõi JSON
+            String cleanJson = extractJsonBlock(rawJson);
+
+            // Layer 2: Parse thành JsonNode
+            JsonNode rootNode = validateJson(cleanJson);
+
+            // Layer 3: Normalize schema linh hoạt
+            JsonNode normalizedNode = normalizeTestCaseJsonNode(rootNode);
+
+            // Lấy mảng test_cases
+            JsonNode testCasesArray = normalizedNode.get("test_cases");
+            if (testCasesArray == null || !testCasesArray.isArray()) {
+                throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "No test cases array found in normalized JSON.");
             }
-            log.debug("[AiJsonParser][TestCase] JSON validation passed - {} elements", arrayNode.size());
-        } catch (Exception e) {
-            if (e instanceof AiJsonParseException)
-                throw (AiJsonParseException) e;
-            log.error("[AiJsonParser][TestCase] JSON syntax invalid. Clean JSON: {}", cleanJson);
-            throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "Malformed JSON array: " + e.getMessage(), e);
-        }
 
-        // Layer 3: Parse sang List<AiTestCaseDto> dùng TypeReference (bắt buộc để tránh
-        // lỗi runtime casting)
-        try {
             ObjectMapper lenientMapper = objectMapper.copy()
                     .disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
 
             List<com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto> result = lenientMapper.readValue(
-                    cleanJson,
+                    testCasesArray.toString(),
                     new TypeReference<List<com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiTestCaseDto>>() {
                     });
 
             log.info("[AiJsonParser][TestCase] Parse thành công - {} test case(s) được trích xuất.", result.size());
             return result;
 
-        } catch (JsonProcessingException e) {
-            log.error("[AiJsonParser][TestCase] Parse thất bại. Clean JSON (debug):\n{}", cleanJson);
+        } catch (AiJsonParseException e) {
+            throw e;
+        } catch (Exception e) {
+            log.error("[AiJsonParser][TestCase] Parse thất bại. Raw JSON (debug):\n{}", rawJson, e);
             throw new AiJsonParseException(
                     ErrorType.DTO_MAPPING_ERROR,
                     "Cannot parse JSON array to AiTestCaseDto list. Reason: " + e.getMessage(), e);
@@ -529,90 +498,277 @@ public class AiJsonParserServiceImpl implements AiJsonParserService {
     }
 
     /**
-     * Normalizes field-name and enum-value aliases that AI models commonly emit.
-     *
-     * <h3>Field-name aliases (JSON key replacement)</h3>
-     * <ul>
-     *   <li>{@code "test_name"} → {@code "case_name"}</li>
-     *   <li>{@code "testName"}  → {@code "case_name"} (camelCase variant)</li>
-     * </ul>
-     *
-     * <h3>Enum-value aliases (scoped to case_type / caseType field only)</h3>
-     * <ul>
-     *   <li>{@code "case_type": "SUCCESS"}  → {@code "case_type": "POSITIVE"}</li>
-     *   <li>{@code "case_type": "FAILURE"}  → {@code "case_type": "NEGATIVE"}</li>
-     *   <li>{@code "caseType": "SUCCESS"}   → {@code "caseType": "POSITIVE"}</li>
-     *   <li>{@code "caseType": "FAILURE"}   → {@code "caseType": "NEGATIVE"}</li>
-     * </ul>
-     *
-     * <p><strong>Safety note:</strong> SUCCESS/FAILURE replacements are scoped to
-     * the {@code case_type}/{@code caseType} field via regex so that other JSON
-     * string values (e.g. {@code "description"}, {@code "message"},
-     * {@code "expectedValue"}) containing these words are never mutated.</p>
-     *
-     * <h3>Assertion-type aliases (value replacement)</h3>
-     * <ul>
-     *   <li>{@code "VALIDATION_ERROR"} → {@code "VALIDATION"}</li>
-     *   <li>{@code "CLIENT_ERROR"}     → {@code "VALIDATION"}</li>
-     *   <li>{@code "JSON_BODY"}        → {@code "JSON_PATH"}</li>
-     * </ul>
+     * Normalizes test case JSON structure and fields to be robust against variations in AI outputs.
      */
-    private String normalizeTestCaseAliases(String raw) {
-        if (raw == null) return "";
-        return raw
-                // ── Field-name aliases ─────────────────────────────────────────────
-                .replace("\"test_name\"", "\"case_name\"")
-                .replace("\"testName\"",  "\"case_name\"")
-
-                // ── case_type enum aliases — scoped to the field, not global ───────
-                // Matches: "case_type"  : "SUCCESS"  and  "caseType"  : "SUCCESS"
-                // (optional whitespace around the colon is handled by \s*)
-                .replaceAll("(\"(?:case_type|caseType)\"\\s*:\\s*)\"SUCCESS\"",  "$1\"POSITIVE\"")
-                .replaceAll("(\"(?:case_type|caseType)\"\\s*:\\s*)\"FAILURE\"",  "$1\"NEGATIVE\"")
-
-                // ── Assertion-type aliases — these appear only as enum values ──────
-                // VALIDATION_ERROR / CLIENT_ERROR are not common English words in
-                // free-text fields, so a global replace is low-risk and correct here.
-                .replace("\"VALIDATION_ERROR\"",  "\"VALIDATION\"")
-                .replace("\"CLIENT_ERROR\"",      "\"VALIDATION\"")
-                .replace("\"JSON_BODY\"",          "\"JSON_PATH\"");
-    }
-
-    /**
-     * If the AI wraps the test-case array inside an object
-     * (e.g. {@code {"testCases": [...]}}) this method extracts the raw array
-     * string so the downstream array parser works correctly.
-     *
-     * <p>Supported wrapper keys (case-insensitive): {@code testCases}, {@code cases},
-     * {@code tests}, {@code data}, {@code items}, {@code test_cases}.
-     */
-    private String unwrapTestCaseArray(String raw) {
-        int firstBrace = raw.indexOf('{');
-        int firstBracket = raw.indexOf('[');
-
-        // If the outermost structure is already an array, no unwrapping needed.
-        if (firstBracket != -1 && (firstBrace == -1 || firstBracket < firstBrace)) {
-            return raw;
-        }
-        if (firstBrace == -1) {
-            return raw; // No JSON object found at all — let downstream handle.
+    private JsonNode normalizeTestCaseJsonNode(JsonNode rootNode) {
+        if (rootNode == null || rootNode.isNull()) {
+            return objectMapper.createObjectNode();
         }
 
-        try {
-            JsonNode root = objectMapper.readTree(raw.substring(firstBrace, raw.lastIndexOf('}') + 1));
-            if (!root.isObject()) return raw;
+        // 1. Convert root array to root object if needed
+        com.fasterxml.jackson.databind.node.ObjectNode normalizedRoot;
+        if (rootNode.isArray()) {
+            normalizedRoot = objectMapper.createObjectNode();
+            normalizedRoot.set("test_cases", rootNode);
+        } else if (rootNode.isObject()) {
+            normalizedRoot = (com.fasterxml.jackson.databind.node.ObjectNode) rootNode.deepCopy();
+        } else {
+            throw new AiJsonParseException(ErrorType.INVALID_JSON_SYNTAX, "Root JSON must be an object or an array.");
+        }
 
-            // Try known wrapper keys
-            for (String key : new String[]{"testCases", "test_cases", "cases", "tests", "data", "items"}) {
-                JsonNode candidate = root.get(key);
+        // 2. Unwrap wrapper keys into "test_cases"
+        JsonNode testCasesNode = normalizedRoot.get("test_cases");
+        if (testCasesNode == null || !testCasesNode.isArray()) {
+            String[] candidateKeys = {"testCases", "test_cases", "cases", "items", "tests", "data", "testcases"};
+            for (String key : candidateKeys) {
+                JsonNode candidate = normalizedRoot.get(key);
                 if (candidate != null && candidate.isArray()) {
-                    log.debug("[AiJsonParser][TestCase] Unwrapped object key='{}' containing {} element(s)", key, candidate.size());
-                    return candidate.toString();
+                    normalizedRoot.set("test_cases", candidate);
+                    if (!"test_cases".equals(key)) {
+                        normalizedRoot.remove(key);
+                    }
+                    break;
                 }
             }
-        } catch (Exception e) {
-            log.debug("[AiJsonParser][TestCase] unwrapTestCaseArray parse attempt failed, continuing: {}", e.getMessage());
         }
-        return raw; // Could not unwrap — let downstream decide.
+
+        // 3. Ensure "test_cases" field is present and is an ArrayNode
+        JsonNode finalTestCases = normalizedRoot.get("test_cases");
+        if (finalTestCases == null || !finalTestCases.isArray()) {
+            com.fasterxml.jackson.databind.node.ArrayNode emptyArray = objectMapper.createArrayNode();
+            normalizedRoot.set("test_cases", emptyArray);
+            finalTestCases = emptyArray;
+        }
+
+        com.fasterxml.jackson.databind.node.ArrayNode testCasesArray = (com.fasterxml.jackson.databind.node.ArrayNode) finalTestCases;
+
+        // 4. Iterate over each test case item
+        for (int i = 0; i < testCasesArray.size(); i++) {
+            JsonNode itemNode = testCasesArray.get(i);
+            if (itemNode == null || !itemNode.isObject()) {
+                continue;
+            }
+
+            com.fasterxml.jackson.databind.node.ObjectNode itemObj = (com.fasterxml.jackson.databind.node.ObjectNode) itemNode;
+
+            // 4.1. Normalize test_name / case_name / testName / caseName / name
+            normalizeField(itemObj, "test_name", "testName", "case_name", "caseName", "name");
+            JsonNode nameNode = itemObj.get("test_name");
+            if (nameNode != null) {
+                itemObj.set("test_name", nameNode);
+                itemObj.set("case_name", nameNode);
+            }
+
+            // 4.2. Normalize http_method / httpMethod / method
+            normalizeField(itemObj, "http_method", "httpMethod", "method");
+            JsonNode methodNode = itemObj.get("http_method");
+            if (methodNode != null && methodNode.isTextual()) {
+                itemObj.put("http_method", methodNode.asText().trim().toUpperCase());
+            }
+
+            // 4.3. Normalize expected_status_code
+            normalizeField(itemObj, "expected_status_code", "expectedStatusCode", "expected_status", "statusCode");
+            JsonNode statusCodeNode = itemObj.get("expected_status_code");
+            if (statusCodeNode != null && !statusCodeNode.isNull()) {
+                if (statusCodeNode.isTextual()) {
+                    try {
+                        int code = Integer.parseInt(statusCodeNode.asText().trim());
+                        itemObj.put("expected_status_code", code);
+                    } catch (NumberFormatException ignored) {}
+                }
+            }
+
+            // 4.4. Normalize case_type / caseType
+            normalizeField(itemObj, "case_type", "caseType");
+            JsonNode caseTypeNode = itemObj.get("case_type");
+            if (caseTypeNode != null && caseTypeNode.isTextual()) {
+                String val = caseTypeNode.asText().trim().toUpperCase();
+                // Map from aliases
+                if ("SUCCESS".equals(val)) {
+                    val = "POSITIVE";
+                } else if ("FAILURE".equals(val)) {
+                    val = "NEGATIVE";
+                } else if ("VALIDATION_ERROR".equals(val) || "CLIENT_ERROR".equals(val)) {
+                    val = "VALIDATION";
+                }
+                itemObj.put("case_type", val);
+            }
+
+            // 4.5. Normalize priority / priority_level / priorityLevel
+            normalizeField(itemObj, "priority", "priority_level", "priorityLevel");
+            JsonNode priorityNode = itemObj.get("priority");
+            if (priorityNode != null) {
+                if (priorityNode.isTextual()) {
+                    String val = priorityNode.asText().trim().toUpperCase();
+                    itemObj.put("priority", val);
+                    itemObj.put("priority_level", val);
+                } else {
+                    itemObj.set("priority", priorityNode);
+                    itemObj.set("priority_level", priorityNode);
+                }
+            }
+
+            // 4.6. Normalize inputs / flat input fields
+            normalizeField(itemObj, "inputs", "input", "parameters", "params");
+            JsonNode inputsNode = itemObj.get("inputs");
+            
+            JsonNode pathParams = itemObj.get("path_params");
+            if (pathParams == null) pathParams = itemObj.get("pathParams");
+            
+            JsonNode queryParams = itemObj.get("query_params");
+            if (queryParams == null) queryParams = itemObj.get("queryParams");
+            
+            JsonNode requestBody = itemObj.get("request_body");
+            if (requestBody == null) requestBody = itemObj.get("requestBody");
+            
+            JsonNode headers = itemObj.get("headers");
+
+            // If we have flat fields but no inputs list, build the inputs list
+            if ((inputsNode == null || !inputsNode.isArray() || inputsNode.size() == 0)
+                && (pathParams != null || queryParams != null || requestBody != null || headers != null)) {
+                com.fasterxml.jackson.databind.node.ArrayNode inputsArray = objectMapper.createArrayNode();
+                if (pathParams != null && !pathParams.isNull()) {
+                    com.fasterxml.jackson.databind.node.ObjectNode inputNode = objectMapper.createObjectNode();
+                    inputNode.put("param_in", "PATH");
+                    inputNode.set("payload", pathParams);
+                    inputsArray.add(inputNode);
+                }
+                if (queryParams != null && !queryParams.isNull()) {
+                    com.fasterxml.jackson.databind.node.ObjectNode inputNode = objectMapper.createObjectNode();
+                    inputNode.put("param_in", "QUERY");
+                    inputNode.set("payload", queryParams);
+                    inputsArray.add(inputNode);
+                }
+                if (requestBody != null && !requestBody.isNull()) {
+                    com.fasterxml.jackson.databind.node.ObjectNode inputNode = objectMapper.createObjectNode();
+                    inputNode.put("param_in", "BODY");
+                    inputNode.set("payload", requestBody);
+                    inputsArray.add(inputNode);
+                }
+                if (headers != null && !headers.isNull()) {
+                    com.fasterxml.jackson.databind.node.ObjectNode inputNode = objectMapper.createObjectNode();
+                    inputNode.put("param_in", "HEADER");
+                    inputNode.set("payload", headers);
+                    inputsArray.add(inputNode);
+                }
+                itemObj.set("inputs", inputsArray);
+                inputsNode = inputsArray;
+            }
+
+            // If we have inputs list but no flat fields, populate the flat fields
+            if (inputsNode != null && inputsNode.isArray()) {
+                com.fasterxml.jackson.databind.node.ArrayNode inputsArray = (com.fasterxml.jackson.databind.node.ArrayNode) inputsNode;
+                for (int j = 0; j < inputsArray.size(); j++) {
+                    JsonNode inputItem = inputsArray.get(j);
+                    if (inputItem != null && inputItem.isObject()) {
+                        com.fasterxml.jackson.databind.node.ObjectNode inputObj = (com.fasterxml.jackson.databind.node.ObjectNode) inputItem;
+                        normalizeField(inputObj, "param_in", "paramIn", "in", "location");
+                        JsonNode paramInNode = inputObj.get("param_in");
+                        if (paramInNode != null && paramInNode.isTextual()) {
+                            String paramInStr = paramInNode.asText().trim().toUpperCase();
+                            inputObj.put("param_in", paramInStr);
+                            
+                            JsonNode payload = inputObj.get("payload");
+                            if (payload != null && !payload.isNull()) {
+                                if ("PATH".equals(paramInStr)) {
+                                    itemObj.set("path_params", payload);
+                                    itemObj.set("pathParams", payload);
+                                } else if ("QUERY".equals(paramInStr)) {
+                                    itemObj.set("query_params", payload);
+                                    itemObj.set("queryParams", payload);
+                                } else if ("BODY".equals(paramInStr)) {
+                                    itemObj.set("request_body", payload);
+                                    itemObj.set("requestBody", payload);
+                                } else if ("HEADER".equals(paramInStr)) {
+                                    itemObj.set("headers", payload);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 4.7. Normalize assertions
+            normalizeField(itemObj, "assertions", "assertion", "rules", "asserts");
+            JsonNode assertionsNode = itemObj.get("assertions");
+            if (assertionsNode != null && assertionsNode.isArray()) {
+                com.fasterxml.jackson.databind.node.ArrayNode assertionsArray = (com.fasterxml.jackson.databind.node.ArrayNode) assertionsNode;
+                for (int j = 0; j < assertionsArray.size(); j++) {
+                    JsonNode assertItem = assertionsArray.get(j);
+                    if (assertItem != null && assertItem.isObject()) {
+                        com.fasterxml.jackson.databind.node.ObjectNode assertObj = (com.fasterxml.jackson.databind.node.ObjectNode) assertItem;
+                        
+                        // normalize assertion_type / assertionType / type
+                        normalizeField(assertObj, "assertion_type", "assertionType", "type");
+                        JsonNode assertTypeNode = assertObj.get("assertion_type");
+                        if (assertTypeNode != null && assertTypeNode.isTextual()) {
+                            String val = assertTypeNode.asText().trim().toUpperCase();
+                            if ("JSON_BODY".equals(val)) {
+                                val = "JSON_PATH";
+                            } else if ("VALIDATION_ERROR".equals(val) || "CLIENT_ERROR".equals(val)) {
+                                val = "VALIDATION";
+                            }
+                            assertObj.put("assertion_type", val);
+                        }
+
+                        // normalize target_path / targetPath / json_path / jsonPath / path
+                        normalizeField(assertObj, "target_path", "targetPath", "json_path", "jsonPath", "path");
+                        JsonNode pathVal = assertObj.get("target_path");
+                        if (pathVal != null) {
+                            assertObj.set("target_path", pathVal);
+                            assertObj.set("json_path", pathVal);
+                            assertObj.set("jsonPath", pathVal);
+                        }
+
+                        // normalize operator / comparison_operator / comparisonOperator
+                        normalizeField(assertObj, "operator", "comparison_operator", "comparisonOperator");
+                        JsonNode opVal = assertObj.get("operator");
+                        if (opVal != null) {
+                            if (opVal.isTextual()) {
+                                String val = opVal.asText().trim().toUpperCase();
+                                if ("NOT_NULL".equals(val)) {
+                                    val = "IS_NOT_NULL";
+                                }
+                                assertObj.put("operator", val);
+                                assertObj.put("comparison_operator", val);
+                            } else {
+                                assertObj.set("operator", opVal);
+                                assertObj.set("comparison_operator", opVal);
+                            }
+                        }
+
+                        // normalize expected_value / expectedValue
+                        JsonNode expNode = assertObj.get("expected_value");
+                        if (expNode == null) {
+                            expNode = assertObj.get("expectedValue");
+                        }
+                        if (expNode != null && !expNode.isNull()) {
+                            String valueStr;
+                            if (expNode.isContainerNode()) {
+                                valueStr = expNode.toString();
+                            } else {
+                                valueStr = expNode.asText();
+                            }
+                            assertObj.put("expected_value", valueStr);
+                            assertObj.put("expectedValue", valueStr);
+                        }
+                    }
+                }
+            }
+        }
+
+        return normalizedRoot;
+    }
+
+    private void normalizeField(com.fasterxml.jackson.databind.node.ObjectNode obj, String targetKey, String... alternateKeys) {
+        if (obj.has(targetKey) && !obj.get(targetKey).isNull()) {
+            return;
+        }
+        for (String altKey : alternateKeys) {
+            if (obj.has(altKey) && !obj.get(altKey).isNull()) {
+                obj.set(targetKey, obj.get(altKey));
+                break;
+            }
+        }
     }
 }

@@ -198,4 +198,73 @@ class AiJsonParserServiceImplTest {
         assertEquals("Payment SUCCESS confirmed", results.get(0).getCaseName());
         assertEquals("Payment FAILURE report",    results.get(1).getCaseName());
     }
+
+    @Test
+    void parseTestCaseRequest_whenExpectedValueIsJsonObject_normalizesToString() {
+        String rawJson = """
+                ```json
+                {
+                  "test_cases": [
+                    {
+                      "test_name": "Get User Profile",
+                      "case_type": "SUCCESS",
+                      "priority": "HIGH",
+                      "http_method": "GET",
+                      "url": "/api/users/profile",
+                      "assertions": [
+                        {
+                          "assertion_type": "JSON_PATH",
+                          "json_path": "$.user",
+                          "comparison_operator": "EQUALS",
+                          "expected_value": {
+                            "code": "USER_NOT_FOUND",
+                            "message": "User not found"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+                ```
+                """;
+        var request = parser.parseTestCaseRequest(rawJson);
+        assertEquals(1, request.getTestCases().size());
+        var tc = request.getTestCases().get(0);
+        assertEquals("Get User Profile", tc.getTestName());
+        assertEquals("HIGH", tc.getPriority());
+        assertEquals(1, tc.getAssertions().size());
+        var assertion = tc.getAssertions().get(0);
+        assertEquals("{\"code\":\"USER_NOT_FOUND\",\"message\":\"User not found\"}", assertion.getExpectedValue());
+    }
+
+    @Test
+    void parseTestCaseRequest_whenExpectedValueIsJsonArray_normalizesToString() {
+        String rawJson = """
+                [
+                  {
+                    "case_name": "Get Items",
+                    "case_type": "SUCCESS",
+                    "priority_level": "MEDIUM",
+                    "http_method": "GET",
+                    "url": "/api/items",
+                    "assertions": [
+                      {
+                        "assertion_type": "JSON_PATH",
+                        "json_path": "$.ids",
+                        "comparison_operator": "EQUALS",
+                        "expected_value": [1, 2, 3]
+                      }
+                    ]
+                  }
+                ]
+                """;
+        var request = parser.parseTestCaseRequest(rawJson);
+        assertEquals(1, request.getTestCases().size());
+        var tc = request.getTestCases().get(0);
+        assertEquals("Get Items", tc.getTestName());
+        assertEquals(1, tc.getAssertions().size());
+        var assertion = tc.getAssertions().get(0);
+        assertEquals("[1,2,3]", assertion.getExpectedValue());
+    }
 }
+
