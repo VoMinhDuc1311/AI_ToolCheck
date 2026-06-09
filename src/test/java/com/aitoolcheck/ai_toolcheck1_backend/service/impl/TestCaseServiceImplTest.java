@@ -156,7 +156,8 @@ class TestCaseServiceImplTest {
                 new ObjectMapper(),
                 applicationContext,
                 aiPayloadOptimizerService,
-                aiOptimizationProperties);
+                aiOptimizationProperties,
+                new com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiTestCaseAssertionSanitizer());
 
         projectId = UUID.randomUUID();
         endpointId = UUID.randomUUID();

@@ -119,11 +119,17 @@ public class AiPromptConstants {
          - For path-variable endpoints with no real resource ID available, prefer a 404 not-found negative test instead of a fake 200 positive.
          - Do NOT place URL-reserved characters (# ? / % & = + space) as raw path variable values.
          - Use safe placeholder IDs for invalid-resource tests: UNKNOWN_ID, UNKNOWN_CUSTOMER_ID, NON_EXISTENT_ID.
+         - For positive GET, HEAD, or OPTIONS smoke tests, prefer a single STATUS_CODE assertion.
+         - Do NOT assert exact entire response bodies unless the OpenAPI context includes an explicit stable response example.
+         - Do NOT expect an empty object {} or empty array [] unless an explicit OpenAPI response example says exactly that.
+         - Do NOT create root body equality assertions such as JSON_PATH "$" EQUALS "{}" or JSON_BODY EQUALS "{}".
+         - Avoid fixed EQUALS assertions on dynamic fields: id, uuid, createdAt, updatedAt, timestamp, date, token, random, version.
+         - Prefer robust assertions only when grounded by schema/example: STATUS_CODE, HEADER content type, JSON_PATH EXISTS/type-like checks.
 
          STRICT ENUM DICTIONARY — use ONLY these exact values:
          - case_type: "SUCCESS", "VALIDATION_ERROR", "CLIENT_ERROR", "SERVER_ERROR", "UNAUTHORIZED"
-         - assertion_type: "STATUS_CODE", "JSON_BODY", "HEADER", "RESPONSE_TIME"
-         - operator (comparison_operator): "EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_NULL", "IS_NULL"
+         - assertion_type: "STATUS_CODE", "JSON_PATH", "HEADER", "RESPONSE_TIME"
+         - operator (comparison_operator): "EQUALS", "NOT_EQUALS", "CONTAINS", "NOT_NULL", "IS_NULL", "EXISTS"
          - priority: "HIGH", "MEDIUM", "LOW"
 
          Return ONLY a valid JSON object in this exact shape — no markdown, no explanation:
