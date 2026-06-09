@@ -653,6 +653,130 @@ class TestCaseServiceImplTest {
     }
 
     @Test
+    void safeGet_invalidJson_thenRepairRateLimited_createsFallbackStatusCodeTestcase() {
+        UUID jobId = UUID.randomUUID();
+        arrangeGenerateFromOpenApi(SAMPLE_OPENAPI);
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        when(geminiApiClientService.generateText(any()))
+                .thenReturn("{")
+                .thenThrow(new RuntimeException("[LLM_RATE_LIMITED] Gemini quota/rate limit exceeded"));
+        when(aiJsonParserService.parseTestCaseRequest("{")).thenThrow(invalidJson("No closing delimiter"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(geminiApiClientService, times(2)).generateText(any());
+        verify(testCaseRepository).save(captor.capture());
+        assertThat(captor.getValue().getDescription())
+                .isEqualTo("Deterministic fallback smoke testcase generated because AI JSON repair failed.");
+        assertStatus200Smoke(captor.getValue(), "/greeting");
+    }
+
+    @Test
+    void safeGet_invalidJson_thenRepair503_createsFallbackStatusCodeTestcase() {
+        UUID jobId = UUID.randomUUID();
+        arrangeGenerateFromOpenApi(SAMPLE_OPENAPI);
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        when(geminiApiClientService.generateText(any()))
+                .thenReturn("{")
+                .thenThrow(new RuntimeException("503 SERVICE_UNAVAILABLE"));
+        when(aiJsonParserService.parseTestCaseRequest("{")).thenThrow(invalidJson("No closing delimiter"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(testCaseRepository).save(captor.capture());
+        assertThat(captor.getValue().getDescription())
+                .isEqualTo("Deterministic fallback smoke testcase generated because AI JSON repair failed.");
+        assertStatus200Smoke(captor.getValue(), "/greeting");
+    }
+
+    @Test
+    void safeGet_invalidJson_thenRepairTimeout_createsFallbackStatusCodeTestcase() {
+        UUID jobId = UUID.randomUUID();
+        arrangeGenerateFromOpenApi(SAMPLE_OPENAPI);
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        when(geminiApiClientService.generateText(any()))
+                .thenReturn("{")
+                .thenThrow(new RuntimeException("Gemini gemini-2.5-flash timed out after 90s"));
+        when(aiJsonParserService.parseTestCaseRequest("{")).thenThrow(invalidJson("No closing delimiter"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(testCaseRepository).save(captor.capture());
+        assertThat(captor.getValue().getDescription())
+                .isEqualTo("Deterministic fallback smoke testcase generated because AI JSON repair failed.");
+        assertStatus200Smoke(captor.getValue(), "/greeting");
+    }
+
+    @Test
+    void post_invalidJson_thenRepairRateLimited_doesNotFallback() {
+        UUID jobId = UUID.randomUUID();
+        arrangeGenerateFromOpenApi(SAMPLE_OPENAPI);
+        endpoint.setHttpMethod(HttpMethod.POST);
+        endpoint.setEndpointPath("/users");
+
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any())).thenReturn("{");
+        when(geminiApiClientService.generateText(any()))
+                .thenThrow(new RuntimeException("[LLM_RATE_LIMITED] Gemini quota/rate limit exceeded"));
+        when(aiJsonParserService.parseTestCaseRequest("{")).thenThrow(invalidJson("No closing delimiter"));
+
+        assertThatThrownBy(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId))
+                .isInstanceOf(AiJsonParseException.class)
+                .hasMessageContaining("AI JSON repair failed and deterministic fallback is not allowed for unsafe endpoint");
+        verify(testCaseRepository, never()).save(any());
+    }
+
+    @Test
+    void repairProviderFailure_isNotReportedAsDatabasePersistenceError() {
+        UUID jobId = UUID.randomUUID();
+        arrangeGenerateFromOpenApi(SAMPLE_OPENAPI);
+        endpoint.setHttpMethod(HttpMethod.POST);
+        endpoint.setEndpointPath("/users");
+
+        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any())).thenReturn("{");
+        when(geminiApiClientService.generateText(any()))
+                .thenThrow(new RuntimeException("[LLM_RATE_LIMITED] Gemini quota/rate limit exceeded"));
+        when(aiJsonParserService.parseTestCaseRequest("{")).thenThrow(invalidJson("No closing delimiter"));
+        com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog jobLog = new com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog();
+        jobLog.setId(jobId);
+        when(aiJobLogRepository.findById(jobId)).thenReturn(Optional.of(jobLog));
+
+        assertThatThrownBy(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId))
+                .isInstanceOf(AiJsonParseException.class);
+        assertThat(jobLog.getErrorMessage()).doesNotContain("Database").doesNotContain("Persistence");
+        assertThat(jobLog.getErrorMessage()).contains("AI JSON repair failed");
+    }
+
+    @Test
+    void legacyInventoryItems_repairFailureFallbackUsesStatus200() {
+        UUID jobId = UUID.randomUUID();
+        arrangeGenerateFromOpenApi(legacyInventoryOpenApi());
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/legacy/inventory/items");
+
+        when(geminiApiClientService.generateText(any()))
+                .thenReturn("{")
+                .thenThrow(new RuntimeException("[LLM_RATE_LIMITED] Gemini quota/rate limit exceeded"));
+        when(aiJsonParserService.parseTestCaseRequest("{")).thenThrow(invalidJson("No closing delimiter"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(testCaseRepository).save(captor.capture());
+        assertThat(captor.getValue().getDescription())
+                .isEqualTo("Deterministic fallback smoke testcase generated because AI JSON repair failed.");
+        assertStatus200Smoke(captor.getValue(), "/legacy/inventory/items");
+    }
+
+    @Test
     void parserInvalidJson_forSafeGet_doesNotFailJobWhenFallbackAllowed() {
         UUID jobId = UUID.randomUUID();
         ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
@@ -904,6 +1028,14 @@ class TestCaseServiceImplTest {
         doc.setSourceProject(project);
         v.setApiDocument(doc);
         return v;
+    }
+
+    private void arrangeGenerateFromOpenApi(String openApiJson) {
+        ApiDocumentVersion version = makeVersion(1, openApiJson);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
     }
 
     private AiJsonParseException invalidJson(String message) {

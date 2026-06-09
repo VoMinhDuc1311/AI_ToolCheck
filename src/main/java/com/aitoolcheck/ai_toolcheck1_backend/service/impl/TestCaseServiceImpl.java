@@ -280,7 +280,12 @@ public class TestCaseServiceImpl implements TestCaseService {
                 testCase.replaceAssertions(assertionEntities);
 
                 // Lưu TestCase (Kéo theo Input và Assertions nhờ CascadeType.ALL)
-                testCaseRepository.save(testCase);
+                TestCase savedTestCase = testCaseRepository.save(testCase);
+                if (itemDto.getDescription() != null
+                        && itemDto.getDescription().startsWith("Deterministic fallback smoke testcase generated")) {
+                    log.info("[GenerateTestCase][Fallback] persisted fallback testcase id={}",
+                            savedTestCase != null ? savedTestCase.getId() : testCase.getId());
+                }
             }
 
             log.info("[Phase 3] Hoàn thành lưu trữ AI test cases cho Job: {}", aiJobId);
@@ -779,9 +784,10 @@ public class TestCaseServiceImpl implements TestCaseService {
 
                     String repairPrompt = buildJsonRepairPrompt(endpoint, selectedResponseStatus, rawResult);
                     log.info("[GenerateTestCase][Repair] retrying once with JSON repair prompt");
-                    String repairedRaw = geminiApiClientService.generateText(repairPrompt);
-                    log.info("[GenerateTestCase][Gemini] rawResponseChars={}", repairedRaw != null ? repairedRaw.length() : 0);
+                    String repairedRaw = null;
                     try {
+                        repairedRaw = geminiApiClientService.generateText(repairPrompt);
+                        log.info("[GenerateTestCase][Gemini] rawResponseChars={}", repairedRaw != null ? repairedRaw.length() : 0);
                         testCaseRequest = aiJsonParserService.parseTestCaseRequest(repairedRaw);
                         rawResult = repairedRaw;
                         log.info("[GenerateTestCase][Repair] success");
@@ -797,17 +803,27 @@ public class TestCaseServiceImpl implements TestCaseService {
                                 "Deterministic fallback smoke testcase generated because AI returned invalid JSON.");
                         rawResult = buildDeterministicFallbackRawJson(testCaseRequest);
                         log.warn("[GenerateTestCase][Fallback] invalid AI JSON, creating deterministic smoke testcase");
+                    } catch (Exception repairProviderFailure) {
+                        log.warn("[GenerateTestCase][Repair][ERROR] providerFailure={}",
+                                rootCauseMessage(repairProviderFailure));
+                        if (!isDeterministicFallbackAllowed(endpoint, selectedResponseStatus)) {
+                            String msg = "AI JSON repair failed and deterministic fallback is not allowed for unsafe endpoint.";
+                            throw new AiJsonParseException(
+                                    AiJsonParseException.ErrorType.INVALID_JSON_SYNTAX,
+                                    msg,
+                                    repairProviderFailure);
+                        }
+                        deterministicFallbackUsed = true;
+                        testCaseRequest = buildDeterministicFallbackRequest(endpoint, selectedResponseStatus,
+                                "Deterministic fallback smoke testcase generated because AI JSON repair failed.");
+                        rawResult = buildDeterministicFallbackRawJson(testCaseRequest);
+                        log.warn("[GenerateTestCase][Fallback] repair failed, creating deterministic smoke testcase");
                     }
                 }
             }
 
             // 6. Persist test cases
             proxySelf.saveAiGeneratedTestCases(testCaseRequest, UUID.fromString(endpointId), jobId);
-            if (deterministicFallbackUsed && testCaseRequest != null && testCaseRequest.getTestCases() != null
-                    && !testCaseRequest.getTestCases().isEmpty()) {
-                log.info("[GenerateTestCase][Fallback] persisted fallback testcase endpointId={} jobId={}",
-                        endpointId, jobId);
-            }
 
             // 7. Mark job SUCCESS only after both parse AND persist succeed
             int tokenInput = prompt.length() / 4;
