@@ -1,6 +1,7 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.AiGeneratedTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.req.CreateTestCaseRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcase.res.TestCaseDetailResponse;
@@ -22,6 +23,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants;
@@ -116,11 +118,13 @@ class TestCaseServiceImplTest {
     private ApiEndpointRepository apiEndpointRepository;
     private ApiDocumentVersionRepository apiDocumentVersionRepository;
     private AiModelRouterService aiModelRouterService;
+    private GeminiApiClientService geminiApiClientService;
     private AiJsonParserService aiJsonParserService;
     private AiJobLogRepository aiJobLogRepository;
     private ApplicationContext applicationContext;
     private AiOptimizationProperties aiOptimizationProperties;
     private AiPayloadOptimizerService aiPayloadOptimizerService;
+    private GeminiProperties geminiProperties;
     private TestCaseServiceImpl service;
 
     private UUID projectId;
@@ -136,11 +140,14 @@ class TestCaseServiceImplTest {
         apiEndpointRepository = mock(ApiEndpointRepository.class);
         apiDocumentVersionRepository = mock(ApiDocumentVersionRepository.class);
         aiModelRouterService = mock(AiModelRouterService.class);
+        geminiApiClientService = mock(GeminiApiClientService.class);
         aiJsonParserService = mock(AiJsonParserService.class);
         aiJobLogRepository = mock(AiJobLogRepository.class);
         applicationContext = mock(ApplicationContext.class);
         aiOptimizationProperties = mock(AiOptimizationProperties.class);
         aiPayloadOptimizerService = mock(AiPayloadOptimizerService.class);
+        geminiProperties = new GeminiProperties();
+        geminiProperties.setModel("gemini-2.5-flash");
 
         service = new TestCaseServiceImpl(
                 testCaseRepository,
@@ -150,6 +157,7 @@ class TestCaseServiceImplTest {
                 aiJobLogRepository,
                 mock(AiTaskProducer.class),
                 aiModelRouterService,
+                geminiApiClientService,
                 aiJsonParserService,
                 projectAccessService,
                 mock(AiSkillRepository.class),
@@ -157,7 +165,8 @@ class TestCaseServiceImplTest {
                 applicationContext,
                 aiPayloadOptimizerService,
                 aiOptimizationProperties,
-                new com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiTestCaseAssertionSanitizer());
+                new com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiTestCaseAssertionSanitizer(),
+                geminiProperties);
 
         projectId = UUID.randomUUID();
         endpointId = UUID.randomUUID();
@@ -357,6 +366,7 @@ class TestCaseServiceImplTest {
                 .hasMessageContaining("No OpenAPI document found");
 
         verify(aiModelRouterService, never()).routeAndExecuteForSkillRaw(any(), any());
+        verify(geminiApiClientService, never()).generateText(any());
         verify(testCaseRepository, never()).save(any());
     }
 
@@ -374,8 +384,7 @@ class TestCaseServiceImplTest {
                 .thenReturn(List.of(v2, v1));
 
         String aiJson = "{\"test_cases\":[]}";
-        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
-                .thenReturn(aiJson);
+        when(geminiApiClientService.generateText(any())).thenReturn(aiJson);
         AiGeneratedTestCaseRequest parsed = new AiGeneratedTestCaseRequest();
         parsed.setTestCases(List.of());
         when(aiJsonParserService.parseTestCaseRequest(aiJson)).thenReturn(parsed);
@@ -385,8 +394,9 @@ class TestCaseServiceImplTest {
         endpoint.setHttpMethod(HttpMethod.GET);
 
         assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
-        // AI router must have been called (meaning v2 was loaded and matched)
-        verify(aiModelRouterService).routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any());
+        // Safe GET uses Gemini directly to avoid slow Ollama fallback.
+        verify(geminiApiClientService).generateText(any());
+        verify(aiModelRouterService, never()).routeAndExecuteForSkillRaw(any(), any());
     }
 
     @Test
@@ -401,14 +411,14 @@ class TestCaseServiceImplTest {
         endpoint.setEndpointPath("/users/{id}");
 
         String aiJson = "{\"test_cases\":[]}";
-        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
-                .thenReturn(aiJson);
+        when(geminiApiClientService.generateText(any())).thenReturn(aiJson);
         AiGeneratedTestCaseRequest parsed = new AiGeneratedTestCaseRequest();
         parsed.setTestCases(List.of());
         when(aiJsonParserService.parseTestCaseRequest(aiJson)).thenReturn(parsed);
 
         assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), UUID.randomUUID()));
-        verify(aiModelRouterService).routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any());
+        verify(geminiApiClientService).generateText(any());
+        verify(aiModelRouterService, never()).routeAndExecuteForSkillRaw(any(), any());
     }
 
     @Test
@@ -439,6 +449,52 @@ class TestCaseServiceImplTest {
     }
 
     @Test
+    void specificEndpointPrompt_isCompactAndDoesNotContainFullOpenApi() throws Exception {
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        String context = service.buildCompactOpenApiContext(endpoint, version);
+        String prompt = service.buildGenerateTestCasePrompt(context, endpointId.toString(), UUID.randomUUID());
+
+        assertThat(prompt.length()).isLessThan(1800);
+        assertThat(prompt).contains("/greeting");
+        assertThat(prompt).contains("greeting");
+        assertThat(prompt).doesNotContain("\"paths\":");
+        assertThat(prompt).doesNotContain("\"components\":");
+        assertThat(prompt).doesNotContain("AdminDto");
+        assertThat(prompt).doesNotContain("CreateUserRequest");
+    }
+
+    @Test
+    void greetingEmptySchema_promptRequestsStatusOnlySmokeTest() throws Exception {
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        String context = service.buildCompactOpenApiContext(endpoint, version);
+        String prompt = service.buildGenerateTestCasePrompt(context, endpointId.toString(), UUID.randomUUID());
+
+        assertThat(context).contains("No stable response example is available. Generate status-code-only smoke test.");
+        assertThat(prompt).contains("No stable response example is available. Generate status-code-only smoke test.");
+    }
+
+    @Test
+    void promptUsesJsonOnlyAndMaxOnePositiveSmokeTest() throws Exception {
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+
+        String context = service.buildCompactOpenApiContext(endpoint, version);
+        String prompt = service.buildGenerateTestCasePrompt(context, endpointId.toString(), UUID.randomUUID());
+
+        assertThat(prompt).contains("Return JSON only");
+        assertThat(prompt).contains("Generate at most 1 positive smoke testcase");
+        assertThat(prompt).contains("STATUS_CODE EQUALS first 2xx response code");
+        assertThat(prompt).contains("Do not assert exact whole response body");
+    }
+
+    @Test
     void generateTestCaseProcessing_rejectsMissingOperationInOpenApi() {
         UUID jobId = UUID.randomUUID();
         ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
@@ -459,7 +515,7 @@ class TestCaseServiceImplTest {
     }
 
     @Test
-    void generateTestCaseProcessing_providerFailureSavesNoTestCases() {
+    void geminiTimeout_forSafeGet_createsDeterministicFallback() {
         UUID jobId = UUID.randomUUID();
         ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
         when(apiDocumentVersionRepository
@@ -470,13 +526,52 @@ class TestCaseServiceImplTest {
         endpoint.setHttpMethod(HttpMethod.GET);
         endpoint.setEndpointPath("/greeting");
 
-        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
-                .thenThrow(new RuntimeException("LLM timeout"));
+        when(geminiApiClientService.generateText(any()))
+                .thenThrow(new RuntimeException("Gemini gemini-2.5-flash timed out after 90s"));
 
-        assertThatThrownBy(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId))
-                .hasMessageContaining("AI provider failed");
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
 
-        verify(testCaseRepository, never()).save(any());
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(geminiApiClientService).generateText(any());
+        verify(aiModelRouterService, never()).routeAndExecuteForSkillRaw(any(), any());
+        verify(testCaseRepository).save(captor.capture());
+        TestCase saved = captor.getValue();
+        assertThat(saved.getCaseType()).isEqualTo(com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.POSITIVE);
+        assertThat(saved.getRequiresWrite()).isFalse();
+        assertThat(saved.getTestCaseInput().getHttpMethod()).isEqualTo(HttpMethod.GET);
+        assertThat(saved.getTestCaseInput().getRequestPath()).isEqualTo("/greeting");
+        assertThat(saved.getTestCaseAssertions()).hasSize(1);
+        TestCaseAssertion assertion = saved.getTestCaseAssertions().get(0);
+        assertThat(assertion.getAssertionType()).isEqualTo(AssertionType.STATUS_CODE);
+        assertThat(assertion.getOperator()).isEqualTo(ComparisonOperator.EQUALS);
+        assertThat(assertion.getExpectedValue()).isEqualTo("200");
+    }
+
+    @Test
+    void fallbackTestcase_passesSanitizer() {
+        UUID jobId = UUID.randomUUID();
+        ApiDocumentVersion version = makeVersion(1, SAMPLE_OPENAPI);
+        when(apiDocumentVersionRepository
+                .findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId))
+                .thenReturn(List.of(version));
+        when(applicationContext.getBean(TestCaseService.class)).thenReturn(service);
+
+        endpoint.setHttpMethod(HttpMethod.GET);
+        endpoint.setEndpointPath("/greeting");
+        when(geminiApiClientService.generateText(any())).thenThrow(new RuntimeException("timeout"));
+
+        var captor = org.mockito.ArgumentCaptor.forClass(TestCase.class);
+
+        assertDoesNotThrow(() -> service.generateTestCaseProcessing(endpointId.toString(), jobId));
+
+        verify(testCaseRepository).save(captor.capture());
+        assertThat(captor.getValue().getTestCaseAssertions())
+                .extracting(TestCaseAssertion::getAssertionType)
+                .containsExactly(AssertionType.STATUS_CODE);
+        assertThat(captor.getValue().getTestCaseAssertions())
+                .noneMatch(a -> a.getAssertionType() == AssertionType.JSON_PATH
+                        && "{}".equals(a.getExpectedValue()));
     }
 
     @Test
@@ -492,15 +587,15 @@ class TestCaseServiceImplTest {
         endpoint.setEndpointPath("/greeting");
 
         String aiJson = "{\"test_cases\":[]}";
-        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
-                .thenReturn(aiJson);
+        when(geminiApiClientService.generateText(any())).thenReturn(aiJson);
         AiGeneratedTestCaseRequest parsed = new AiGeneratedTestCaseRequest();
         parsed.setTestCases(List.of());
         when(aiJsonParserService.parseTestCaseRequest(aiJson)).thenReturn(parsed);
 
         String result = service.generateTestCaseProcessing(endpointId.toString(), jobId);
         assertEquals(aiJson, result);
-        verify(aiModelRouterService).routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any());
+        verify(geminiApiClientService).generateText(any());
+        verify(aiModelRouterService, never()).routeAndExecuteForSkillRaw(any(), any());
     }
 
     @Test
@@ -516,8 +611,7 @@ class TestCaseServiceImplTest {
         endpoint.setEndpointPath("/greeting");
 
         String aiJson = "{\"test_cases\":[]}";
-        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
-                .thenReturn(aiJson);
+        when(geminiApiClientService.generateText(any())).thenReturn(aiJson);
         AiGeneratedTestCaseRequest parsed = new AiGeneratedTestCaseRequest();
         parsed.setTestCases(List.of());
         when(aiJsonParserService.parseTestCaseRequest(aiJson)).thenReturn(parsed);
@@ -546,8 +640,7 @@ class TestCaseServiceImplTest {
         endpoint.setEndpointPath("/greeting");
 
         String aiJson = "{\"invalid_json\": true}";
-        when(aiModelRouterService.routeAndExecuteForSkillRaw(eq("GENERATE_TEST_CASE"), any()))
-                .thenReturn(aiJson);
+        when(geminiApiClientService.generateText(any())).thenReturn(aiJson);
         when(aiJsonParserService.parseTestCaseRequest(aiJson))
                 .thenThrow(new com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException(
                         com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException.ErrorType.INVALID_JSON_SYNTAX,

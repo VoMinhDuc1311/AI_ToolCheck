@@ -2,7 +2,6 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
-import com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.req.GeminiRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureException;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
@@ -225,15 +224,7 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
         }
 
         // Build DTO Request dựa vào tham số promptText
-        GeminiRequest request = GeminiRequest.builder()
-                        .contents(List.of(
-                                        GeminiRequest.Content.builder()
-                                                        .parts(List.of(
-                                                                        GeminiRequest.Part.builder()
-                                                                                        .text(promptText)
-                                                                                        .build()))
-                                                        .build()))
-                        .build();
+        Map<String, Object> request = buildTextGenerationPayload(promptText);
 
         // URI Path động từ model trong properties
         String uriPath = "/" + geminiProperties.getModel() + ":generateContent";
@@ -305,8 +296,8 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
     public String generateText(String prompt) {
         log.info("[GeminiClient][generateText] Gọi Gemini Cloud — độ dài prompt: {} chars", prompt.length());
         return sendPrompt(prompt)
-                .timeout(Duration.ofSeconds(60),
-                        Mono.error(new RuntimeException("[GeminiClient] Timeout 60s khi gọi Gemini Cloud.")))
+                .timeout(Duration.ofSeconds(geminiProperties.getTimeoutSeconds()),
+                        Mono.error(new RuntimeException("[GeminiClient] Timeout " + geminiProperties.getTimeoutSeconds() + "s khi gọi Gemini Cloud.")))
                 .doOnError(ex -> log.error("[GeminiClient][generateText] Thất bại: {}", ex.getMessage()))
                 .block();
     }
@@ -475,6 +466,20 @@ public class GeminiApiClientServiceImpl implements GeminiApiClientService {
 
                 payload.put("generationConfig", generationConfig);
 
+                return payload;
+        }
+
+        private Map<String, Object> buildTextGenerationPayload(String promptText) {
+                Map<String, Object> payload = new HashMap<>();
+                payload.put("contents", List.of(
+                                Map.of("parts", List.of(
+                                                Map.of("text", promptText)))));
+
+                Map<String, Object> generationConfig = new HashMap<>();
+                generationConfig.put("responseMimeType", "application/json");
+                generationConfig.put("temperature", geminiProperties.getTemperature());
+                generationConfig.put("maxOutputTokens", geminiProperties.getMaxOutputTokens());
+                payload.put("generationConfig", generationConfig);
                 return payload;
         }
 
