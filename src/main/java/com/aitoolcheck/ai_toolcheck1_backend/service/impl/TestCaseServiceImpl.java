@@ -28,6 +28,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiTestCaseAssertionSanitizer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
@@ -76,6 +77,7 @@ public class TestCaseServiceImpl implements TestCaseService {
     private final org.springframework.context.ApplicationContext applicationContext;
     private final AiPayloadOptimizerService aiPayloadOptimizerService;
     private final AiOptimizationProperties aiOptimizationProperties;
+    private final AiTestCaseAssertionSanitizer aiTestCaseAssertionSanitizer;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -186,7 +188,7 @@ public class TestCaseServiceImpl implements TestCaseService {
                             try {
                                 String norm = assertionDto.getAssertionType().trim().toUpperCase();
                                 assertionType = switch (norm) {
-                                    case "JSON_BODY" -> AssertionType.JSON_PATH;
+                                    case "JSON_BODY", "BODY", "RESPONSE_BODY" -> AssertionType.JSON_PATH;
                                     default -> AssertionType.valueOf(norm);
                                 };
                             } catch (Exception e) {
@@ -222,6 +224,13 @@ public class TestCaseServiceImpl implements TestCaseService {
                                 .build());
                     }
                 }
+
+                assertionEntities = aiTestCaseAssertionSanitizer.sanitize(
+                        assertionEntities,
+                        itemDto.getHttpMethod(),
+                        caseType,
+                        itemDto.getExpectedStatusCode(),
+                        false);
 
                 testCase.replaceAssertions(assertionEntities);
 
@@ -1059,7 +1068,7 @@ public class TestCaseServiceImpl implements TestCaseService {
                     try {
                         String norm = aDto.getAssertionType().trim().toUpperCase();
                         assertionType = switch (norm) {
-                            case "JSON_BODY" -> AssertionType.JSON_PATH;
+                            case "JSON_BODY", "BODY", "RESPONSE_BODY" -> AssertionType.JSON_PATH;
                             default -> AssertionType.valueOf(norm);
                         };
                     } catch (IllegalArgumentException e) {
@@ -1095,6 +1104,13 @@ public class TestCaseServiceImpl implements TestCaseService {
 
             // Xây dựng TestCase entity (Dùng constructor/setter thay vì builder để đảm bảo
             // Collections hoạt động chuẩn với JPA)
+            assertions = aiTestCaseAssertionSanitizer.sanitize(
+                    assertions,
+                    apiEndpoint.getHttpMethod(),
+                    caseType,
+                    null,
+                    false);
+
             TestCase testCase = new TestCase();
             testCase.setCaseName(caseName);
             testCase.setCaseType(caseType);
