@@ -3,11 +3,11 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.OllamaProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiInferenceResultDto;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.gemini.res.GeminiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
-import com.aitoolcheck.ai_toolcheck1_backend.enums.LogStatus;
-import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiPersistenceException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -33,22 +33,22 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataIntegrityViolationException;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.TimeoutException;
 
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
-class AiTaskConsumerProviderFailureTest {
+class AiTaskConsumerPersistenceTest {
 
     @Mock private GeminiApiClientService geminiApiClientService;
     @Mock private AiJsonParserService aiJsonParserService;
@@ -67,6 +67,8 @@ class AiTaskConsumerProviderFailureTest {
     @Mock private LegacySourceContextReducerService contextReducerService;
     @Mock private LegacyRuleBasedEndpointExtractorService ruleBasedEndpointExtractorService;
     @Mock private Channel channel;
+
+    @Mock private GeminiResponse geminiResponse;
 
     private AiTaskConsumer consumer;
     private final UUID jobId = UUID.randomUUID();
@@ -103,7 +105,7 @@ class AiTaskConsumerProviderFailureTest {
     }
 
     @Test
-    void providerFailureWithNoRuleFallback_marksFailedAndRecordsFailedAuditLog() throws Exception {
+    void persistSuccess_callsCleanupAndJobTransitionsSuccess() throws Exception {
         SourceProject project = new SourceProject();
         project.setId(projectId);
 
@@ -123,17 +125,16 @@ class AiTaskConsumerProviderFailureTest {
         sourceFile.setDeletedFlag(false);
         sourceFile.setSourceContent("public class PlainGateway { public void handle() {} }");
 
-        AiInferenceResultDto emptyFallback = new AiInferenceResultDto();
-        emptyFallback.setEndpoints(List.of());
+        AiInferenceResultDto resultDto = new AiInferenceResultDto();
+        resultDto.setEndpoints(List.of(new AiInferenceResultDto.EndpointDto()));
 
         when(aiJobLogRepository.findById(jobId)).thenReturn(Optional.of(job));
         when(sourceFileRepository.findById(sourceFileId)).thenReturn(Optional.of(sourceFile));
-        when(ruleBasedEndpointExtractorService.extract(sourceFile)).thenReturn(emptyFallback);
-        when(contextReducerService.reduce(any(), any())).thenReturn(sourceFile.getSourceContent());
-        when(geminiApiClientService.getFullAiResponse(any()))
-                .thenThrow(new RuntimeException("Retries exhausted: 4/4"));
-        when(ollamaApiClientService.generateText(any()))
-                .thenThrow(new RuntimeException(new TimeoutException("Ollama timeout after 90s")));
+        when(geminiApiClientService.getFullAiResponse(anyString())).thenReturn(geminiResponse);
+        when(geminiResponse.extractText()).thenReturn("{JSON_CONTENT}");
+        when(aiJsonParserService.extractAndSanitizeJson(anyString())).thenReturn("{JSON_CONTENT}");
+        when(aiJsonParserService.parseToDto(anyString())).thenReturn(resultDto);
+        when(sourceProjectRepository.getReferenceById(projectId)).thenReturn(project);
 
         AiTaskMessage message = AiTaskMessage.builder()
                 .jobId(jobId.toString())
@@ -145,23 +146,70 @@ class AiTaskConsumerProviderFailureTest {
 
         consumer.processAiTask(message, 10L, channel);
 
+        // Verify persistence and cleanup were called
+        verify(persistenceService).persistLegacyInference(eq(project), eq(sourceFileId), eq("{JSON_CONTENT}"), eq("{JSON_CONTENT}"), eq(resultDto));
+        verify(apiMetadataCleanupService).cleanupProjectApiMetadata(eq(projectId));
+
+        // Verify status updates and ACK
+        verify(aiJobLogService).markJobAsRunning(eq(jobId));
+        verify(aiJobLogService).markJobAsSuccess(eq(jobId), any(), any(), any(), any());
+        verify(channel).basicAck(10L, false);
+    }
+
+    @Test
+    void persistFailureWithDatabaseIntegrityViolation_jobTransitionsFailedAndExposesRootCause() throws Exception {
+        SourceProject project = new SourceProject();
+        project.setId(projectId);
+
+        AiJobLog job = AiJobLog.builder()
+                .id(jobId)
+                .sourceProject(project)
+                .executionStatus(ExecutionStatus.PENDING)
+                .jobType(JobType.LEGACY_INFERENCE)
+                .build();
+
+        SourceFile sourceFile = new SourceFile();
+        sourceFile.setId(sourceFileId);
+        sourceFile.setSourceProject(project);
+        sourceFile.setFileName("PlainGateway.java");
+        sourceFile.setFilePath("/src/main/java/acme/PlainGateway.java");
+        sourceFile.setActiveFlag(true);
+        sourceFile.setDeletedFlag(false);
+        sourceFile.setSourceContent("public class PlainGateway { public void handle() {} }");
+
+        AiInferenceResultDto resultDto = new AiInferenceResultDto();
+        resultDto.setEndpoints(List.of(new AiInferenceResultDto.EndpointDto()));
+
+        when(aiJobLogRepository.findById(jobId)).thenReturn(Optional.of(job));
+        when(sourceFileRepository.findById(sourceFileId)).thenReturn(Optional.of(sourceFile));
+        when(geminiApiClientService.getFullAiResponse(anyString())).thenReturn(geminiResponse);
+        when(geminiResponse.extractText()).thenReturn("{JSON_CONTENT}");
+        when(aiJsonParserService.extractAndSanitizeJson(anyString())).thenReturn("{JSON_CONTENT}");
+        when(aiJsonParserService.parseToDto(anyString())).thenReturn(resultDto);
+        when(sourceProjectRepository.getReferenceById(projectId)).thenReturn(project);
+
+        // Mock DB Exception in persistence
+        doThrow(new DataIntegrityViolationException("Duplicate key value violates unique constraint stable_key"))
+                .when(persistenceService).persistLegacyInference(any(), any(), any(), any(), any());
+
+        AiTaskMessage message = AiTaskMessage.builder()
+                .jobId(jobId.toString())
+                .projectId(projectId.toString())
+                .sourceFileId(sourceFileId.toString())
+                .skillCode("legacy_code_reader")
+                .promptText("extract endpoints")
+                .build();
+
+        consumer.processAiTask(message, 10L, channel);
+
+        // Verify status updates and failure details
+        verify(aiJobLogService).markJobAsRunning(eq(jobId));
         ArgumentCaptor<String> failureCaptor = ArgumentCaptor.forClass(String.class);
         verify(aiJobLogService).markJobAsFailed(eq(jobId), failureCaptor.capture());
-        assertTrue(failureCaptor.getValue().contains(AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED));
-        assertFalse(failureCaptor.getValue().contains("DTO_VALIDATION_FAILED"));
 
-        verify(legacyInferenceLogService).createLog(
-                eq(projectId),
-                eq(sourceFileId),
-                eq(null),
-                failureCaptor.capture(),
-                eq(null),
-                eq(null),
-                eq(LogStatus.FAILED),
-                eq(AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED));
-        assertTrue(failureCaptor.getValue().contains(AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED));
-
-        verify(persistenceService, never()).persistLegacyInference(any(), any(), any(), any(), any());
+        // Verify that error message exposes the DataIntegrityViolationException root cause
+        String errorMsg = failureCaptor.getValue();
+        assertTrue(errorMsg.contains("DataIntegrityViolationException") || errorMsg.contains("Duplicate key value violates unique constraint stable_key"));
         verify(channel).basicAck(10L, false);
     }
 }

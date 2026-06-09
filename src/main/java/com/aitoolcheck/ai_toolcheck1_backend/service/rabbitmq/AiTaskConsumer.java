@@ -18,6 +18,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OllamaApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.DocumentEnrichmentService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiEndpointService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
@@ -93,6 +94,7 @@ public class AiTaskConsumer {
     private final AiJsonParserService aiJsonParserService;
     private final AiTaskPersistenceService persistenceService;
     private final LegacyInferenceLogService legacyInferenceLogService;
+    private final ApiMetadataCleanupService apiMetadataCleanupService;
     private final AiJobLogRepository aiJobLogRepository;
     private final SourceProjectRepository sourceProjectRepository;
     private final com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService aiJobLogService;
@@ -563,13 +565,27 @@ public class AiTaskConsumer {
         UUID projectId = parseUuidOrNull(message.getProjectId());
         SourceProject projectRef = sourceProjectRepository.getReferenceById(projectId);
 
-        persistenceService.persistLegacyInference(
-                projectRef,
-                sourceFileId,
-                rawAiResponse,
-                cleanJson,
-                result);
-        log.info("[LegacyCodeReader] Persisted inference data to database");
+        try {
+            persistenceService.persistLegacyInference(
+                    projectRef,
+                    sourceFileId,
+                    rawAiResponse,
+                    cleanJson,
+                    result);
+            log.info("[LegacyCodeReader][Persist] committed/success");
+        } catch (Exception e) {
+            log.error("[LegacyCodeReader][Persist][ERROR] rootCause={}", e.toString(), e);
+            throw new AiPersistenceException("Lỗi lưu dữ liệu vào Database: " + e.getMessage(), e);
+        }
+
+        // ── Cleanup ──────────────────────────────────────────────────────────
+        try {
+            apiMetadataCleanupService.cleanupProjectApiMetadata(projectId);
+            log.info("[LegacyCodeReader][Persist] cleanupDone");
+        } catch (Exception cleanupEx) {
+            log.error("[LegacyCodeReader][Persist][Cleanup-ERROR] Cleanup failed: {}", cleanupEx.getMessage(), cleanupEx);
+            log.warn("[LegacyCodeReader][Persist] Skipping cleanup failure to preserve successful persistence.");
+        }
 
         // ── Mark SUCCESS ─────────────────────────────────────────────────────
         aiJobLogService.markJobAsSuccess(jobLog.getId(), tokenInput, tokenOutput, modelUsed, successMessage);

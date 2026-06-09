@@ -18,7 +18,6 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiSchemaFieldRepository
 import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiSchemaRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.EndpointSchemaMapRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceFileRepository;
-import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -48,7 +47,6 @@ public class AiTaskPersistenceService {
     private final ApiSchemaFieldRepository apiSchemaFieldRepository;
     private final EndpointSchemaMapRepository endpointSchemaMapRepository;
     private final LegacyInferenceLogService legacyInferenceLogService;
-    private final ApiMetadataCleanupService apiMetadataCleanupService;
 
     @Transactional
     public void persistLegacyInference(SourceProject project,
@@ -56,40 +54,44 @@ public class AiTaskPersistenceService {
                                        String rawResponse,
                                        String cleanJson,
                                        AiInferenceResultDto dto) {
-        log.info("[Persistence] Start for projectId={}", project.getId());
+        log.info("[LegacyCodeReader][Persist] begin");
+        try {
+            if (dto.getEndpoints().isEmpty()) {
+                log.info("[Persistence] No endpoints returned by AI — writing empty audit log.");
+                legacyInferenceLogService.createLog(
+                        project.getId(), sourceFileId, null,
+                        rawResponse, cleanJson, null,
+                        LogStatus.SUCCESS, null
+                );
+                log.info("[LegacyCodeReader][Persist] endpointsSaved=0");
+                return;
+            }
 
-        if (dto.getEndpoints().isEmpty()) {
-            log.info("[Persistence] No endpoints returned by AI — writing empty audit log.");
-            legacyInferenceLogService.createLog(
-                    project.getId(), sourceFileId, null,
-                    rawResponse, cleanJson, null,
-                    LogStatus.SUCCESS, null
-            );
-            return;
+            SourceFile sourceFileRef = (sourceFileId != null)
+                    ? sourceFileRepository.getReferenceById(sourceFileId)
+                    : null;
+
+            for (AiInferenceResultDto.EndpointDto epDto : dto.getEndpoints()) {
+                ApiEndpoint savedEndpoint = saveApiEndpoint(project, sourceFileRef, epDto);
+                persistSchemaIfPresent(project, savedEndpoint, epDto);
+                legacyInferenceLogService.createLog(
+                        project.getId(),
+                        sourceFileId,
+                        savedEndpoint.getId(),
+                        rawResponse,
+                        cleanJson,
+                        epDto.getConfidence(),
+                        LogStatus.SUCCESS,
+                        null
+                );
+                log.debug("[Persistence] Saved endpoint: {} {}", epDto.getHttpMethod(), epDto.getPath());
+            }
+
+            log.info("[LegacyCodeReader][Persist] endpointsSaved={}", dto.getEndpoints().size());
+        } catch (Exception e) {
+            log.error("[LegacyCodeReader][Persist][ERROR] rootCause={}", e.toString(), e);
+            throw e;
         }
-
-        SourceFile sourceFileRef = (sourceFileId != null)
-                ? sourceFileRepository.getReferenceById(sourceFileId)
-                : null;
-
-        for (AiInferenceResultDto.EndpointDto epDto : dto.getEndpoints()) {
-            ApiEndpoint savedEndpoint = saveApiEndpoint(project, sourceFileRef, epDto);
-            persistSchemaIfPresent(project, savedEndpoint, epDto);
-            legacyInferenceLogService.createLog(
-                    project.getId(),
-                    sourceFileId,
-                    savedEndpoint.getId(),
-                    rawResponse,
-                    cleanJson,
-                    epDto.getConfidence(),
-                    LogStatus.SUCCESS,
-                    null
-            );
-            log.debug("[Persistence] Saved endpoint: {} {}", epDto.getHttpMethod(), epDto.getPath());
-        }
-
-        apiMetadataCleanupService.cleanupProjectApiMetadata(project.getId());
-        log.info("[Persistence] Done — {} endpoint(s) saved and cleanup executed.", dto.getEndpoints().size());
     }
 
     private ApiEndpoint saveApiEndpoint(SourceProject project,
@@ -171,7 +173,6 @@ public class AiTaskPersistenceService {
 
     /**
      * Persist requestSchema và responseSchema nếu AI trả về.
-     * Failure của từng schema được bắt riêng để không ảnh hưởng endpoint.
      */
     private void persistSchemaIfPresent(SourceProject project,
                                         ApiEndpoint savedEndpoint,
@@ -180,21 +181,13 @@ public class AiTaskPersistenceService {
                 ? epDto.getSource().getMethodName() : "unknown";
 
         if (epDto.getRequestSchema() != null) {
-            try {
-                persistSingleSchema(project, savedEndpoint, epDto.getRequestSchema(),
-                        capitalise(methodName) + "Request", SchemaType.REQUEST, UsageType.REQUEST_BODY);
-            } catch (Exception e) {
-                log.warn("[Persistence] Skip requestSchema for {} {} — {}", epDto.getHttpMethod(), epDto.getPath(), e.getMessage());
-            }
+            persistSingleSchema(project, savedEndpoint, epDto.getRequestSchema(),
+                    capitalise(methodName) + "Request", SchemaType.REQUEST, UsageType.REQUEST_BODY);
         }
 
         if (epDto.getResponseSchema() != null) {
-            try {
-                persistSingleSchema(project, savedEndpoint, epDto.getResponseSchema(),
-                        capitalise(methodName) + "Response", SchemaType.RESPONSE, UsageType.RESPONSE_BODY);
-            } catch (Exception e) {
-                log.warn("[Persistence] Skip responseSchema for {} {} — {}", epDto.getHttpMethod(), epDto.getPath(), e.getMessage());
-            }
+            persistSingleSchema(project, savedEndpoint, epDto.getResponseSchema(),
+                    capitalise(methodName) + "Response", SchemaType.RESPONSE, UsageType.RESPONSE_BODY);
         }
     }
 
