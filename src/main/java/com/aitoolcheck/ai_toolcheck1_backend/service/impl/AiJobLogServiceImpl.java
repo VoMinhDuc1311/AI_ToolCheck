@@ -26,6 +26,7 @@ import jakarta.persistence.EntityManager;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
@@ -323,7 +324,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markJobAsRunning(UUID id) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
@@ -338,7 +339,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void updateTokens(UUID id, Integer tokenInput, Integer tokenOutput) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
@@ -350,7 +351,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void updateAiModelUsed(UUID id, String aiModelUsed) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
@@ -361,7 +362,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
@@ -380,13 +381,13 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput, String modelName) {
         markJobAsSuccess(id, tokenInput, tokenOutput, modelName, null);
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markJobAsSuccess(UUID id, Integer tokenInput, Integer tokenOutput, String modelName, String message) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
@@ -407,7 +408,7 @@ public class AiJobLogServiceImpl implements AiJobLogService {
     }
 
     @Override
-    @Transactional
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void markJobAsFailed(UUID id, String errorMessage) {
         AiJobLog jobLog = aiJobLogRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("AiJobLog not found with id: " + id));
