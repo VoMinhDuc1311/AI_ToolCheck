@@ -10,6 +10,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.UserRole;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.ConflictException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ProjectMember;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -21,6 +22,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.common.GitHubRepositoryUrlParser;
 import com.aitoolcheck.ai_toolcheck1_backend.common.RuntimeTargetUrlValidator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -67,10 +69,10 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         String projectName = request.getProjectName().trim();
 
         if (sourceProjectRepository.existsByProjectKey(projectKey)) {
-            throw new BadRequestException("Project key already exists");
+            throw new ConflictException("Project key already exists: " + projectKey);
         }
         if (sourceProjectRepository.existsByProjectName(projectName)) {
-            throw new BadRequestException("Project name already exists");
+            throw new ConflictException("Project name already exists: " + projectName);
         }
 
         // Validate and normalise GitHub repository metadata
@@ -83,18 +85,23 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         // IMPORTANT: repositoryUrl (GitHub source) must NEVER be auto-copied here.
         String normDefaultTargetBaseUrl = RuntimeTargetUrlValidator.normalise(request.getDefaultTargetBaseUrl());
 
-        SourceProject saved = sourceProjectRepository.save(SourceProject.builder()
-                .projectKey(projectKey)
-                .projectName(projectName)
-                .description(trimToNull(request.getDescription()))
-                .repositoryUrl(normRepoUrl)
-                .repositoryBranch(normRepoBranch)
-                .defaultTargetBaseUrl(normDefaultTargetBaseUrl)
-                .backendType(request.getBackendType())
-                .status(ProjectStatus.NEW)
-                .ownerUser(currentUser)
-                .visibility(ProjectVisibility.PRIVATE)
-                .build());
+        SourceProject saved;
+        try {
+            saved = sourceProjectRepository.saveAndFlush(SourceProject.builder()
+                    .projectKey(projectKey)
+                    .projectName(projectName)
+                    .description(trimToNull(request.getDescription()))
+                    .repositoryUrl(normRepoUrl)
+                    .repositoryBranch(normRepoBranch)
+                    .defaultTargetBaseUrl(normDefaultTargetBaseUrl)
+                    .backendType(request.getBackendType())
+                    .status(ProjectStatus.NEW)
+                    .ownerUser(currentUser)
+                    .visibility(ProjectVisibility.PRIVATE)
+                    .build());
+        } catch (DataIntegrityViolationException ex) {
+            throw mapCreateProjectIntegrityViolation(ex, projectKey, projectName);
+        }
 
         return mapToDetailResponse(saved);
     }
@@ -364,5 +371,29 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         if (value == null) return null;
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private ConflictException mapCreateProjectIntegrityViolation(
+            DataIntegrityViolationException ex, String projectKey, String projectName) {
+        String message = flattenExceptionMessage(ex);
+        if (message.contains("project_key") || message.contains("projectkey")) {
+            return new ConflictException("Project key already exists: " + projectKey);
+        }
+        if (message.contains("project_name") || message.contains("projectname")) {
+            return new ConflictException("Project name already exists: " + projectName);
+        }
+        return new ConflictException("Source project could not be created because a unique constraint was violated.");
+    }
+
+    private String flattenExceptionMessage(Throwable throwable) {
+        StringBuilder sb = new StringBuilder();
+        Throwable current = throwable;
+        while (current != null) {
+            if (current.getMessage() != null) {
+                sb.append(' ').append(current.getMessage().toLowerCase());
+            }
+            current = current.getCause();
+        }
+        return sb.toString();
     }
 }

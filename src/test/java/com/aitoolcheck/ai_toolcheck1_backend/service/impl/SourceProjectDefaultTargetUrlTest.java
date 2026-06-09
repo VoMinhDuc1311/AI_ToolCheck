@@ -8,16 +8,18 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.BackendType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.ConflictException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.time.LocalDateTime;
-import java.util.Optional;
+import java.util.Arrays;
 import java.util.UUID;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -26,6 +28,8 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 /**
@@ -102,7 +106,7 @@ class SourceProjectDefaultTargetUrlTest {
     void createProject_withDefaultTargetBaseUrl_succeeds() {
         String targetUrl = "http://52.220.34.212:8081";
         SourceProject saved = buildSavedProject(null, targetUrl);
-        when(sourceProjectRepository.save(any())).thenReturn(saved);
+        when(sourceProjectRepository.saveAndFlush(any())).thenReturn(saved);
 
         CreateSourceProjectRequest request = buildCreateRequest(null, null, targetUrl);
 
@@ -112,6 +116,76 @@ class SourceProjectDefaultTargetUrlTest {
     }
 
     // ── A2: update with defaultTargetBaseUrl succeeds ────────────────────────
+
+    @Test
+    void createProject_withUniqueProjectKey_success() {
+        SourceProject saved = buildSavedProject(null, "http://localhost:8081");
+        saved.setProjectKey("ADMIN-UI-AI-KEY-009");
+        saved.setProjectName("Test AI Key New 009");
+        when(sourceProjectRepository.saveAndFlush(any())).thenReturn(saved);
+
+        CreateSourceProjectRequest request = CreateSourceProjectRequest.builder()
+                .projectKey("ADMIN-UI-AI-KEY-009")
+                .projectName("Test AI Key New 009")
+                .description("Backend Spring Boot service for AI testcase generation retest")
+                .repositoryUrl("")
+                .repositoryBranch("")
+                .defaultTargetBaseUrl("http://localhost:8081")
+                .backendType(BackendType.SPRING_BOOT)
+                .build();
+
+        SourceProjectDetailResponse response = service.create(request);
+
+        assertThat(response.getId()).isNotNull();
+        assertThat(response.getProjectKey()).isEqualTo("ADMIN-UI-AI-KEY-009");
+        assertThat(response.getProjectName()).isEqualTo("Test AI Key New 009");
+        assertThat(response.getBackendType()).isEqualTo(BackendType.SPRING_BOOT);
+        assertThat(response.getStatus()).isEqualTo(ProjectStatus.NEW);
+        assertThat(response.getArchivedFlag()).isFalse();
+        assertThat(response.getOwnerUserId()).isEqualTo(mockUser.getId());
+    }
+
+    @Test
+    void createProject_withDuplicateProjectKey_returnsProjectKeyConflict() {
+        when(sourceProjectRepository.existsByProjectKey("ADMIN-UI-AI-KEY-009")).thenReturn(true);
+
+        CreateSourceProjectRequest request = CreateSourceProjectRequest.builder()
+                .projectKey("ADMIN-UI-AI-KEY-009")
+                .projectName("Test AI Key New 009")
+                .backendType(BackendType.SPRING_BOOT)
+                .build();
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("Project key already exists: ADMIN-UI-AI-KEY-009")
+                .hasMessageNotContaining("Re-upload failed");
+        verify(sourceProjectRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void createProject_mustNotReturnReuploadMetadataCleanupMessage() {
+        when(sourceProjectRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException(
+                "Duplicate entry 'ADMIN-UI-AI-KEY-009' for key 'source_project.project_key'"));
+
+        CreateSourceProjectRequest request = CreateSourceProjectRequest.builder()
+                .projectKey("ADMIN-UI-AI-KEY-009")
+                .projectName("Test AI Key New 009")
+                .backendType(BackendType.SPRING_BOOT)
+                .build();
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("Project key already exists: ADMIN-UI-AI-KEY-009")
+                .hasMessageNotContaining("Re-upload failed")
+                .hasMessageNotContaining("metadata cleanup");
+    }
+
+    @Test
+    void createProject_doesNotInvokeMetadataCleanupGuard() {
+        assertThat(Arrays.stream(SourceProjectServiceImpl.class.getDeclaredFields())
+                .map(field -> field.getType().getSimpleName()))
+                .doesNotContain("ApiMetadataCleanupService");
+    }
 
     @Test
     void updateProject_withDefaultTargetBaseUrl_succeeds() {
@@ -183,7 +257,7 @@ class SourceProjectDefaultTargetUrlTest {
     @Test
     void createProject_withBlankDefaultTargetBaseUrl_persistsNull() {
         SourceProject saved = buildSavedProject(null, null); // null stored
-        when(sourceProjectRepository.save(any())).thenReturn(saved);
+        when(sourceProjectRepository.saveAndFlush(any())).thenReturn(saved);
 
         CreateSourceProjectRequest request = buildCreateRequest(null, null, "   ");
 
@@ -199,7 +273,7 @@ class SourceProjectDefaultTargetUrlTest {
         String repoUrl = "https://github.com/spring-guides/gs-rest-service";
         // No defaultTargetBaseUrl provided — should be null, NOT auto-copied from repositoryUrl
         SourceProject saved = buildSavedProject(repoUrl, null);
-        when(sourceProjectRepository.save(any())).thenReturn(saved);
+        when(sourceProjectRepository.saveAndFlush(any())).thenReturn(saved);
 
         CreateSourceProjectRequest request = buildCreateRequest(repoUrl, "main", null);
 
@@ -215,7 +289,7 @@ class SourceProjectDefaultTargetUrlTest {
         String repoUrl = "https://github.com/spring-guides/gs-rest-service";
         String targetUrl = "http://52.220.34.212:8081";
         SourceProject saved = buildSavedProject(repoUrl, targetUrl);
-        when(sourceProjectRepository.save(any())).thenReturn(saved);
+        when(sourceProjectRepository.saveAndFlush(any())).thenReturn(saved);
 
         CreateSourceProjectRequest request = buildCreateRequest(repoUrl, "main", targetUrl);
 

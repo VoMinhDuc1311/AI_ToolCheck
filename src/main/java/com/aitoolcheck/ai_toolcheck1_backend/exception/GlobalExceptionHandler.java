@@ -39,6 +39,13 @@ public class GlobalExceptionHandler {
                 return build(HttpStatus.BAD_REQUEST, "Bad Request", ex.getMessage(), null, request);
         }
 
+        @ExceptionHandler(ConflictException.class)
+        public ResponseEntity<ApiErrorResponse> handleConflict(
+                        ConflictException ex, HttpServletRequest request) {
+
+                return build(HttpStatus.CONFLICT, "Conflict", ex.getMessage(), null, request);
+        }
+
         @ExceptionHandler(UnauthorizedException.class)
         public ResponseEntity<ApiErrorResponse> handleUnauthorized(
                         UnauthorizedException ex, HttpServletRequest request) {
@@ -168,7 +175,7 @@ public class GlobalExceptionHandler {
                         DataIntegrityViolationException ex, HttpServletRequest request) {
 
                 return build(HttpStatus.CONFLICT, "Conflict",
-                                "Operation failed due to a data integrity constraint. Please ensure all dependent data is resolved before retrying.",
+                                dataIntegrityMessage(ex, request),
                                 null, request);
         }
 
@@ -211,5 +218,40 @@ public class GlobalExceptionHandler {
                                 .build();
 
                 return ResponseEntity.status(status).body(body);
+        }
+
+        private String dataIntegrityMessage(DataIntegrityViolationException ex, HttpServletRequest request) {
+                String path = request.getRequestURI() == null ? "" : request.getRequestURI();
+                String message = flattenExceptionMessage(ex);
+
+                if (isCreateSourceProjectRequest(path)) {
+                        if (message.contains("project_key") || message.contains("projectkey")) {
+                                return "Project key already exists.";
+                        }
+                        if (message.contains("project_name") || message.contains("projectname")) {
+                                return "Project name already exists.";
+                        }
+                        if (message.contains("source_project")) {
+                                return "Source project could not be created because a unique constraint was violated.";
+                        }
+                }
+
+                return "Operation failed due to a data integrity constraint. Please ensure all dependent data is resolved before retrying.";
+        }
+
+        private boolean isCreateSourceProjectRequest(String path) {
+                return path.endsWith("/v1/source-projects") || path.endsWith("/api/v1/source-projects");
+        }
+
+        private String flattenExceptionMessage(Throwable throwable) {
+                StringBuilder sb = new StringBuilder();
+                Throwable current = throwable;
+                while (current != null) {
+                        if (current.getMessage() != null) {
+                                sb.append(' ').append(current.getMessage().toLowerCase());
+                        }
+                        current = current.getCause();
+                }
+                return sb.toString();
         }
 }
