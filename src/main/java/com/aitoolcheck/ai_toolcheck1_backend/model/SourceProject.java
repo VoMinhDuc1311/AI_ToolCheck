@@ -89,8 +89,9 @@ public class SourceProject {
      * true = project is archived; hidden from default active lists. Child data
      * preserved.
      */
+    @Builder.Default
     @Column(name = "archived_flag", nullable = false)
-    private Boolean archivedFlag;
+    private Boolean archivedFlag = Boolean.FALSE;
 
     /** Timestamp when the project was archived. Null when not archived. */
     @Column(name = "archived_at")
@@ -103,8 +104,9 @@ public class SourceProject {
     // ── Permanent-delete tracking ──────────────────────────────────────────────
 
     /** true = permanent deletion in progress or completed. Used as guard flag. */
+    @Builder.Default
     @Column(name = "deleted_flag", nullable = false)
-    private Boolean deletedFlag;
+    private Boolean deletedFlag = Boolean.FALSE;
 
     /** Timestamp when permanent deletion was initiated. */
     @Column(name = "deleted_at")

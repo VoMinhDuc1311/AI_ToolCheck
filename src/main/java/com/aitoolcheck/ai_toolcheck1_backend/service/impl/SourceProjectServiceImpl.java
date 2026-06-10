@@ -85,6 +85,8 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         // IMPORTANT: repositoryUrl (GitHub source) must NEVER be auto-copied here.
         String normDefaultTargetBaseUrl = RuntimeTargetUrlValidator.normalise(request.getDefaultTargetBaseUrl());
 
+        log.info("[SourceProject][Create] request projectKey={} projectName={}", projectKey, projectName);
+
         SourceProject saved;
         try {
             saved = sourceProjectRepository.saveAndFlush(SourceProject.builder()
@@ -98,8 +100,11 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                     .status(ProjectStatus.NEW)
                     .ownerUser(currentUser)
                     .visibility(ProjectVisibility.PRIVATE)
+                    .archivedFlag(false)
+                    .deletedFlag(false)
                     .build());
         } catch (DataIntegrityViolationException ex) {
+            log.error("[SourceProject][Create][ERROR] rootCause={}", rootCauseMessage(ex), ex);
             throw mapCreateProjectIntegrityViolation(ex, projectKey, projectName);
         }
 
@@ -382,7 +387,7 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         if (message.contains("project_name") || message.contains("projectname")) {
             return new ConflictException("Project name already exists: " + projectName);
         }
-        return new ConflictException("Source project could not be created because a unique constraint was violated.");
+        return new ConflictException("Failed to create source project because database constraint was violated.");
     }
 
     private String flattenExceptionMessage(Throwable throwable) {
@@ -395,5 +400,15 @@ public class SourceProjectServiceImpl implements SourceProjectService {
             current = current.getCause();
         }
         return sb.toString();
+    }
+
+    private String rootCauseMessage(Throwable throwable) {
+        Throwable current = throwable;
+        Throwable root = throwable;
+        while (current != null) {
+            root = current;
+            current = current.getCause();
+        }
+        return root.getMessage() == null ? root.getClass().getSimpleName() : root.getMessage();
     }
 }
