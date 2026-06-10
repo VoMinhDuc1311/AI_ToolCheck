@@ -17,6 +17,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService
 import org.springframework.dao.DataIntegrityViolationException;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import java.time.LocalDateTime;
 import java.util.Arrays;
@@ -146,7 +147,44 @@ class SourceProjectDefaultTargetUrlTest {
     }
 
     @Test
-    void createProject_withDuplicateProjectKey_returnsProjectKeyConflict() {
+    void createSourceProject_setsArchivedFlagFalse() {
+        when(sourceProjectRepository.saveAndFlush(any())).thenAnswer(invocation -> invocation.getArgument(0));
+
+        CreateSourceProjectRequest request = buildCreateRequest(null, null, null);
+
+        service.create(request);
+
+        ArgumentCaptor<SourceProject> captor = ArgumentCaptor.forClass(SourceProject.class);
+        verify(sourceProjectRepository).saveAndFlush(captor.capture());
+        assertThat(captor.getValue().getArchivedFlag()).isFalse();
+        assertThat(captor.getValue().getDeletedFlag()).isFalse();
+    }
+
+    @Test
+    void createSourceProject_persistsSuccessfullyWhenArchivedFlagIsNotProvided() {
+        when(sourceProjectRepository.saveAndFlush(any())).thenAnswer(invocation -> {
+            SourceProject project = invocation.getArgument(0);
+            project.setId(projectId);
+            project.setCreatedAt(LocalDateTime.now());
+            project.setUpdatedAt(LocalDateTime.now());
+            return project;
+        });
+
+        CreateSourceProjectRequest request = CreateSourceProjectRequest.builder()
+                .projectKey("MODERN-FULL-006-0610")
+                .projectName("Test Modern Full Flow 006")
+                .backendType(BackendType.SPRING_BOOT)
+                .build();
+
+        SourceProjectDetailResponse response = service.create(request);
+
+        assertThat(response.getProjectKey()).isEqualTo("MODERN-FULL-006-0610");
+        assertThat(response.getProjectName()).isEqualTo("Test Modern Full Flow 006");
+        assertThat(response.getArchivedFlag()).isFalse();
+    }
+
+    @Test
+    void createSourceProject_duplicateProjectKey_returnsProjectKeyAlreadyExists() {
         when(sourceProjectRepository.existsByProjectKey("ADMIN-UI-AI-KEY-009")).thenReturn(true);
 
         CreateSourceProjectRequest request = CreateSourceProjectRequest.builder()
@@ -163,9 +201,8 @@ class SourceProjectDefaultTargetUrlTest {
     }
 
     @Test
-    void createProject_mustNotReturnReuploadMetadataCleanupMessage() {
-        when(sourceProjectRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException(
-                "Duplicate entry 'ADMIN-UI-AI-KEY-009' for key 'source_project.project_key'"));
+    void createSourceProject_duplicateProjectName_returnsProjectNameAlreadyExists() {
+        when(sourceProjectRepository.existsByProjectName("Test AI Key New 009")).thenReturn(true);
 
         CreateSourceProjectRequest request = CreateSourceProjectRequest.builder()
                 .projectKey("ADMIN-UI-AI-KEY-009")
@@ -175,7 +212,25 @@ class SourceProjectDefaultTargetUrlTest {
 
         assertThatThrownBy(() -> service.create(request))
                 .isInstanceOf(ConflictException.class)
-                .hasMessage("Project key already exists: ADMIN-UI-AI-KEY-009")
+                .hasMessage("Project name already exists: Test AI Key New 009")
+                .hasMessageNotContaining("Re-upload failed");
+        verify(sourceProjectRepository, never()).saveAndFlush(any());
+    }
+
+    @Test
+    void createSourceProject_dbIntegrityError_doesNotReturnReuploadMessage() {
+        when(sourceProjectRepository.saveAndFlush(any())).thenThrow(new DataIntegrityViolationException(
+                "Field 'archived_flag' doesn't have a default value"));
+
+        CreateSourceProjectRequest request = CreateSourceProjectRequest.builder()
+                .projectKey("ADMIN-UI-AI-KEY-009")
+                .projectName("Test AI Key New 009")
+                .backendType(BackendType.SPRING_BOOT)
+                .build();
+
+        assertThatThrownBy(() -> service.create(request))
+                .isInstanceOf(ConflictException.class)
+                .hasMessage("Failed to create source project because database constraint was violated.")
                 .hasMessageNotContaining("Re-upload failed")
                 .hasMessageNotContaining("metadata cleanup");
     }

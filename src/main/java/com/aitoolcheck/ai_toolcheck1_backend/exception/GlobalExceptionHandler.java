@@ -232,7 +232,7 @@ public class GlobalExceptionHandler {
                                 return "Project name already exists.";
                         }
                         if (message.contains("source_project")) {
-                                return "Source project could not be created because a unique constraint was violated.";
+                                return "Failed to create source project because database constraint was violated.";
                         }
                 }
 
