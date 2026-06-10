@@ -12,6 +12,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.repository.AiJobLogRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestFailureAnalysisRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiFailureAnalysisService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.FailedTestCaseCollectorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestFailureAnalysisOrchestratorService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestFailureAnalysisService;
@@ -32,6 +33,7 @@ public class TestFailureAnalysisOrchestratorServiceImpl implements TestFailureAn
     private final TestResultRepository testResultRepository;
     private final TestFailureAnalysisRepository testFailureAnalysisRepository;
     private final AiJobLogRepository aiJobLogRepository;
+    private final AiJobLogService aiJobLogService;
 
     @Override
     public AnalyzeFailuresResponse analyzeFailuresByTestRun(UUID testRunId, AnalyzeFailuresRequest request) {
@@ -166,7 +168,23 @@ public class TestFailureAnalysisOrchestratorServiceImpl implements TestFailureAn
                 }
 
                 // Save analysis using CURRENT testResult and CURRENT aiJobLog
-                TestFailureAnalysis savedAnalysis = testFailureAnalysisService.saveAnalysis(testResult, aiJobLog, responseDto);
+                TestFailureAnalysis savedAnalysis;
+                try {
+                    savedAnalysis = testFailureAnalysisService.saveAnalysis(testResult, aiJobLog, responseDto);
+                    if (responseDto.getAiJobLogId() != null) {
+                        aiJobLogService.markJobAsSuccess(responseDto.getAiJobLogId(), null, null, "router-selected");
+                        log.info("[FailureAnalysis] job success after parse/repair/fallback jobId={}", responseDto.getAiJobLogId());
+                    }
+                    if (responseDto.getRawAiResponse() != null
+                            && responseDto.getRawAiResponse().startsWith("DETERMINISTIC_FALLBACK")) {
+                        log.info("[FailureAnalysis][Fallback] persisted analysis id={}", savedAnalysis.getId());
+                    }
+                } catch (Exception persistError) {
+                    if (responseDto.getAiJobLogId() != null) {
+                        aiJobLogService.markJobAsFailed(responseDto.getAiJobLogId(), persistError.getMessage());
+                    }
+                    throw persistError;
+                }
                 
                 itemResponse.setStatus("SUCCESS");
                 itemResponse.setAnalysisId(savedAnalysis.getId());

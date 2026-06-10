@@ -53,6 +53,9 @@ ai:
     fail-fast-local-provider: true
     provider-health-cache-seconds: 30
 
+  failure-analysis:
+    prefer-gemini: ${AI_FAILURE_ANALYSIS_PREFER_GEMINI:true}
+
   runtime:
     enabled: false
     docker:

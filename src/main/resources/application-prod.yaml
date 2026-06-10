@@ -39,6 +39,9 @@ springdoc:
     enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:false}
 
 ai:
+  failure-analysis:
+    prefer-gemini: ${AI_FAILURE_ANALYSIS_PREFER_GEMINI:true}
+
   runtime:
     enabled: ${AI_RUNTIME_ENABLED:false}
     docker:

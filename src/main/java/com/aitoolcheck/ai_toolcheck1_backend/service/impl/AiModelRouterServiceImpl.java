@@ -11,6 +11,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OllamaApiClientService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -32,6 +33,7 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
     private static final String GEMINI = "Gemini";
     private static final String SKILL_ENRICH_API_DOC = "enrich_api_doc";
     private static final String SKILL_GENERATE_TEST_CASE = "GENERATE_TEST_CASE";
+    private static final String SKILL_ANALYZE_TEST_RESULT = "analyze_test_result";
 
     private final OllamaApiClientService ollamaApiClientService;
     private final GeminiApiClientService geminiApiClientService;
@@ -40,6 +42,9 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
     private final AiOptimizationProperties aiOptimizationProperties;
     private final AiPayloadOptimizerService aiPayloadOptimizerService;
     private final GeminiProperties geminiProperties;
+
+    @Value("${ai.failure-analysis.prefer-gemini:true}")
+    private boolean failureAnalysisPreferGemini = true;
 
     @Override
     public String executeWithFallback(String prompt) {
@@ -86,6 +91,10 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
             Supplier<String> geminiPromptSupplier,
             Supplier<String> ollamaPromptSupplier,
             Consumer<String> rawResponseValidator) {
+        if (SKILL_ANALYZE_TEST_RESULT.equalsIgnoreCase(skillCode)) {
+            log.info("[FailureAnalysis][Router] preferGemini={}", failureAnalysisPreferGemini);
+        }
+
         if (!isGeminiFirstSkill(skillCode)) {
             return executeWithFallback(geminiPromptSupplier.get());
         }
@@ -94,7 +103,8 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
         Set<String> attempted = new HashSet<>();
 
         String geminiResult = tryGeminiCandidate(
-                "Tier1", geminiPromptSupplier.get(), attempted, failures, rawResponseValidator);
+                SKILL_ANALYZE_TEST_RESULT.equalsIgnoreCase(skillCode) ? "FailureAnalysis][Tier1" : "Tier1",
+                geminiPromptSupplier.get(), attempted, failures, rawResponseValidator);
         if (geminiResult != null) {
             return geminiResult;
         }
@@ -176,7 +186,8 @@ public class AiModelRouterServiceImpl implements AiModelRouterService {
 
     private boolean isGeminiFirstSkill(String skillCode) {
         return SKILL_ENRICH_API_DOC.equalsIgnoreCase(skillCode)
-                || SKILL_GENERATE_TEST_CASE.equalsIgnoreCase(skillCode);
+                || SKILL_GENERATE_TEST_CASE.equalsIgnoreCase(skillCode)
+                || (failureAnalysisPreferGemini && SKILL_ANALYZE_TEST_RESULT.equalsIgnoreCase(skillCode));
     }
 
     private int getOllamaTimeoutSecondsForSkill(String skillCode) {
