@@ -51,9 +51,7 @@ public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
 
         if (accessor.getCommand() == StompCommand.CONNECT) {
             Authentication authentication = authenticateConnect(accessor);
-            StompHeaderAccessor mutableAccessor = StompHeaderAccessor.wrap(message);
-            mutableAccessor.setUser(authentication);
-            return MessageBuilder.createMessage(message.getPayload(), mutableAccessor.getMessageHeaders());
+            accessor.setUser(authentication);
         }
 
         if (accessor.getCommand() == StompCommand.SUBSCRIBE) {
@@ -90,7 +88,7 @@ public class WebSocketAuthChannelInterceptor implements ChannelInterceptor {
                     userDetails.getAuthorities()
             );
 
-            log.debug("[WebSocketAuth] STOMP CONNECT accepted for user={}", userDetails.getUsername());
+            log.info("[WS] CONNECT authenticated user={}", userDetails.getUsername());
             return authentication;
         } catch (IllegalArgumentException e) {
             throw e;

@@ -3,6 +3,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.service.notification;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectMemberRole;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.notification.res.NotificationResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ProjectMember;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -56,7 +57,10 @@ class NotificationEventListenerTest {
         when(projectMemberRepository.findBySourceProject_Id(projectId)).thenReturn(List.of(member));
         when(appUserRepository.findAllById(any())).thenReturn(List.of(actor, owner, maintainer));
         when(notificationService.createNotification(any(), any(), any(), any(), any(), any(), any(), any()))
-                .thenReturn(UUID.randomUUID());
+                .thenReturn(NotificationResponse.builder()
+                        .id(UUID.randomUUID())
+                        .createdAt(java.time.LocalDateTime.now())
+                        .build());
 
         NotificationEventListener listener = new NotificationEventListener(
                 notificationService,

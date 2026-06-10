@@ -1,5 +1,6 @@
 package com.aitoolcheck.ai_toolcheck1_backend.service.impl;
 
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.TestRunStaleProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.RuleEngineResultDto;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testresult.res.TestResultResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestFailureAnalysisRepository;
@@ -17,9 +18,11 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ResultStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
+import com.aitoolcheck.ai_toolcheck1_backend.model.ApiEndpoint;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCase;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseAssertion;
@@ -27,12 +30,16 @@ import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestResult;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRun;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestRunItem;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.ApiEndpointRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.SourceProjectRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseAssertionRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestCaseRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestResultRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunItemRepository;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.TestRunRepository;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.runtime.res.SourceRuntimeResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.service.RuleEngineService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.SourceRuntimeService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestRunService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
@@ -72,12 +79,18 @@ public class TestRunServiceImpl implements TestRunService {
 
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
     private static final DateTimeFormatter RUN_CODE_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
+    private static final String STALE_PENDING_REASON =
+            "Test run expired while pending. Please create or execute a new run.";
+    private static final String STALE_RUNNING_REASON =
+            "Test run exceeded maximum execution time and was marked failed.";
 
     private final TestRunRepository testRunRepository;
     private final TestRunItemRepository testRunItemRepository;
     private final TestCaseRepository testCaseRepository;
+    private final TestCaseAssertionRepository testCaseAssertionRepository;
     private final SourceProjectRepository sourceProjectRepository;
     private final TestResultRepository testResultRepository;
+    private final ApiEndpointRepository apiEndpointRepository;
     private final TestRequestBuilder testRequestBuilder;
     private final TestHttpExecutor testHttpExecutor;
     private final ObjectMapper objectMapper;
@@ -88,6 +101,8 @@ public class TestRunServiceImpl implements TestRunService {
     private final TestRunRealtimePublisher testRunRealtimePublisher;
     private final ProjectNotificationEventPublisher notificationEventPublisher;
     private final TestFailureAnalysisRepository testFailureAnalysisRepository;
+    private final TestRunStaleProperties testRunStaleProperties;
+    private final SourceRuntimeService sourceRuntimeService;
     private TestRunService self;
 
     @org.springframework.beans.factory.annotation.Autowired
@@ -111,9 +126,16 @@ public class TestRunServiceImpl implements TestRunService {
 
         String runName = normalizeRequiredText(request.getRunName(), "runName");
         String description = normalizeOptionalText(request.getDescription());
-        String baseUrl = normalizeBaseUrl(request.getBaseUrl());
+        RuntimeMode runtimeMode = resolveRuntimeMode(request.getRuntimeMode());
+        // Resolve effective baseUrl: request → UP SourceRuntime → project.defaultTargetBaseUrl → 400.
+        // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
+        String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
+                sourceProject.getId(), runtimeMode, request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
-        List<TestCase> resolvedCases = resolveTestCases(request, sourceProject.getId());
+        ExecutionMode executionMode = request.getExecutionMode() == null
+                ? ExecutionMode.READ_ONLY
+                : request.getExecutionMode();
+        List<TestCase> resolvedCases = resolveTestCases(request, sourceProject.getId(), executionMode);
 
         List<TestRunItem> items = buildTestRunItems(resolvedCases);
 
@@ -124,7 +146,9 @@ public class TestRunServiceImpl implements TestRunService {
                 .description(description)
                 .baseUrl(baseUrl)
                 .environmentName(request.getEnvironmentName())
-                .executionMode(request.getExecutionMode())
+                .executionMode(executionMode)
+                .runtimeMode(runtimeMode)
+                .targetBaseUrlUsed(baseUrl)
                 .runStatus(RunStatus.PENDING)
                 .testRunItems(items)
                 .build();
@@ -160,8 +184,11 @@ public class TestRunServiceImpl implements TestRunService {
 
         log.debug("Found SourceProject: id={}, name={}", sourceProject.getId(), sourceProject.getProjectName());
 
-        // Normalize and validate baseUrl
-        String baseUrl = normalizeBaseUrl(request.getBaseUrl());
+        RuntimeMode runtimeMode = resolveRuntimeMode(request.getRuntimeMode());
+        // Resolve effective baseUrl: request → UP SourceRuntime → project.defaultTargetBaseUrl → 400.
+        // SourceProject.repositoryUrl (GitHub source URL) is NEVER used here.
+        String baseUrl = sourceRuntimeService.resolveBaseUrlForTestRun(
+                sourceProject.getId(), runtimeMode, request.getBaseUrl(), sourceProject.getDefaultTargetBaseUrl());
 
         // Resolve and validate test cases
         List<UUID> testCaseIds = request.getTestCaseIds();
@@ -239,6 +266,8 @@ public class TestRunServiceImpl implements TestRunService {
                 .baseUrl(baseUrl)
                 .environmentName(request.getEnvironmentName())
                 .executionMode(executionMode)
+                .runtimeMode(runtimeMode)
+                .targetBaseUrlUsed(baseUrl)
                 .runStatus(RunStatus.RUNNING) // Set to RUNNING as per requirement
                 .testRunItems(testRunItems)
                 .build();
@@ -269,66 +298,62 @@ public class TestRunServiceImpl implements TestRunService {
 
     @Override
     @Async
-    @Transactional
     public void executeTestRunAsync(UUID id) {
         log.info("Starting async execution for TestRun id: {}", id);
 
-        TestRun testRun = testRunRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
+        TestRun testRun = findRunWithProjectGraph(id);
+
+        List<TestRunItem> items = findItemsWithExecutionGraph(id);
+
+        if (!performPreflightCheck(testRun, items)) {
+            log.warn("Preflight check failed for TestRun id: {}", id);
+            return;
+        }
 
         testRun.setRunStatus(RunStatus.RUNNING);
         testRunRepository.save(testRun);
 
-        List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
-
         boolean anyFailed = false;
 
-        for (TestRunItem item : items) {
+        for (UUID itemId : items.stream().map(TestRunItem::getId).toList()) {
             try {
-                item.setItemStatus(ExecutionStatus.RUNNING);
-                testRunItemRepository.save(item);
+                ItemExecutionContext itemContext = prepareItemExecution(
+                        itemId, testRun.getBaseUrl(), testRun.getExecutionMode());
 
-                TestCase testCase = item.getTestCase();
-                TestCaseInput input = testCase.getTestCaseInput();
-
-                if (input == null) {
-                    log.warn("TestCaseInput missing for item id: {}", item.getId());
-                    item.setItemStatus(ExecutionStatus.FAILED);
-                    testRunItemRepository.save(item);
+                if (itemContext.missingInput()) {
+                    log.warn("TestCaseInput missing for item id: {}", itemContext.itemId());
+                    markItemStatus(itemContext.itemId(), ExecutionStatus.FAILED);
+                    saveErrorResult(itemContext.itemId(), null, "TestCaseInput is missing for this test case");
                     anyFailed = true;
                     continue;
                 }
 
-                // 1. Build prepared request (pure frame — no HTTP execution)
-                PreparedHttpRequestResponse prepared = testRequestBuilder.build(
-                        testRun.getBaseUrl(), input);
+                if (itemContext.skipReason() != null) {
+                    markItemStatus(itemContext.itemId(), ExecutionStatus.FAILED);
+                    saveSkippedResult(itemContext.itemId(), itemContext.skipReason());
+                    continue;
+                }
 
-                // 2. Execute real HTTP via dedicated executor
-                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
+                ExecutedHttpResponse executed = testHttpExecutor.execute(itemContext.preparedRequest());
                 HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
 
-                // 3. Persist raw result (No legacy evaluation)
-                TestResult rawTestResult = testResultService.saveRawTestResult(item, actualResponse);
-
-                // 4. Evaluate using RuleEngineService (Single Source of Truth)
+                TestResult rawTestResult = saveRawResult(itemContext.itemId(), actualResponse);
                 RuleEngineResultDto ruleResult = ruleEngineService.evaluate(rawTestResult.getId());
 
                 ExecutionStatus itemStatus = resolveItemStatus(ruleResult.getFinalStatus());
-                item.setItemStatus(itemStatus);
-                testRunItemRepository.save(item);
+                markItemStatus(itemContext.itemId(), itemStatus);
 
                 if (itemStatus == ExecutionStatus.FAILED) {
                     anyFailed = true;
                 }
 
             } catch (Exception e) {
-                log.error("Error executing TestRunItem id: {}", item.getId(), e);
-                item.setItemStatus(ExecutionStatus.FAILED);
-                testRunItemRepository.save(item);
+                log.error("Error executing TestRunItem id: {}", itemId, e);
+                markItemStatus(itemId, ExecutionStatus.FAILED);
+                saveErrorResult(itemId, null, "Unexpected execution error: " + truncateSafe(e.getMessage(), 500));
                 anyFailed = true;
             }
         }
-
         testRun.setRunStatus(anyFailed ? RunStatus.FAILED : RunStatus.COMPLETED);
         testRunRepository.save(testRun);
         publishTestRunNotification(testRun);
@@ -341,6 +366,31 @@ public class TestRunServiceImpl implements TestRunService {
             throw new BadRequestException("id is required");
         }
 
+        TestRun preflightRun = findRunWithProjectGraph(id);
+
+        if (isStale(preflightRun)) {
+            String staleReason = resolveStaleReason(preflightRun);
+            markRunFailed(preflightRun, staleReason);
+            throw new BadRequestException(staleReason);
+        }
+
+        if (preflightRun.getRunStatus() == RunStatus.RUNNING) {
+            throw new BadRequestException("TestRun is already in RUNNING state. Wait for it to complete before re-executing.");
+        }
+
+        projectAccessService.requireCanExecuteTestRun(
+                preflightRun.getSourceProject().getId(),
+                preflightRun.getExecutionMode());
+
+        List<TestRunItem> preflightItems = findItemsWithExecutionGraph(id);
+        if (preflightItems.isEmpty()) {
+            throw new BadRequestException("TestRun has no items to execute");
+        }
+
+        if (!performPreflightCheck(preflightRun, preflightItems)) {
+            throw new BadRequestException(preflightRun.getPreflightSummary() != null ? preflightRun.getPreflightSummary() : "Base URL/runtime does not match uploaded source. All selected safe endpoints returned 404.");
+        }
+
         ExecutionContext executionContext = transactionTemplate.execute(status -> {
             TestRun testRun = testRunRepository.findById(id)
                     .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + id));
@@ -350,19 +400,10 @@ public class TestRunServiceImpl implements TestRunService {
                         "TestRun is already in RUNNING state. Wait for it to complete before re-executing.");
             }
 
-            projectAccessService.requireCanExecuteTestRun(
-                    testRun.getSourceProject().getId(),
-                    testRun.getExecutionMode());
-
-            List<TestRunItem> items = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(id);
-            if (items.isEmpty()) {
-                throw new BadRequestException("TestRun has no items to execute");
-            }
-
             testRun.setRunStatus(RunStatus.RUNNING);
             TestRun savedRun = testRunRepository.save(testRun);
 
-            List<UUID> itemIds = items.stream()
+            List<UUID> itemIds = preflightItems.stream()
                     .map(TestRunItem::getId)
                     .toList();
             return new ExecutionContext(
@@ -383,7 +424,8 @@ public class TestRunServiceImpl implements TestRunService {
 
         for (UUID itemId : executionContext.itemIds()) {
             try {
-                ItemExecutionContext itemContext = prepareItemExecution(itemId, executionContext.baseUrl());
+                ItemExecutionContext itemContext = prepareItemExecution(
+                        itemId, executionContext.baseUrl(), preflightRun.getExecutionMode());
                 testRunRealtimePublisher.publishItemStarted(
                         buildItemStartedRealtimeEvent(executionContext, itemContext, counters)
                 );
@@ -402,17 +444,23 @@ public class TestRunServiceImpl implements TestRunService {
                     continue;
                 }
 
+                if (itemContext.skipReason() != null) {
+                    markItemStatus(itemId, ExecutionStatus.FAILED);
+                    saveSkippedResult(itemId, itemContext.skipReason());
+                    RealtimeItemSnapshot completedSnapshot = loadRealtimeItemSnapshot(itemId);
+                    counters.markCompleted(completedSnapshot.resultStatus());
+                    testRunRealtimePublisher.publishItemCompleted(
+                            buildItemCompletedRealtimeEvent(executionContext, completedSnapshot, counters)
+                    );
+                    continue;
+                }
+
                 // Execute real HTTP via dedicated executor
                 ExecutedHttpResponse executed = testHttpExecutor.execute(itemContext.preparedRequest());
                 HttpActualResponseDto actualResponse = toHttpActualResponse(executed);
 
                 // Persist raw result (No legacy evaluation)
-                TestResult rawTestResult = transactionTemplate.execute(status -> {
-                    TestRunItem item = testRunItemRepository.findById(itemContext.itemId())
-                            .orElseThrow(() -> new ResourceNotFoundException(
-                                    "TestRunItem not found with id: " + itemContext.itemId()));
-                    return testResultService.saveRawTestResult(item, actualResponse);
-                });
+                TestResult rawTestResult = saveRawResult(itemContext.itemId(), actualResponse);
 
                 // Evaluate using RuleEngineService (Single Source of Truth)
                 RuleEngineResultDto ruleResult = ruleEngineService.evaluate(rawTestResult.getId());
@@ -464,21 +512,20 @@ public class TestRunServiceImpl implements TestRunService {
         } else {
             testRunRealtimePublisher.publishRunFailed(finalRunEvent);
         }
-        publishTestRunNotification(savedRun);
+        publishTestRunNotification(findRunWithProjectGraph(savedRun.getId()));
 
         return transactionTemplate.execute(status -> {
             TestRun finalRun = testRunRepository.findById(savedRun.getId())
                     .orElseThrow(() -> new ResourceNotFoundException(
                             "TestRun not found with id: " + savedRun.getId()));
-            List<TestRunItem> finalItems = testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(finalRun.getId());
+            List<TestRunItem> finalItems = findItemsWithExecutionGraph(finalRun.getId());
             return toDetailResponse(finalRun, finalItems, Map.of());
         });
     }
 
-    private ItemExecutionContext prepareItemExecution(UUID itemId, String baseUrl) {
+    private ItemExecutionContext prepareItemExecution(UUID itemId, String baseUrl, ExecutionMode executionMode) {
         return transactionTemplate.execute(status -> {
-            TestRunItem item = testRunItemRepository.findById(itemId)
-                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+            TestRunItem item = findItemWithExecutionGraph(itemId);
 
             item.setItemStatus(ExecutionStatus.RUNNING);
             testRunItemRepository.save(item);
@@ -494,11 +541,44 @@ public class TestRunServiceImpl implements TestRunService {
                         item.getSortOrder(),
                         item.getItemStatus(),
                         null,
-                        true
+                        true,
+                        null
+                );
+            }
+
+            String skipReason = getSkippedReason(item, executionMode);
+            if (skipReason != null) {
+                return new ItemExecutionContext(
+                        item.getId(),
+                        testCase.getId(),
+                        testCase.getCaseCode(),
+                        testCase.getCaseName(),
+                        item.getSortOrder(),
+                        item.getItemStatus(),
+                        null,
+                        false,
+                        skipReason
                 );
             }
 
             // Build while the input entity is initialized; HTTP still happens outside this transaction.
+            // Guard: if requestPath still has unresolved {variable} placeholders, mark ERROR early.
+            String requestPath = input.getRequestPath();
+            if (requestPath != null && requestPath.matches(".*\\{[^}]+}.*")) {
+                log.warn("[prepareItemExecution] Unresolved path variable in requestPath='{}' for item id={}",
+                        requestPath, item.getId());
+                return new ItemExecutionContext(
+                        item.getId(),
+                        testCase.getId(),
+                        testCase.getCaseCode(),
+                        testCase.getCaseName(),
+                        item.getSortOrder(),
+                        item.getItemStatus(),
+                        null,
+                        true,
+                        null
+                );
+            }
             PreparedHttpRequestResponse prepared = testRequestBuilder.build(baseUrl, input);
             return new ItemExecutionContext(
                     item.getId(),
@@ -508,15 +588,48 @@ public class TestRunServiceImpl implements TestRunService {
                     item.getSortOrder(),
                     item.getItemStatus(),
                     prepared,
-                    false
+                    false,
+                    null
             );
         });
     }
 
+    private TestResult saveRawResult(UUID itemId, HttpActualResponseDto actualResponse) {
+        return transactionTemplate.execute(status -> {
+            TestRunItem item = findItemWithExecutionGraph(itemId);
+            return testResultService.saveRawTestResult(item, actualResponse);
+        });
+    }
+
+    private TestRun findRunWithProjectGraph(UUID runId) {
+        var graphResult = testRunRepository.findByIdWithProjectGraph(runId);
+        if (graphResult != null && graphResult.isPresent()) {
+            return graphResult.get();
+        }
+        return testRunRepository.findById(runId)
+                .orElseThrow(() -> new ResourceNotFoundException("TestRun not found with id: " + runId));
+    }
+
+    private List<TestRunItem> findItemsWithExecutionGraph(UUID runId) {
+        List<TestRunItem> graphItems = testRunItemRepository.findByTestRunIdWithExecutionGraph(runId);
+        if (graphItems != null && !graphItems.isEmpty()) {
+            return graphItems;
+        }
+        return testRunItemRepository.findByTestRun_IdOrderBySortOrderAsc(runId);
+    }
+
+    private TestRunItem findItemWithExecutionGraph(UUID itemId) {
+        var graphResult = testRunItemRepository.findByIdWithExecutionGraph(itemId);
+        if (graphResult != null && graphResult.isPresent()) {
+            return graphResult.get();
+        }
+        return testRunItemRepository.findById(itemId)
+                .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+    }
+
     private void markItemStatus(UUID itemId, ExecutionStatus itemStatus) {
         transactionTemplate.executeWithoutResult(status -> {
-            TestRunItem item = testRunItemRepository.findById(itemId)
-                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+            TestRunItem item = findItemWithExecutionGraph(itemId);
             item.setItemStatus(itemStatus);
             testRunItemRepository.save(item);
         });
@@ -564,8 +677,7 @@ public class TestRunServiceImpl implements TestRunService {
 
     private RealtimeItemSnapshot loadRealtimeItemSnapshot(UUID itemId) {
         return transactionTemplate.execute(status -> {
-            TestRunItem item = testRunItemRepository.findById(itemId)
-                    .orElseThrow(() -> new ResourceNotFoundException("TestRunItem not found with id: " + itemId));
+            TestRunItem item = findItemWithExecutionGraph(itemId);
 
             TestCase testCase = item.getTestCase();
             TestResult result = item.getTestResult();
@@ -676,7 +788,8 @@ public class TestRunServiceImpl implements TestRunService {
             Integer sortOrder,
             ExecutionStatus itemStatus,
             PreparedHttpRequestResponse preparedRequest,
-            boolean missingInput) {
+            boolean missingInput,
+            String skipReason) {
     }
 
     private static final class RealtimeExecutionCounters {
@@ -728,12 +841,275 @@ public class TestRunServiceImpl implements TestRunService {
                 .responseBody(executed.responseBody())
                 .responseTimeMs(executed.responseTimeMs())
                 .errorMessage(executed.errorMessage())
+                .responseHeaders(executed.responseHeaders())
                 .build();
     }
 
     private String truncateSafe(String value, int maxLength) {
         if (value == null) return null;
         return value.length() <= maxLength ? value : value.substring(0, maxLength) + "...";
+    }
+
+    private boolean performPreflightCheck(TestRun testRun, List<TestRunItem> items) {
+        List<TestRunItem> safeItems = items.stream()
+                .filter(item -> {
+                    TestCase testCase = item.getTestCase();
+                    if (testCase == null || testCase.getTestCaseInput() == null) return false;
+                    String method = testCase.getTestCaseInput().getHttpMethod().name();
+                    return "GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method);
+                })
+                .toList();
+
+        if (safeItems.isEmpty()) {
+            testRun.setPreflightStatus("SKIPPED");
+            testRun.setPreflightSummary("No safe GET/HEAD test cases selected for preflight.");
+            testRunRepository.save(testRun);
+            return true;
+        }
+
+        UUID projectId = testRun.getSourceProject().getId();
+        String baseUrl = testRun.getBaseUrl();
+
+        // Fetch assertions to check if selected test cases are negative/non-2xx expected
+        List<UUID> testCaseIds = items.stream()
+                .map(TestRunItem::getTestCase)
+                .filter(java.util.Objects::nonNull)
+                .map(TestCase::getId)
+                .toList();
+        Map<UUID, List<TestCaseAssertion>> assertionsByTestCase = new HashMap<>();
+        if (!testCaseIds.isEmpty()) {
+            try {
+                List<TestCaseAssertion> assertions = testCaseAssertionRepository.findByTestCase_IdIn(testCaseIds);
+                if (assertions != null) {
+                    for (TestCaseAssertion assertion : assertions) {
+                        assertionsByTestCase.computeIfAbsent(assertion.getTestCase().getId(), k -> new ArrayList<>()).add(assertion);
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Failed to fetch test case assertions for preflight check", e);
+            }
+        }
+
+        boolean allSelectedAreNegativeOrNon2xx = true;
+        for (TestRunItem item : items) {
+            TestCase testCase = item.getTestCase();
+            if (testCase != null && !isNegativeOrNon2xxExpected(testCase, assertionsByTestCase.get(testCase.getId()))) {
+                allSelectedAreNegativeOrNon2xx = false;
+                break;
+            }
+        }
+
+        // Retrieve runtime health details
+        String customHealthPath = null;
+        boolean isRuntimeHealthy = false;
+        try {
+            SourceRuntimeResponse currentRuntime = sourceRuntimeService.getCurrentRuntime(projectId);
+            if (currentRuntime != null) {
+                customHealthPath = currentRuntime.getHealthCheckPath();
+                if (currentRuntime.getRuntimeStatus() == com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeStatus.UP) {
+                    isRuntimeHealthy = true;
+                } else if (currentRuntime.getLastHealthStatus() != null && currentRuntime.getLastHealthStatus().startsWith("UP:")) {
+                    isRuntimeHealthy = true;
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to retrieve runtime status for preflight check", e);
+        }
+
+        // Build list of probes
+        List<PreflightProbe> strongProbes = new ArrayList<>();
+        List<PreflightProbe> weakProbes = new ArrayList<>();
+
+        // Weak/default health paths
+        if (customHealthPath != null && !customHealthPath.isBlank()) {
+            weakProbes.add(new PreflightProbe(customHealthPath, "Custom Health Path: " + customHealthPath));
+        }
+        for (String healthPath : List.of("/actuator/health", "/health", "/healthz", "/")) {
+            if (customHealthPath == null || !customHealthPath.equalsIgnoreCase(healthPath)) {
+                weakProbes.add(new PreflightProbe(healthPath, "Default Health Path: " + healthPath));
+            }
+        }
+
+        // Strong probes: Project API GET endpoints without variables
+        try {
+            List<ApiEndpoint> apiEndpoints = apiEndpointRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
+            if (apiEndpoints != null) {
+                for (ApiEndpoint ep : apiEndpoints) {
+                    if ((ep.getHttpMethod() == com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET
+                            || ep.getHttpMethod() == com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.HEAD)
+                            && ep.getEndpointPath() != null) {
+                        String path = ep.getEndpointPath();
+                        if (!path.contains("{") && !path.contains("}")) {
+                            strongProbes.add(new PreflightProbe(path, "API Endpoint: GET " + path));
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to fetch project api endpoints for preflight check", e);
+        }
+
+        // Strong probes: Selected positive test cases with GET/HEAD and expected 2xx
+        for (TestRunItem item : items) {
+            TestCase testCase = item.getTestCase();
+            if (testCase != null && testCase.getTestCaseInput() != null) {
+                TestCaseInput input = testCase.getTestCaseInput();
+                String method = input.getHttpMethod().name();
+                if (("GET".equalsIgnoreCase(method) || "HEAD".equalsIgnoreCase(method))
+                        && !isNegativeOrNon2xxExpected(testCase, assertionsByTestCase.get(testCase.getId()))) {
+                    try {
+                        PreparedHttpRequestResponse prepared = testRequestBuilder.build(baseUrl, input);
+                        strongProbes.add(new PreflightProbe(prepared, "Selected Positive Test Case: GET " + input.getRequestPath()));
+                    } catch (Exception e) {
+                        // ignore builder errors
+                    }
+                }
+            }
+        }
+
+        // Now run the probes
+        boolean anyPassed = false;
+        boolean anyStrongExecuted = false;
+        boolean anyStrongConnectionRefused = false;
+        boolean allStrong404 = true;
+        boolean allProbesConnectionRefused = true;
+
+        List<PreflightProbe> allProbes = new ArrayList<>();
+        allProbes.addAll(strongProbes);
+        allProbes.addAll(weakProbes);
+
+        for (PreflightProbe probe : allProbes) {
+            boolean isStrong = strongProbes.contains(probe);
+            try {
+                PreparedHttpRequestResponse prepared;
+                if (probe.preparedRequest != null) {
+                    prepared = probe.preparedRequest;
+                } else {
+                    prepared = PreparedHttpRequestResponse.builder()
+                            .method(com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET)
+                            .finalUrl(baseUrl + (probe.path.startsWith("/") ? probe.path : "/" + probe.path))
+                            .baseUrl(baseUrl)
+                            .requestPath(probe.path)
+                            .build();
+                }
+
+                ExecutedHttpResponse executed = testHttpExecutor.execute(prepared);
+                if (!executed.connectionError()) {
+                    allProbesConnectionRefused = false;
+                }
+
+                if (executed.statusCode() != 404 && !executed.connectionError()) {
+                    anyPassed = true;
+                    break;
+                }
+
+                if (isStrong) {
+                    anyStrongExecuted = true;
+                    if (executed.connectionError()) {
+                        anyStrongConnectionRefused = true;
+                    }
+                    if (executed.statusCode() != 404) {
+                        allStrong404 = false;
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("Error executing preflight probe: " + probe.description, e);
+            }
+        }
+
+        if (anyPassed) {
+            testRun.setPreflightStatus("PASSED");
+            testRun.setPreflightSummary("At least one positive safe endpoint returned a successful status.");
+            testRunRepository.save(testRun);
+            return true;
+        }
+
+        // If all probes failed to connect (connection error on everything, including / health checks)
+        if (allProbesConnectionRefused) {
+            String error = "Base URL/runtime is unreachable. Connection refused or timed out for " + baseUrl;
+            failTestRun(testRun, error);
+            return false;
+        }
+
+        // If strong probes were executed and they failed
+        if (anyStrongExecuted) {
+            if (allStrong404 || anyStrongConnectionRefused) {
+                String error = "Base URL/runtime does not match uploaded source. All positive safe endpoints returned 404 or connection failed.";
+                failTestRun(testRun, error);
+                return false;
+            }
+        }
+
+        // If no strong probes were executed, but runtime health is UP, we pass/skip
+        if (isRuntimeHealthy && allSelectedAreNegativeOrNon2xx) {
+            testRun.setPreflightStatus("PASSED");
+            testRun.setPreflightSummary("Runtime health is UP; selected testcase is negative expected status 404, continuing execution.");
+            testRunRepository.save(testRun);
+            return true;
+        }
+
+        // Otherwise, fail
+        String error = "Base URL/runtime does not match uploaded source. No positive safe endpoints returned success, and runtime health is not UP.";
+        failTestRun(testRun, error);
+        return false;
+    }
+
+    private void failTestRun(TestRun testRun, String error) {
+        testRun.setRunStatus(RunStatus.FAILED);
+        testRun.setPreflightStatus("FAILED");
+        testRun.setPreflightSummary(error);
+        String desc = testRun.getDescription();
+        testRun.setDescription(desc == null ? error : desc + "\n\nPreflight Error: " + error);
+        testRunRepository.save(testRun);
+    }
+
+    private boolean isNegativeOrNon2xxExpected(TestCase testCase, List<TestCaseAssertion> assertions) {
+        if (testCase == null) {
+            return false;
+        }
+        if (testCase.getCaseType() == com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.NEGATIVE
+                || testCase.getCaseType() == com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.VALIDATION) {
+            return true;
+        }
+        if (assertions != null) {
+            for (TestCaseAssertion assertion : assertions) {
+                if (assertion.getAssertionType() == com.aitoolcheck.ai_toolcheck1_backend.enums.AssertionType.STATUS_CODE
+                        && assertion.getEnabledFlag() != Boolean.FALSE) {
+                    String val = assertion.getExpectedValue();
+                    if (val != null) {
+                        try {
+                            int statusCode = Integer.parseInt(val.trim());
+                            if (statusCode < 200 || statusCode >= 300) {
+                                return true;
+                            }
+                        } catch (NumberFormatException e) {
+                            if (!val.trim().startsWith("2")) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static class PreflightProbe {
+        final String path;
+        final PreparedHttpRequestResponse preparedRequest;
+        final String description;
+
+        PreflightProbe(String path, String description) {
+            this.path = path;
+            this.preparedRequest = null;
+            this.description = description;
+        }
+
+        PreflightProbe(PreparedHttpRequestResponse preparedRequest, String description) {
+            this.path = preparedRequest.getRequestPath();
+            this.preparedRequest = preparedRequest;
+            this.description = description;
+        }
     }
 
     private void publishTestRunNotification(TestRun testRun) {
@@ -758,31 +1134,31 @@ public class TestRunServiceImpl implements TestRunService {
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public TestRunDetailResponse getById(UUID id) {
         if (id == null) {
             throw new BadRequestException("id is required");
         }
 
-        TestRun testRun = testRunRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "TestRun not found with id: " + id));
+        markStaleRunsFailed();
+
+        TestRun testRun = findRunWithProjectGraph(id);
         projectAccessService.requireCanViewProject(testRun.getSourceProject().getId());
 
-        List<TestRunItem> items = testRunItemRepository
-                .findByTestRun_IdOrderBySortOrderAsc(id);
+        List<TestRunItem> items = findItemsWithExecutionGraph(id);
 
         return toDetailResponse(testRun, items, Map.of());
     }
 
     @Override
-    @Transactional(readOnly = true)
+    @Transactional
     public List<TestRunResponse> getByProjectId(UUID projectId) {
         if (projectId == null) {
             throw new BadRequestException("projectId is required");
         }
 
         projectAccessService.requireCanViewProject(projectId);
+        markStaleRunsFailed();
 
         List<TestRun> runs = testRunRepository
                 .findBySourceProject_IdOrderByCreatedAtDesc(projectId);
@@ -802,13 +1178,10 @@ public class TestRunServiceImpl implements TestRunService {
             throw new BadRequestException("id is required");
         }
 
-        TestRun testRun = testRunRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException(
-                        "TestRun not found with id: " + id));
+        TestRun testRun = findRunWithProjectGraph(id);
         projectAccessService.requireCanPrepareTestRun(testRun.getSourceProject().getId());
 
-        List<TestRunItem> items = testRunItemRepository
-                .findByTestRun_IdOrderBySortOrderAsc(id);
+        List<TestRunItem> items = findItemsWithExecutionGraph(id);
 
         Map<UUID, PreparedHttpRequestResponse> preparedByItemId = new HashMap<>();
 
@@ -829,36 +1202,40 @@ public class TestRunServiceImpl implements TestRunService {
         return toDetailResponse(testRun, items, preparedByItemId);
     }
 
-    private List<TestCase> resolveTestCases(CreateTestRunRequest request, UUID projectId) {
+    private List<TestCase> resolveTestCases(CreateTestRunRequest request, UUID projectId, ExecutionMode executionMode) {
         List<UUID> rawIds = request.getTestCaseIds();
         boolean hasExplicitIds = rawIds != null && !rawIds.isEmpty();
         boolean includeAll = Boolean.TRUE.equals(request.getIncludeAllActive());
 
         if (hasExplicitIds) {
-            // Reject null entries before deduplication
-            if (rawIds.contains(null)) {
+            if (rawIds.stream().anyMatch(id -> id == null)) {
                 throw new BadRequestException("testCaseIds must not contain null values");
             }
 
-            // Deduplicate while preserving request order
             List<UUID> requestedIds = new ArrayList<>(new LinkedHashSet<>(rawIds));
-
-            List<TestCase> resolved = testCaseRepository
-                    .findByIdInAndSourceProject_IdAndActiveFlagTrueAndDeletedFlagFalse(
-                            requestedIds, projectId);
-
-            if (resolved.size() != requestedIds.size()) {
-                throw new BadRequestException(
-                        "Some selected test cases are missing, inactive, deleted, or not in project");
-            }
-
-            // Reorder to match explicit request order — repository does not guarantee order
             Map<UUID, TestCase> byId = new HashMap<>();
-            resolved.forEach(tc -> byId.put(tc.getId(), tc));
+            testCaseRepository.findAllById(requestedIds).forEach(tc -> byId.put(tc.getId(), tc));
 
             List<TestCase> ordered = new ArrayList<>(requestedIds.size());
             for (UUID uid : requestedIds) {
-                ordered.add(byId.get(uid));
+                TestCase testCase = byId.get(uid);
+                if (testCase == null) {
+                    throw invalidSelectedTestCase(projectId, uid, "not found");
+                }
+                UUID actualProjectId = testCase.getSourceProject() == null ? null : testCase.getSourceProject().getId();
+                if (!projectId.equals(actualProjectId)) {
+                    throw invalidSelectedTestCase(projectId, uid, "belongs to another project");
+                }
+                if (Boolean.TRUE.equals(testCase.getDeletedFlag())) {
+                    throw invalidSelectedTestCase(projectId, uid, "deleted");
+                }
+                if (!Boolean.TRUE.equals(testCase.getActiveFlag())) {
+                    throw invalidSelectedTestCase(projectId, uid, "not active");
+                }
+                if (executionMode == ExecutionMode.READ_ONLY && Boolean.TRUE.equals(testCase.getRequiresWrite())) {
+                    throw invalidSelectedTestCase(projectId, uid, "write testcase not allowed in READ_ONLY");
+                }
+                ordered.add(testCase);
             }
             return ordered;
 
@@ -879,6 +1256,11 @@ public class TestRunServiceImpl implements TestRunService {
         }
     }
 
+    private BadRequestException invalidSelectedTestCase(UUID projectId, UUID testCaseId, String reason) {
+        return new BadRequestException("Invalid TestRun testCase selection: testCaseId=" + testCaseId
+                + " projectId=" + projectId
+                + " reason=" + reason);
+    }
     private List<TestRunItem> buildTestRunItems(List<TestCase> testCases) {
         List<TestRunItem> items = new ArrayList<>(testCases.size());
         int sortOrder = 1;
@@ -902,6 +1284,12 @@ public class TestRunServiceImpl implements TestRunService {
                 .baseUrl(run.getBaseUrl())
                 .environmentName(run.getEnvironmentName())
                 .executionMode(run.getExecutionMode())
+                .runtimeMode(run.getRuntimeMode())
+                .sourceRuntimeId(run.getSourceRuntime() == null ? null : run.getSourceRuntime().getId())
+                .targetBaseUrlUsed(run.getTargetBaseUrlUsed())
+                .runtimeStatusAtStart(run.getRuntimeStatusAtStart())
+                .preflightStatus(run.getPreflightStatus())
+                .preflightSummary(run.getPreflightSummary())
                 .runStatus(run.getRunStatus())
                 .totalItems(totalItems)
                 .createdAt(run.getCreatedAt())
@@ -927,6 +1315,12 @@ public class TestRunServiceImpl implements TestRunService {
                 .baseUrl(run.getBaseUrl())
                 .environmentName(run.getEnvironmentName())
                 .executionMode(run.getExecutionMode())
+                .runtimeMode(run.getRuntimeMode())
+                .sourceRuntimeId(run.getSourceRuntime() == null ? null : run.getSourceRuntime().getId())
+                .targetBaseUrlUsed(run.getTargetBaseUrlUsed())
+                .runtimeStatusAtStart(run.getRuntimeStatusAtStart())
+                .preflightStatus(run.getPreflightStatus())
+                .preflightSummary(run.getPreflightSummary())
                 .runStatus(run.getRunStatus())
                 .totalItems(itemResponses.size())
                 .items(itemResponses)
@@ -1008,6 +1402,90 @@ public class TestRunServiceImpl implements TestRunService {
                 .build();
     }
 
+    @Transactional
+    public int markStaleRunsFailed() {
+        if (!testRunStaleProperties.isEnabled()) {
+            return 0;
+        }
+
+        int updated = 0;
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime pendingCutoff = now.minusMinutes(testRunStaleProperties.getPendingTimeoutMinutes());
+        LocalDateTime runningCutoff = now.minusMinutes(testRunStaleProperties.getRunningTimeoutMinutes());
+
+        List<TestRun> stalePending = testRunRepository.findByRunStatusAndCreatedAtBefore(
+                RunStatus.PENDING, pendingCutoff);
+        for (TestRun run : stalePending) {
+            markRunFailed(run, STALE_PENDING_REASON);
+            updated++;
+        }
+
+        List<TestRun> staleRunning = testRunRepository.findByRunStatusAndCreatedAtBefore(
+                RunStatus.RUNNING, runningCutoff);
+        for (TestRun run : staleRunning) {
+            markRunFailed(run, STALE_RUNNING_REASON);
+            updated++;
+        }
+
+        return updated;
+    }
+
+    private boolean failStaleRunIfNeeded(TestRun testRun) {
+        if (testRun == null || !testRunStaleProperties.isEnabled()) {
+            return false;
+        }
+        if (!isStale(testRun)) {
+            return false;
+        }
+        markRunFailed(testRun, resolveStaleReason(testRun));
+        return true;
+    }
+
+    private boolean isStale(TestRun testRun) {
+        if (testRun.getCreatedAt() == null || testRun.getRunStatus() == null) {
+            return false;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (testRun.getRunStatus() == RunStatus.PENDING) {
+            return testRun.getCreatedAt().isBefore(now.minusMinutes(testRunStaleProperties.getPendingTimeoutMinutes()));
+        }
+        if (testRun.getRunStatus() == RunStatus.RUNNING) {
+            return testRun.getCreatedAt().isBefore(now.minusMinutes(testRunStaleProperties.getRunningTimeoutMinutes()));
+        }
+        return false;
+    }
+
+    private void markRunFailed(TestRun testRun, String reason) {
+        if (testRun == null || testRun.getRunStatus() == RunStatus.FAILED) {
+            return;
+        }
+        testRun.setRunStatus(RunStatus.FAILED);
+        appendDescriptionIfMissing(testRun, reason);
+        testRunRepository.save(testRun);
+    }
+
+    private String resolveStaleReason(TestRun testRun) {
+        if (testRun != null && testRun.getRunStatus() == RunStatus.RUNNING) {
+            return STALE_RUNNING_REASON;
+        }
+        return STALE_PENDING_REASON;
+    }
+
+    private void appendDescriptionIfMissing(TestRun testRun, String reason) {
+        if (!hasText(reason)) {
+            return;
+        }
+        String existing = testRun.getDescription();
+        if (existing != null && existing.contains(reason)) {
+            return;
+        }
+        testRun.setDescription(existing == null ? reason : existing + "\n\n" + reason);
+    }
+
+    private RuntimeMode resolveRuntimeMode(RuntimeMode requestedRuntimeMode) {
+        return requestedRuntimeMode == null ? RuntimeMode.EXTERNAL_BASE_URL : requestedRuntimeMode;
+    }
+
     private String normalizeRequiredText(String value, String fieldName) {
         if (!hasText(value)) {
             throw new BadRequestException(fieldName + " is required");
@@ -1020,6 +1498,48 @@ public class TestRunServiceImpl implements TestRunService {
             return null;
         }
         return value.trim();
+    }
+
+    /**
+     * Resolves and validates the effective base URL for a TestRun.
+     *
+     * <p>Resolution order:
+     * <ol>
+     *   <li>If {@code requestBaseUrl} has text: use it (validated).
+     *   <li>Else if {@code projectDefaultTargetBaseUrl} has text: use it (validated).
+     *   <li>Else throw BadRequestException with clear guidance.
+     * </ol>
+     *
+     * <p><strong>Important:</strong> {@code projectDefaultTargetBaseUrl} comes from
+     * {@code SourceProject.defaultTargetBaseUrl}, which is the live application endpoint.
+     * {@code SourceProject.repositoryUrl} (GitHub source URL) must NEVER be used here.
+     *
+     * @param requestBaseUrl             baseUrl from the incoming request (may be null/blank)
+     * @param projectDefaultTargetBaseUrl project-level runtime target (may be null)
+     */
+    private String resolveBaseUrl(String requestBaseUrl, String projectDefaultTargetBaseUrl) {
+        if (hasText(requestBaseUrl)) {
+            String trimmed = requestBaseUrl.trim();
+            validateBaseUrl(trimmed);
+            if (trimmed.endsWith("/")) {
+                trimmed = trimmed.substring(0, trimmed.length() - 1);
+            }
+            return trimmed;
+        }
+
+        if (hasText(projectDefaultTargetBaseUrl)) {
+            String trimmed = projectDefaultTargetBaseUrl.trim();
+            validateBaseUrl(trimmed);
+            if (trimmed.endsWith("/")) {
+                trimmed = trimmed.substring(0, trimmed.length() - 1);
+            }
+            log.info("[TestRunService] No baseUrl in request — using project defaultTargetBaseUrl: {}", trimmed);
+            return trimmed;
+        }
+
+        throw new BadRequestException(
+                "Test run baseUrl is required. " +
+                "Provide baseUrl in the request, or configure project defaultTargetBaseUrl.");
     }
 
     private String normalizeBaseUrl(String baseUrl) {
@@ -1068,4 +1588,70 @@ public class TestRunServiceImpl implements TestRunService {
     private boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
     }
+
+    private String getSkippedReason(TestRunItem item, ExecutionMode executionMode) {
+        if (item == null) {
+            return null;
+        }
+        TestCase testCase = item.getTestCase();
+        if (testCase == null) {
+            return null;
+        }
+        TestCaseInput input = testCase.getTestCaseInput();
+        if (input == null) {
+            return null;
+        }
+
+        com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod method = input.getHttpMethod();
+        boolean isMutating = method != com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET && 
+                             method != com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.HEAD;
+
+        if (executionMode == ExecutionMode.READ_ONLY) {
+            if (isMutating) {
+                return "Skipped in READ_ONLY mode: mutating request is not allowed.";
+            }
+            if (Boolean.TRUE.equals(testCase.getRequiresWrite())) {
+                return "Skipped in READ_ONLY mode: mutating request (requiresWrite) is not allowed.";
+            }
+        }
+
+        // B. Also block unsafe positive GET-by-ID cases when they rely on fake hardcoded path data.
+        if (method == com.aitoolcheck.ai_toolcheck1_backend.enums.HttpMethod.GET && 
+            testCase.getCaseType() == com.aitoolcheck.ai_toolcheck1_backend.enums.CaseType.POSITIVE) {
+            
+            String path = input.getRequestPath();
+            if (path != null) {
+                String upperPath = path.toUpperCase();
+                if (upperPath.contains("CUSTOMER_ABC_123") ||
+                    upperPath.contains("UNKNOWN_") ||
+                    upperPath.contains("SAMPLE_") ||
+                    upperPath.contains("TEST_") ||
+                    upperPath.contains("FAKE_") ||
+                    upperPath.contains("DUMMY_")) {
+                    return "Skipped: positive path-variable test requires real test data.";
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private void saveSkippedResult(UUID itemId, String reason) {
+        HttpActualResponseDto skipResponse = HttpActualResponseDto.builder()
+                .statusCode(0)
+                .responseBody(null)
+                .responseTimeMs(0L)
+                .errorMessage(reason)
+                .build();
+
+        transactionTemplate.executeWithoutResult(status -> {
+            TestRunItem item = findItemWithExecutionGraph(itemId);
+
+            TestResult rawTestResult = testResultService.saveRawTestResult(item, skipResponse);
+            rawTestResult.setResultStatus(ResultStatus.SKIPPED);
+            rawTestResult.setBlockedReason(reason);
+            testResultRepository.save(rawTestResult);
+        });
+    }
 }
+

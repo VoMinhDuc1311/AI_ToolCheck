@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.model;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.RunStatus;
 import jakarta.persistence.*;
 import lombok.*;
@@ -53,6 +54,26 @@ public class TestRun {
     @Column(name = "run_status", nullable = false, length = 50)
     @Enumerated(EnumType.STRING)
     private RunStatus runStatus;
+
+    @Column(name = "runtime_mode", length = 50)
+    @Enumerated(EnumType.STRING)
+    private RuntimeMode runtimeMode;
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "source_runtime_id", referencedColumnName = "id")
+    private SourceRuntime sourceRuntime;
+
+    @Column(name = "target_base_url_used", length = 500)
+    private String targetBaseUrlUsed;
+
+    @Column(name = "runtime_status_at_start", length = 50)
+    private String runtimeStatusAtStart;
+
+    @Column(name = "preflight_status", length = 50)
+    private String preflightStatus;
+
+    @Column(name = "preflight_summary", columnDefinition = "TEXT")
+    private String preflightSummary;
 
     @Column(name = "created_at", nullable = false)
     private LocalDateTime createdAt;

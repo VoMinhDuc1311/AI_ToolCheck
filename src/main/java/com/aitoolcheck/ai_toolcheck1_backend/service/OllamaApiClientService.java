@@ -25,6 +25,16 @@ public interface OllamaApiClientService extends LlmClientService {
     String generateTextWithModel(String prompt, String model);
 
     /**
+     * Sends a prompt to Ollama using a per-call timeout.
+     *
+     * @param prompt The complete prompt string.
+     * @param model The Ollama model name.
+     * @param timeoutSeconds Timeout for this generation call.
+     * @return The raw text response from the model.
+     */
+    String generateTextWithModel(String prompt, String model, int timeoutSeconds);
+
+    /**
      * Check if Ollama is healthy and reachable.
      */
     boolean isHealthy();

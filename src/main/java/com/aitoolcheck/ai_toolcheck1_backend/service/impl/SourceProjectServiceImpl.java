@@ -10,6 +10,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ProjectVisibility;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.UserRole;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.ConflictException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AppUser;
 import com.aitoolcheck.ai_toolcheck1_backend.model.ProjectMember;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -18,8 +19,10 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.CurrentUserService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceProjectService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.common.GitHubRepositoryUrlParser;
+import com.aitoolcheck.ai_toolcheck1_backend.common.RuntimeTargetUrlValidator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -66,10 +69,10 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         String projectName = request.getProjectName().trim();
 
         if (sourceProjectRepository.existsByProjectKey(projectKey)) {
-            throw new BadRequestException("Project key already exists");
+            throw new ConflictException("Project key already exists: " + projectKey);
         }
         if (sourceProjectRepository.existsByProjectName(projectName)) {
-            throw new BadRequestException("Project name already exists");
+            throw new ConflictException("Project name already exists: " + projectName);
         }
 
         // Validate and normalise GitHub repository metadata
@@ -78,17 +81,32 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 ? GitHubRepositoryUrlParser.normaliseBranch(request.getRepositoryBranch())
                 : null;
 
-        SourceProject saved = sourceProjectRepository.save(SourceProject.builder()
-                .projectKey(projectKey)
-                .projectName(projectName)
-                .description(trimToNull(request.getDescription()))
-                .repositoryUrl(normRepoUrl)
-                .repositoryBranch(normRepoBranch)
-                .backendType(request.getBackendType())
-                .status(ProjectStatus.NEW)
-                .ownerUser(currentUser)
-                .visibility(ProjectVisibility.PRIVATE)
-                .build());
+        // Validate and normalise runtime target base URL.
+        // IMPORTANT: repositoryUrl (GitHub source) must NEVER be auto-copied here.
+        String normDefaultTargetBaseUrl = RuntimeTargetUrlValidator.normalise(request.getDefaultTargetBaseUrl());
+
+        log.info("[SourceProject][Create] request projectKey={} projectName={}", projectKey, projectName);
+
+        SourceProject saved;
+        try {
+            saved = sourceProjectRepository.saveAndFlush(SourceProject.builder()
+                    .projectKey(projectKey)
+                    .projectName(projectName)
+                    .description(trimToNull(request.getDescription()))
+                    .repositoryUrl(normRepoUrl)
+                    .repositoryBranch(normRepoBranch)
+                    .defaultTargetBaseUrl(normDefaultTargetBaseUrl)
+                    .backendType(request.getBackendType())
+                    .status(ProjectStatus.NEW)
+                    .ownerUser(currentUser)
+                    .visibility(ProjectVisibility.PRIVATE)
+                    .archivedFlag(false)
+                    .deletedFlag(false)
+                    .build());
+        } catch (DataIntegrityViolationException ex) {
+            log.error("[SourceProject][Create][ERROR] rootCause={}", rootCauseMessage(ex), ex);
+            throw mapCreateProjectIntegrityViolation(ex, projectKey, projectName);
+        }
 
         return mapToDetailResponse(saved);
     }
@@ -185,6 +203,10 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         project.setRepositoryBranch(normRepoUrl != null
                 ? GitHubRepositoryUrlParser.normaliseBranch(request.getRepositoryBranch())
                 : null);
+
+        // Validate and normalise runtime target base URL (null/blank clears the value).
+        // IMPORTANT: repositoryUrl must NEVER be auto-copied to defaultTargetBaseUrl.
+        project.setDefaultTargetBaseUrl(RuntimeTargetUrlValidator.normalise(request.getDefaultTargetBaseUrl()));
 
         return mapToDetailResponse(sourceProjectRepository.save(project));
     }
@@ -287,33 +309,10 @@ public class SourceProjectServiceImpl implements SourceProjectService {
     }
 
     private List<SourceProject> accessibleProjects(AppUser currentUser, boolean includeArchived) {
-        Map<UUID, SourceProject> byId = new LinkedHashMap<>();
-
-        if (includeArchived) {
-            sourceProjectRepository
-                    .findByOwnerUser_IdAndDeletedFlagFalseOrderByCreatedAtDesc(currentUser.getId())
-                    .forEach(p -> byId.put(p.getId(), p));
-            projectMemberRepository.findByUser_Id(currentUser.getId()).stream()
-                    .map(ProjectMember::getSourceProject)
-                    .filter(p -> !Boolean.TRUE.equals(p.getDeletedFlag()))
-                    .forEach(p -> byId.put(p.getId(), p));
-            sourceProjectRepository
-                    .findByVisibilityAndDeletedFlagFalseOrderByCreatedAtDesc(ProjectVisibility.PUBLIC_READ)
-                    .forEach(p -> byId.put(p.getId(), p));
-        } else {
-            sourceProjectRepository
-                    .findByOwnerUser_IdAndArchivedFlagFalseAndDeletedFlagFalseOrderByCreatedAtDesc(currentUser.getId())
-                    .forEach(p -> byId.put(p.getId(), p));
-            projectMemberRepository.findByUser_Id(currentUser.getId()).stream()
-                    .map(ProjectMember::getSourceProject)
-                    .filter(p -> !Boolean.TRUE.equals(p.getArchivedFlag()) && !Boolean.TRUE.equals(p.getDeletedFlag()))
-                    .forEach(p -> byId.put(p.getId(), p));
-            sourceProjectRepository
-                    .findByVisibilityAndArchivedFlagFalseAndDeletedFlagFalseOrderByCreatedAtDesc(ProjectVisibility.PUBLIC_READ)
-                    .forEach(p -> byId.put(p.getId(), p));
-        }
-
-        return byId.values().stream().toList();
+        return sourceProjectRepository.findAccessibleProjects(
+                currentUser.getId(),
+                ProjectVisibility.PUBLIC_READ,
+                includeArchived);
     }
 
     private boolean isOwnedBy(SourceProject project, AppUser user) {
@@ -332,6 +331,7 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .status(p.getStatus())
                 .visibility(p.getVisibility())
                 .repositoryUrl(p.getRepositoryUrl())
+                .defaultTargetBaseUrl(p.getDefaultTargetBaseUrl())
                 .createdAt(p.getCreatedAt())
                 .archivedFlag(p.getArchivedFlag())
                 .archivedAt(p.getArchivedAt())
@@ -359,6 +359,7 @@ public class SourceProjectServiceImpl implements SourceProjectService {
                 .repositoryProvider(GitHubRepositoryUrlParser.deriveProvider(repoUrl))
                 .repositoryOwner(GitHubRepositoryUrlParser.extractOwner(repoUrl))
                 .repositoryName(GitHubRepositoryUrlParser.extractRepo(repoUrl))
+                .defaultTargetBaseUrl(p.getDefaultTargetBaseUrl())
                 .backendType(p.getBackendType())
                 .status(p.getStatus())
                 .visibility(p.getVisibility())
@@ -375,5 +376,39 @@ public class SourceProjectServiceImpl implements SourceProjectService {
         if (value == null) return null;
         String trimmed = value.trim();
         return trimmed.isEmpty() ? null : trimmed;
+    }
+
+    private ConflictException mapCreateProjectIntegrityViolation(
+            DataIntegrityViolationException ex, String projectKey, String projectName) {
+        String message = flattenExceptionMessage(ex);
+        if (message.contains("project_key") || message.contains("projectkey")) {
+            return new ConflictException("Project key already exists: " + projectKey);
+        }
+        if (message.contains("project_name") || message.contains("projectname")) {
+            return new ConflictException("Project name already exists: " + projectName);
+        }
+        return new ConflictException("Failed to create source project because database constraint was violated.");
+    }
+
+    private String flattenExceptionMessage(Throwable throwable) {
+        StringBuilder sb = new StringBuilder();
+        Throwable current = throwable;
+        while (current != null) {
+            if (current.getMessage() != null) {
+                sb.append(' ').append(current.getMessage().toLowerCase());
+            }
+            current = current.getCause();
+        }
+        return sb.toString();
+    }
+
+    private String rootCauseMessage(Throwable throwable) {
+        Throwable current = throwable;
+        Throwable root = throwable;
+        while (current != null) {
+            root = current;
+            current = current.getCause();
+        }
+        return root.getMessage() == null ? root.getClass().getSimpleName() : root.getMessage();
     }
 }

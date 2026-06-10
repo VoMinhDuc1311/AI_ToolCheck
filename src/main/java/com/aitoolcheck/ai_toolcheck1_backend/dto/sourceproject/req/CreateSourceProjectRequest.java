@@ -37,6 +37,17 @@ public class CreateSourceProjectRequest {
     @Size(max = 120, message = "repositoryBranch must be at most 120 characters")
     private String repositoryBranch;
 
+    /**
+     * Optional runtime base URL of the analysed application.
+     * Example: http://52.220.34.212:8081
+     * <p>
+     * DISTINCT from repositoryUrl. repositoryUrl = GitHub source for static analysis.
+     * defaultTargetBaseUrl = live HTTP endpoint for test execution.
+     * Validated server-side (must start with http:// or https:// when present).
+     */
+    @Size(max = 500, message = "defaultTargetBaseUrl must be at most 500 characters")
+    private String defaultTargetBaseUrl;
+
     @NotNull(message = "backendType must not be null")
     private BackendType backendType;
 }

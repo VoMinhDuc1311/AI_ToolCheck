@@ -7,4 +7,6 @@ import java.util.UUID;
 public interface ApiMetadataParserService {
 
     ApiMetadataParseResultResponse parseProject(UUID projectId);
+
+    ApiMetadataParseResultResponse parseProject(UUID projectId, boolean throwOnEmpty);
 }

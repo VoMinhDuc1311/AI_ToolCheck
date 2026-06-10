@@ -69,6 +69,12 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
     @Override
     @Transactional
     public ApiMetadataParseResultResponse parseProject(UUID projectId) {
+        return parseProject(projectId, true);
+    }
+
+    @Override
+    @Transactional
+    public ApiMetadataParseResultResponse parseProject(UUID projectId, boolean throwOnEmpty) {
         SourceProject sourceProject = projectAccessService.requireCanGenerateDocs(projectId);
 
         List<SourceFile> sourceFiles = sourceFileRepository.findBySourceProjectIdAndActiveFlagTrue(projectId);
@@ -109,9 +115,14 @@ public class ApiMetadataParserServiceImpl implements ApiMetadataParserService {
         }
 
         if (parsedEndpointIds.isEmpty()) {
-            throw new BadRequestException(
-                    "No API entrypoints detected. This project may use legacy routing or an unsupported framework. AI-assisted parsing is recommended."
-            );
+            if (throwOnEmpty) {
+                throw new BadRequestException(
+                        "No API entrypoints detected. This project may use legacy routing or an unsupported framework. AI-assisted parsing is recommended."
+                );
+            } else {
+                log.info("No API entrypoints detected for project id: {}, skipping exception since throwOnEmpty=false", projectId);
+                return buildResponse(projectId, controllerFiles.size(), counters);
+            }
         }
 
         markMissingEndpointsStale(projectId, parsedEndpointIds);

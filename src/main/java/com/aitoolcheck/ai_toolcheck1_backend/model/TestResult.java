@@ -35,6 +35,16 @@ public class TestResult {
     @Column(name = "actual_response_json", columnDefinition = "TEXT")
     private String actualResponseJson;
 
+    /**
+     * HTTP response headers captured during execution, stored as a JSON object string.
+     * Example: {"Content-Type":"application/json","X-Request-Id":"abc123"}
+     * Null when no response was received (network error) or on legacy records.
+     * Used by {@link com.aitoolcheck.ai_toolcheck1_backend.service.RuleEngineService}
+     * for HEADER assertion evaluation (case-insensitive key lookup).
+     */
+    @Column(name = "actual_response_headers_json", columnDefinition = "TEXT")
+    private String actualResponseHeadersJson;
+
     @Column(name = "error_message", columnDefinition = "TEXT")
     private String errorMessage;
 

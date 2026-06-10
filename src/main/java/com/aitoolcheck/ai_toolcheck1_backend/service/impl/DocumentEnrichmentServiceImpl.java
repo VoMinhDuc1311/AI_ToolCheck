@@ -12,6 +12,8 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.VectorSearchService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -47,6 +49,7 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
     private final GeminiApiClientService geminiApiClientService;
     private final AiPayloadOptimizerService aiPayloadOptimizerService;
     private final AiOptimizationProperties aiOptimizationProperties;
+    private final ObjectMapper objectMapper;
 
     // =========================================================================
     // PRIMARY ENTRY POINT (Multi-Model + RAG)
@@ -77,14 +80,20 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
         }
 
         // ── Bước 2: Build Prompt với RAG Context ─────────────────────────────
-        String finalPrompt = String.format(AiPromptConstants.ENRICH_DOC_SYSTEM_PROMPT,
+        String geminiPrompt = String.format(AiPromptConstants.ENRICH_DOC_SYSTEM_PROMPT,
                 ragContext, optimizedFragment);
+        String ollamaPrompt = buildOllamaEnrichPrompt(optimizedFragment);
 
-        log.info("[DocumentEnrichment] Bước 2: Đã build Prompt — tổng {} chars.", finalPrompt.length());
+        log.info("[DocumentEnrichment] Bước 2: Đã build prompts — Gemini {} chars, Ollama {} chars.",
+                geminiPrompt.length(), ollamaPrompt.length());
 
-        // ── Bước 3: Gọi Router (Ollama Tier1 → Tier2 → Gemini Cloud) ─────────
+        // ── Bước 3: Gọi Router (Gemini Cloud → Ollama local) ─────────
         log.info("[DocumentEnrichment] Bước 3: Gọi AiModelRouterService...");
-        String rawAiText = aiModelRouterService.executeWithFallback(finalPrompt);
+        String rawAiText = aiModelRouterService.executeWithFallbackForSkill(
+                "enrich_api_doc",
+                () -> geminiPrompt,
+                () -> ollamaPrompt,
+                raw -> aiJsonParserService.parseJson(raw, AiDocumentEnrichmentResponseDto.class));
         log.info("[DocumentEnrichment] Bước 3: Router trả về {} chars.", rawAiText.length());
 
         // ── Bước 4: Parse JSON → DTO ─────────────────────────────────────────
@@ -112,6 +121,203 @@ public class DocumentEnrichmentServiceImpl implements DocumentEnrichmentService 
                         Math.min(80, resultDto.getSummary().length())) + "..." : "null");
 
         return resultDto;
+    }
+
+    String buildOllamaEnrichPrompt(String openApiFragment) {
+        EndpointPromptContext context = extractEndpointPromptContext(openApiFragment);
+        String compactMetadata = endpointContextJson(context);
+
+        StringBuilder prompt = new StringBuilder(2200);
+        prompt.append("Task: Enrich one API endpoint for documentation.\n");
+        prompt.append("Return ONLY one valid JSON object. No markdown. No prose. No ```json fences.\n\n");
+        prompt.append("Endpoint facts:\n");
+        prompt.append("- HTTP method: ").append(context.method()).append('\n');
+        prompt.append("- Path: ").append(context.path()).append('\n');
+        prompt.append("- Controller/Class: ").append(context.controller()).append('\n');
+        prompt.append("- Operation/Method: ").append(context.operation()).append('\n');
+        prompt.append("- Path params: ").append(context.pathParams()).append('\n');
+        prompt.append("- Query params: ").append(context.queryParams()).append('\n');
+        prompt.append("- Request body fields: ").append(context.requestFields()).append('\n');
+        prompt.append("- Response fields: ").append(context.responseFields()).append("\n\n");
+        prompt.append("Source metadata JSON:\n");
+        prompt.append(limit(compactMetadata, 1200)).append("\n\n");
+        prompt.append("Output schema exactly:\n");
+        prompt.append("{\"summary\":\"short title <=100 chars\",");
+        prompt.append("\"description\":\"clear API description grounded only in endpoint facts\",");
+        prompt.append("\"example_request_json\":{},");
+        prompt.append("\"example_response_json\":{},");
+        prompt.append("\"openapi_fragment_json\":{}}\n");
+        prompt.append("Use only fields present in Source metadata JSON. Do not invent fields.");
+
+        return limit(prompt.toString(), 3000);
+    }
+
+    private EndpointPromptContext extractEndpointPromptContext(String openApiFragment) {
+        try {
+            JsonNode root = objectMapper.readTree(openApiFragment);
+            JsonNode operationNode = root;
+            String path = firstText(root, "path", "endpointPath", "uri");
+            String method = firstText(root, "method", "httpMethod");
+
+            if (root.isObject()) {
+                for (java.util.Iterator<String> pathNames = root.fieldNames(); pathNames.hasNext();) {
+                    String candidatePath = pathNames.next();
+                    JsonNode pathNode = root.get(candidatePath);
+                    if (candidatePath.startsWith("/") && pathNode != null && pathNode.isObject()) {
+                        path = candidatePath;
+                        for (String candidateMethod : java.util.List.of(
+                                "get", "post", "put", "patch", "delete", "head", "options")) {
+                            JsonNode candidateOperation = pathNode.get(candidateMethod);
+                            if (candidateOperation != null && candidateOperation.isObject()) {
+                                method = candidateMethod.toUpperCase(java.util.Locale.ROOT);
+                                operationNode = candidateOperation;
+                                break;
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if (method == null || method.isBlank()) {
+                method = "unknown";
+            }
+            if (path == null || path.isBlank()) {
+                path = "unknown";
+            }
+
+            String controller = firstText(operationNode, "controllerName", "controller", "className", "resourceClass");
+            String operation = firstText(operationNode, "operationId", "methodName", "handlerMethod", "summary");
+            return new EndpointPromptContext(
+                    method,
+                    path,
+                    controller == null ? "unknown" : controller,
+                    operation == null ? "unknown" : operation,
+                    collectParameters(operationNode, "path"),
+                    collectParameters(operationNode, "query"),
+                    collectFields(operationNode, "request"),
+                    collectFields(operationNode, "response"));
+        } catch (Exception ex) {
+            return new EndpointPromptContext(
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown",
+                    "unknown");
+        }
+    }
+
+    private String firstText(JsonNode node, String... fieldNames) {
+        if (node == null) {
+            return null;
+        }
+        for (String fieldName : fieldNames) {
+            JsonNode value = node.get(fieldName);
+            if (value != null && value.isValueNode() && !value.asText().isBlank()) {
+                return value.asText();
+            }
+        }
+        return null;
+    }
+
+    private String collectParameters(JsonNode operationNode, String location) {
+        JsonNode parameters = operationNode == null ? null : operationNode.get("parameters");
+        if (parameters == null || !parameters.isArray()) {
+            return "none";
+        }
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (JsonNode parameter : parameters) {
+            String in = firstText(parameter, "in", "paramIn", "location");
+            if (location.equalsIgnoreCase(in)) {
+                String name = firstText(parameter, "name", "paramName");
+                if (name != null) {
+                    names.add(name);
+                }
+            }
+        }
+        return names.isEmpty() ? "none" : limit(String.join(", ", names), 220);
+    }
+
+    private String collectFields(JsonNode operationNode, String prefix) {
+        if (operationNode == null) {
+            return "unknown";
+        }
+        java.util.List<String> fields = new java.util.ArrayList<>();
+        if ("request".equals(prefix)) {
+            collectFieldNames(operationNode.get("requestBody"), fields);
+            collectFieldNames(operationNode.get("request"), fields);
+        } else {
+            collectFieldNames(operationNode.get("responses"), fields);
+            collectFieldNames(operationNode.get("response"), fields);
+        }
+        return fields.isEmpty() ? "unknown" : limit(String.join(", ", fields), 260);
+    }
+
+    private void collectFieldNames(JsonNode node, java.util.List<String> fields) {
+        if (node == null || fields.size() >= 20) {
+            return;
+        }
+        if (node.isObject()) {
+            JsonNode properties = node.get("properties");
+            if (properties != null && properties.isObject()) {
+                properties.fieldNames().forEachRemaining(field -> {
+                    if (fields.size() < 20) {
+                        fields.add(field);
+                    }
+                });
+            }
+            java.util.Iterator<JsonNode> children = node.elements();
+            while (children.hasNext() && fields.size() < 20) {
+                collectFieldNames(children.next(), fields);
+            }
+        } else if (node.isArray()) {
+            for (JsonNode child : node) {
+                collectFieldNames(child, fields);
+                if (fields.size() >= 20) {
+                    break;
+                }
+            }
+        }
+    }
+
+    private String endpointContextJson(EndpointPromptContext context) {
+        try {
+            return objectMapper.writeValueAsString(java.util.Map.of(
+                    "method", context.method(),
+                    "path", context.path(),
+                    "controller", context.controller(),
+                    "operation", context.operation(),
+                    "pathParams", context.pathParams(),
+                    "queryParams", context.queryParams(),
+                    "requestFields", context.requestFields(),
+                    "responseFields", context.responseFields()));
+        } catch (Exception ex) {
+            return "";
+        }
+    }
+
+    private String limit(String value, int maxChars) {
+        if (value == null) {
+            return "";
+        }
+        if (value.length() <= maxChars) {
+            return value;
+        }
+        return value.substring(0, Math.max(0, maxChars - 15)) + "...[truncated]";
+    }
+
+    private record EndpointPromptContext(
+            String method,
+            String path,
+            String controller,
+            String operation,
+            String pathParams,
+            String queryParams,
+            String requestFields,
+            String responseFields) {
     }
 
     // =========================================================================

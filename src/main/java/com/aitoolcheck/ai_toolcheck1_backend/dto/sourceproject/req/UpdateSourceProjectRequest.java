@@ -34,6 +34,16 @@ public class UpdateSourceProjectRequest {
     @Size(max = 120, message = "repositoryBranch must be at most 120 characters")
     private String repositoryBranch;
 
+    /**
+     * Optional runtime base URL of the analysed application.
+     * Example: http://52.220.34.212:8081
+     * <p>
+     * DISTINCT from repositoryUrl. Send null or blank to clear the project default.
+     * Validated server-side (must start with http:// or https:// when present).
+     */
+    @Size(max = 500, message = "defaultTargetBaseUrl must be at most 500 characters")
+    private String defaultTargetBaseUrl;
+
     @NotNull(message = "backendType must not be null")
     private BackendType backendType;
 

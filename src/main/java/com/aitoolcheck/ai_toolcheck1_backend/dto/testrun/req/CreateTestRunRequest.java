@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.req;
 
 import com.aitoolcheck.ai_toolcheck1_backend.enums.EnvironmentType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionMode;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.RuntimeMode;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
 import jakarta.validation.constraints.Size;
@@ -28,9 +29,16 @@ public class CreateTestRunRequest {
     private String runName;
     @Size(max = 2000, message = "description must not exceed 2000 characters")
     private String description;
-    @NotBlank(message = "baseUrl is required")
+    /**
+     * Runtime base URL of the target application.
+     * Optional at the request level — if blank or omitted, TestRunServiceImpl
+     * will fall back to the project's defaultTargetBaseUrl.
+     * If neither is set, a 400 error is returned.
+     * IMPORTANT: this must NEVER be auto-filled from repositoryUrl (GitHub source).
+     */
     @Size(max = 500, message = "baseUrl must not exceed 500 characters")
     private String baseUrl;
+    private RuntimeMode runtimeMode;
     private EnvironmentType environmentName;
     private ExecutionMode executionMode;
     private List<UUID> testCaseIds;

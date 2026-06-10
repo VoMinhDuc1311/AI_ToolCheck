@@ -8,12 +8,34 @@ import org.springframework.data.repository.query.Param;
 import org.springframework.stereotype.Repository;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 
 @Repository
 public interface TestRunItemRepository extends JpaRepository<TestRunItem, UUID> {
 
     List<TestRunItem> findByTestRun_IdOrderBySortOrderAsc(UUID testRunId);
+
+    @Query("""
+        SELECT DISTINCT item FROM TestRunItem item
+        JOIN FETCH item.testRun run
+        JOIN FETCH item.testCase testCase
+        LEFT JOIN FETCH testCase.testCaseInput input
+        LEFT JOIN FETCH item.testResult result
+        WHERE run.id = :testRunId
+        ORDER BY item.sortOrder ASC
+    """)
+    List<TestRunItem> findByTestRunIdWithExecutionGraph(@Param("testRunId") UUID testRunId);
+
+    @Query("""
+        SELECT item FROM TestRunItem item
+        JOIN FETCH item.testRun run
+        JOIN FETCH item.testCase testCase
+        LEFT JOIN FETCH testCase.testCaseInput input
+        LEFT JOIN FETCH item.testResult result
+        WHERE item.id = :itemId
+    """)
+    Optional<TestRunItem> findByIdWithExecutionGraph(@Param("itemId") UUID itemId);
 
     long countByTestRun_Id(UUID testRunId);
 

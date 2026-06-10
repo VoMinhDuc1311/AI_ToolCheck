@@ -2,6 +2,7 @@ package com.aitoolcheck.ai_toolcheck1_backend.controller;
 
 import com.aitoolcheck.ai_toolcheck1_backend.dto.common.res.ApiResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.github.GitHubRepositoryCheckResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.github.GitHubRepositoryImportResponse;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.CreateSourceProjectRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.PermanentDeleteProjectRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.req.UpdateProjectVisibilityRequest;
@@ -14,6 +15,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.sourceproject.res.SourceProject
 import com.aitoolcheck.ai_toolcheck1_backend.dto.apimetadata.res.ApiMetadataCleanupResult;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GitHubRepositoryCheckService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.GitHubRepositoryImportService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceAnalysisResultService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
@@ -46,6 +48,7 @@ public class SourceProjectController {
         private final ApiMetadataCleanupService apiMetadataCleanupService;
         private final ProjectAccessService projectAccessService;
         private final GitHubRepositoryCheckService gitHubRepositoryCheckService;
+        private final GitHubRepositoryImportService gitHubRepositoryImportService;
 
         @PostMapping
         @Operation(summary = "Create source project", description = "Create a new source project.", operationId = "createSourceProject")
@@ -140,6 +143,18 @@ public class SourceProjectController {
         )
         public ResponseEntity<GitHubRepositoryCheckResponse> checkGitHub(@PathVariable UUID projectId) {
                 GitHubRepositoryCheckResponse response = gitHubRepositoryCheckService.check(projectId);
+                return ResponseEntity.ok(response);
+        }
+
+        @PostMapping("/{projectId}/github/import")
+        @Operation(
+                summary = "Import source from linked GitHub repository",
+                description = "Downloads the public GitHub repository linked to this project and imports source files " +
+                        "through the same ZIP source pipeline used by Upload ZIP. No analysis or OpenAPI generation is triggered.",
+                operationId = "importGitHubRepository"
+        )
+        public ResponseEntity<GitHubRepositoryImportResponse> importGitHub(@PathVariable UUID projectId) {
+                GitHubRepositoryImportResponse response = gitHubRepositoryImportService.importRepository(projectId);
                 return ResponseEntity.ok(response);
         }
 

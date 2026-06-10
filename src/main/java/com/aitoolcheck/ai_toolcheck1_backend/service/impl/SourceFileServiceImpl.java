@@ -24,6 +24,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.SourceFileService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
@@ -49,6 +50,8 @@ import java.util.zip.ZipInputStream;
 @Service
 @RequiredArgsConstructor
 public class SourceFileServiceImpl implements SourceFileService {
+    private static final long DEFAULT_MAX_ZIP_BYTES = 70L * 1024L * 1024L;
+    private static final int DEFAULT_MAX_ZIP_FILE_COUNT = 10_000;
 
     private final SourceFileRepository sourceFileRepository;
     private final SourceProjectRepository sourceProjectRepository;
@@ -59,6 +62,12 @@ public class SourceFileServiceImpl implements SourceFileService {
     private final ProjectAccessService projectAccessService;
     private final ProjectNotificationEventPublisher notificationEventPublisher;
 
+    @Value("${source.upload.max-zip-bytes:73400320}")
+    private long maxZipBytes = DEFAULT_MAX_ZIP_BYTES;
+
+    @Value("${source.upload.max-file-count:10000}")
+    private int maxZipFileCount = DEFAULT_MAX_ZIP_FILE_COUNT;
+
     @Override
     @Transactional
     public SourceFileUploadResponse uploadZip(UUID projectId, MultipartFile file) {
@@ -67,29 +76,63 @@ public class SourceFileServiceImpl implements SourceFileService {
         validateZipFile(file);
 
         try {
+            return processZip(
+                    projectId,
+                    sourceProject,
+                    file.getInputStream(),
+                    sanitizeOriginalFilename(file.getOriginalFilename()),
+                    false
+            );
+        } catch (IOException e) {
+            throw new BadRequestException("Failed to process uploaded zip file: " + e.getMessage());
+        }
+    }
+
+    @Override
+    @Transactional
+    public SourceFileUploadResponse importZip(UUID projectId, InputStream zipInputStream, String originalFilename,
+                                              boolean stripSingleRootDirectory) {
+        SourceProject sourceProject = projectAccessService.requireCanUploadSource(projectId);
+        if (zipInputStream == null) {
+            throw new BadRequestException("ZIP input stream must not be null");
+        }
+
+        return processZip(
+                projectId,
+                sourceProject,
+                zipInputStream,
+                sanitizeOriginalFilename(originalFilename),
+                stripSingleRootDirectory
+        );
+    }
+
+    private SourceFileUploadResponse processZip(UUID projectId, SourceProject sourceProject, InputStream zipInputStream,
+                                                String originalFilename, boolean stripSingleRootDirectory) {
+        try {
             final Path workingDir = createWorkingDirectory(projectId);
 
             try {
-                final String originalFilename = sanitizeOriginalFilename(file.getOriginalFilename());
                 final Path zipPath = workingDir.resolve(originalFilename);
                 final Path extractDir = workingDir.resolve("extracted");
 
                 Files.createDirectories(extractDir);
-                Files.copy(file.getInputStream(), zipPath, StandardCopyOption.REPLACE_EXISTING);
+                copyZipWithSizeLimit(zipInputStream, zipPath);
+                validateZipMagic(zipPath);
 
                 unzipSafely(zipPath, extractDir);
+                Path contentRoot = resolveContentRoot(extractDir, stripSingleRootDirectory);
 
-                List<Path> javaFiles;
-                try (Stream<Path> stream = Files.walk(extractDir)) {
-                    javaFiles = stream
+                List<Path> preservedFiles;
+                try (Stream<Path> stream = Files.walk(contentRoot)) {
+                    preservedFiles = stream
                             .filter(Files::isRegularFile)
-                            .filter(this::isJavaFile)
-                            .filter(path -> !shouldIgnorePath(extractDir.relativize(path)))
+                            .filter(this::isPreservedFile)
+                            .filter(path -> !shouldIgnorePath(contentRoot.relativize(path)))
                             .toList();
                 }
 
-                if (javaFiles.isEmpty()) {
-                    throw new BadRequestException("No Java files found in uploaded zip");
+                if (preservedFiles.isEmpty()) {
+                    throw new BadRequestException("No valid source files found in uploaded zip");
                 }
 
                 int ignoredFiles = countIgnoredFiles(extractDir);
@@ -103,10 +146,10 @@ public class SourceFileServiceImpl implements SourceFileService {
                         .build());
 
                 Map<String, UploadedJavaFile> uploadedByPath = new HashMap<>();
-                for (Path javaFile : javaFiles) {
-                    UploadedJavaFile uploaded = toUploadedJavaFile(javaFile, extractDir);
+                for (Path javaFile : preservedFiles) {
+                    UploadedJavaFile uploaded = toUploadedJavaFile(javaFile, contentRoot);
                     if (uploadedByPath.put(uploaded.filePath(), uploaded) != null) {
-                        throw new BadRequestException("Duplicate Java file path in uploaded zip: " + uploaded.filePath());
+                        throw new BadRequestException("Duplicate file path in uploaded zip: " + uploaded.filePath());
                     }
                 }
 
@@ -169,7 +212,7 @@ public class SourceFileServiceImpl implements SourceFileService {
                         + ", unchanged: " + unchangedFiles
                         + ", deleted: " + deletedFiles + ".";
 
-                uploadVersion.setTotalJavaFilesFound(javaFiles.size());
+                uploadVersion.setTotalJavaFilesFound(preservedFiles.size());
                 uploadVersion.setSavedFiles(savedFiles);
                 uploadVersion.setIgnoredFiles(ignoredFiles);
                 uploadVersion.setAddedFiles(addedFiles);
@@ -198,7 +241,7 @@ public class SourceFileServiceImpl implements SourceFileService {
                         .projectName(sourceProject.getProjectName())
                         .uploadVersionId(uploadVersion.getId())
                         .versionNo(uploadVersion.getVersionNo())
-                        .totalJavaFilesFound(javaFiles.size())
+                        .totalJavaFilesFound(preservedFiles.size())
                         .savedFiles(savedFiles)
                         .ignoredFiles(ignoredFiles)
                         .addedFiles(addedFiles)
@@ -281,21 +324,58 @@ public class SourceFileServiceImpl implements SourceFileService {
         return Files.createDirectories(baseDir);
     }
 
+    private void copyZipWithSizeLimit(InputStream inputStream, Path zipPath) throws IOException {
+        long copied = 0;
+        byte[] buffer = new byte[8192];
+        try (InputStream in = inputStream;
+             java.io.OutputStream out = Files.newOutputStream(zipPath)) {
+            int read;
+            while ((read = in.read(buffer)) != -1) {
+                copied += read;
+                if (copied > maxZipBytes) {
+                    throw new BadRequestException("ZIP file is too large");
+                }
+                out.write(buffer, 0, read);
+            }
+        }
+    }
+
+    private void validateZipMagic(Path zipPath) {
+        try (InputStream is = Files.newInputStream(zipPath)) {
+            byte[] header = new byte[4];
+            int read = is.read(header, 0, 4);
+            if (read < 2 || header[0] != 0x50 || header[1] != 0x4B) {
+                throw new BadRequestException("Uploaded file is not a valid ZIP archive");
+            }
+        } catch (BadRequestException e) {
+            throw e;
+        } catch (IOException e) {
+            throw new BadRequestException("Unable to validate uploaded file format");
+        }
+    }
+
     private void unzipSafely(Path zipPath, Path extractDir) throws IOException {
         try (InputStream inputStream = Files.newInputStream(zipPath);
              ZipInputStream zipInputStream = new ZipInputStream(new BufferedInputStream(inputStream))) {
 
             ZipEntry entry;
+            int fileCount = 0;
             while ((entry = zipInputStream.getNextEntry()) != null) {
-                Path targetPath = extractDir.resolve(entry.getName()).normalize();
+                String entryName = entry.getName();
+                Path normalizedEntry = normalizeZipEntry(entryName);
+                Path targetPath = extractDir.resolve(normalizedEntry).normalize();
 
                 if (!targetPath.startsWith(extractDir.normalize())) {
-                    throw new BadRequestException("Zip contains invalid path entry: " + entry.getName());
+                    throw new BadRequestException("Zip contains invalid path entry: " + entryName);
                 }
 
                 if (entry.isDirectory()) {
                     Files.createDirectories(targetPath);
                 } else {
+                    fileCount++;
+                    if (fileCount > maxZipFileCount) {
+                        throw new BadRequestException("ZIP contains too many files");
+                    }
                     Files.createDirectories(targetPath.getParent());
                     Files.copy(zipInputStream, targetPath, StandardCopyOption.REPLACE_EXISTING);
                 }
@@ -303,6 +383,38 @@ public class SourceFileServiceImpl implements SourceFileService {
                 zipInputStream.closeEntry();
             }
         }
+    }
+
+    private Path normalizeZipEntry(String entryName) {
+        if (entryName == null || entryName.isBlank()) {
+            throw new BadRequestException("Zip contains invalid empty path entry");
+        }
+
+        String normalizedName = entryName.replace("\\", "/");
+        if (normalizedName.startsWith("/") || normalizedName.matches("^[A-Za-z]:.*")) {
+            throw new BadRequestException("Zip contains absolute path entry: " + entryName);
+        }
+
+        Path normalized = Path.of(normalizedName).normalize();
+        if (normalized.isAbsolute() || normalized.startsWith("..")) {
+            throw new BadRequestException("Zip contains invalid path entry: " + entryName);
+        }
+
+        return normalized;
+    }
+
+    private Path resolveContentRoot(Path extractDir, boolean stripSingleRootDirectory) throws IOException {
+        if (!stripSingleRootDirectory) {
+            return extractDir;
+        }
+
+        try (Stream<Path> stream = Files.list(extractDir)) {
+            List<Path> children = stream.toList();
+            if (children.size() == 1 && Files.isDirectory(children.get(0))) {
+                return children.get(0);
+            }
+        }
+        return extractDir;
     }
 
     private boolean shouldIgnorePath(Path relativePath) {
@@ -326,15 +438,25 @@ public class SourceFileServiceImpl implements SourceFileService {
                 || normalized.startsWith("out/");
     }
 
-    private boolean isJavaFile(Path path) {
-        return path.getFileName().toString().toLowerCase().endsWith(".java");
+    private boolean isPreservedFile(Path path) {
+        String fileName = path.getFileName().toString().toLowerCase();
+        if (fileName.endsWith(".java")) return true;
+        
+        return fileName.equals("pom.xml") || 
+               fileName.equals("build.gradle") || fileName.equals("build.gradle.kts") ||
+               fileName.equals("settings.gradle") || fileName.equals("settings.gradle.kts") ||
+               fileName.equals("mvnw") || fileName.equals("mvnw.cmd") ||
+               fileName.equals("gradlew") || fileName.equals("gradlew.bat") ||
+               fileName.equals("application.yml") || fileName.equals("application.yaml") ||
+               fileName.equals("application.properties") ||
+               fileName.equals("dockerfile");
     }
 
     private int countIgnoredFiles(Path extractDir) throws IOException {
         try (Stream<Path> stream = Files.walk(extractDir)) {
             return (int) stream
                     .filter(Files::isRegularFile)
-                    .filter(path -> !isJavaFile(path) || shouldIgnorePath(extractDir.relativize(path)))
+                    .filter(path -> !isPreservedFile(path) || shouldIgnorePath(extractDir.relativize(path)))
                     .count();
         }
     }
@@ -436,6 +558,9 @@ public class SourceFileServiceImpl implements SourceFileService {
     }
 
     private String extractPackageName(Path javaFile) {
+        if (!javaFile.getFileName().toString().endsWith(".java")) {
+            return null;
+        }
         try (Stream<String> lines = Files.lines(javaFile)) {
             return lines
                     .map(String::trim)
@@ -458,6 +583,16 @@ public class SourceFileServiceImpl implements SourceFileService {
     private FileType detectFileType(Path relativePath, String fileName) {
         String path = relativePath.toString().replace("\\", "/").toLowerCase();
         String name = fileName == null ? "" : fileName.toLowerCase();
+
+        if (name.equals("pom.xml") || name.startsWith("build.gradle") || name.startsWith("settings.gradle") || name.equals("dockerfile")) {
+            return FileType.BUILD;
+        }
+        if (name.equals("application.yml") || name.equals("application.yaml") || name.equals("application.properties")) {
+            return FileType.APP_CONFIG;
+        }
+        if (name.equals("mvnw") || name.equals("mvnw.cmd") || name.equals("gradlew") || name.equals("gradlew.bat")) {
+            return FileType.SCRIPT;
+        }
 
         if (path.startsWith("src/test/") || path.contains("/src/test/") || name.endsWith("test.java") || name.endsWith("tests.java")) {
             return FileType.TEST;

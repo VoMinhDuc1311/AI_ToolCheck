@@ -27,13 +27,21 @@ public interface ProjectMemberRepository extends JpaRepository<ProjectMember, UU
     boolean existsBySourceProject_IdAndUser_IdAndRoleIn(
             UUID projectId,
             UUID userId,
-            Collection<ProjectMemberRole> roles
-    );
+            Collection<ProjectMemberRole> roles);
 
     // ── Permanent delete support ───────────────────────────────────────────────
 
-    /** Delete all project member rows for a project. Run just before deleting the project row. */
+    /**
+     * Delete all project member rows for a project. Run just before deleting the
+     * project row.
+     */
     @Modifying
     @Query("DELETE FROM ProjectMember pm WHERE pm.sourceProject.id = :projectId")
     void deleteBySourceProjectId(@Param("projectId") UUID projectId);
+
+    /**
+     * Count remaining members for a project (owner is never stored in this table).
+     * Used to determine if a SHARED project should revert to PRIVATE after member removal.
+     */
+    long countBySourceProject_Id(UUID projectId);
 }

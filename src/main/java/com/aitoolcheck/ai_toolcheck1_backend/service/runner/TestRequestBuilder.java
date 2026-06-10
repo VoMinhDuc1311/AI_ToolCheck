@@ -4,14 +4,22 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testrun.res.PreparedHttpRequest
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.TestCaseInput;
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.web.util.UriComponentsBuilder;
 
+import java.lang.reflect.Array;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -21,12 +29,17 @@ import java.util.Set;
  * <p><strong>Responsibilities (this class only):</strong></p>
  * <ul>
  *   <li>Validate and normalise baseUrl and requestPath.</li>
- *   <li>Parse headersJson / queryParamsJson / requestBodyJson into JsonNode.</li>
+ *   <li>Parse headersJson / queryParamsJson from stored JSON Strings to {@code Map<String,Object>}.</li>
+ *   <li>Parse requestBodyJson to {@code Object} (supports objects, arrays, primitives, null).</li>
  *   <li>Return a fully populated {@link PreparedHttpRequestResponse}.</li>
  * </ul>
  *
  * <p><strong>Must NOT:</strong> execute HTTP, persist data, or evaluate
  * assertions. HTTP execution is the responsibility of {@link TestHttpExecutor}.</p>
+ *
+ * <p><strong>Design note:</strong> JSON-typed fields use {@code Map<String,Object>} (not JsonNode)
+ * so that Jackson serializes them as clean JSON objects in API responses, not as JsonNode bean
+ * metadata fields ({@code nodeType}, {@code array}, etc.).</p>
  */
 @Component
 @RequiredArgsConstructor
@@ -34,6 +47,9 @@ import java.util.Set;
 public class TestRequestBuilder {
 
     private static final Set<String> ALLOWED_SCHEMES = Set.of("http", "https");
+
+    /** TypeReference for deserializing JSON objects to Map<String,Object>. */
+    private static final TypeReference<Map<String, Object>> MAP_TYPE_REF = new TypeReference<>() {};
 
     private final ObjectMapper objectMapper;
 
@@ -54,12 +70,15 @@ public class TestRequestBuilder {
         validateInput(input);
 
         String normalizedBase  = normalizeBaseUrl(baseUrl);
-        String normalizedPath  = normalizeRequestPath(input.getRequestPath());
-        String finalUrl        = buildFinalUrl(normalizedBase, normalizedPath);
+        String normalizedPath  = encodePathSafely(normalizeRequestPath(input.getRequestPath()));
+        String finalUrl;
 
-        JsonNode parsedHeaders     = parseJsonOrNull(input.getHeadersJson(),     "headersJson");
-        JsonNode parsedQueryParams = parseJsonOrNull(input.getQueryParamsJson(), "queryParamsJson");
-        JsonNode parsedBody        = parseJsonOrNull(input.getRequestBodyJson(), "requestBodyJson");
+        // Parse stored JSON strings to typed Map/Object — NOT to raw JsonNode,
+        // which would cause Jackson to serialize internal bean metadata in responses.
+        Map<String, Object> parsedHeaders     = parseJsonToMap(input.getHeadersJson(),     "headersJson");
+        Map<String, Object> parsedQueryParams = parseJsonToMap(input.getQueryParamsJson(), "queryParamsJson");
+        Object              parsedBody        = parseJsonToObject(input.getRequestBodyJson(), "requestBodyJson");
+        finalUrl = buildFinalUrl(normalizedBase, normalizedPath, parsedQueryParams);
 
         return PreparedHttpRequestResponse.builder()
                 .method(input.getHttpMethod())
@@ -111,10 +130,60 @@ public class TestRequestBuilder {
         return requestPath.trim();
     }
 
-    private String buildFinalUrl(String normalizedBase, String normalizedPath) {
+    private String buildFinalUrl(String normalizedBase, String normalizedPath, Map<String, Object> queryParams) {
         // normalizedPath always starts with '/' (validated above); strip it
         // so the join produces exactly one separator between base and path.
-        return normalizedBase + "/" + normalizedPath.substring(1);
+        String baseAndPath = normalizedBase + "/" + normalizedPath.substring(1);
+
+        if (queryParams == null || queryParams.isEmpty()) {
+            return baseAndPath;
+        }
+
+        List<String> encodedPairs = new ArrayList<>();
+        queryParams.forEach((key, value) -> addQueryParam(encodedPairs, key, value));
+        if (encodedPairs.isEmpty()) {
+            return baseAndPath;
+        }
+
+        return UriComponentsBuilder.fromUriString(baseAndPath)
+                .query(String.join("&", encodedPairs))
+                .build(true)
+                .toUriString();
+    }
+
+    private void addQueryParam(List<String> encodedPairs, String key, Object value) {
+        // Null values are skipped. This avoids sending ambiguous "key" or "key="
+        // semantics to target APIs while preserving the original queryParams map for UI/debugging.
+        if (!hasText(key) || value == null) {
+            return;
+        }
+
+        if (value instanceof Collection<?> values) {
+            values.stream()
+                    .filter(v -> v != null)
+                    .forEach(v -> encodedPairs.add(encodeQueryPair(key, v)));
+            return;
+        }
+
+        Class<?> valueClass = value.getClass();
+        if (valueClass.isArray()) {
+            int length = Array.getLength(value);
+            for (int i = 0; i < length; i++) {
+                Object item = Array.get(value, i);
+                if (item != null) {
+                    encodedPairs.add(encodeQueryPair(key, item));
+                }
+            }
+            return;
+        }
+
+        encodedPairs.add(encodeQueryPair(key, value));
+    }
+
+    private String encodeQueryPair(String key, Object value) {
+        return URLEncoder.encode(key, StandardCharsets.UTF_8)
+                + "="
+                + URLEncoder.encode(String.valueOf(value), StandardCharsets.UTF_8);
     }
 
     private void validateHttpUrl(String url) {
@@ -140,13 +209,37 @@ public class TestRequestBuilder {
         }
     }
 
-    private JsonNode parseJsonOrNull(String json, String fieldName) {
+    /**
+     * Parses a stored JSON String into a {@code Map<String, Object>}.
+     * Used for object-type fields: headersJson, queryParamsJson.
+     *
+     * @return parsed Map, or {@code null} if the string is blank/null
+     * @throws BadRequestException if the stored string is not valid JSON or is not a JSON object
+     */
+    private Map<String, Object> parseJsonToMap(String json, String fieldName) {
         if (!hasText(json)) {
             return null;
         }
-
         try {
-            return objectMapper.readTree(json);
+            return objectMapper.readValue(json, MAP_TYPE_REF);
+        } catch (JsonProcessingException ex) {
+            throw new BadRequestException(fieldName + " is invalid JSON or not a JSON object");
+        }
+    }
+
+    /**
+     * Parses a stored JSON String into a plain Java {@code Object}.
+     * Used for requestBodyJson which may be an object, array, primitive, or null.
+     *
+     * @return parsed value as Map, List, String, Number, Boolean, or {@code null}
+     * @throws BadRequestException if the stored string is not valid JSON
+     */
+    private Object parseJsonToObject(String json, String fieldName) {
+        if (!hasText(json)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, Object.class);
         } catch (JsonProcessingException ex) {
             throw new BadRequestException(fieldName + " is invalid JSON");
         }
@@ -154,5 +247,61 @@ public class TestRequestBuilder {
 
     private boolean hasText(String value) {
         return value != null && !value.trim().isEmpty();
+    }
+
+    /**
+     * Encodes path variables/segments safely to prevent raw URL-reserved characters
+     * (especially '#') from truncating the request path at the fragment parser stage.
+     * Splitting by '/' ensures path separators themselves are not incorrectly encoded.
+     * Percent-encoded sequences (%XX) are preserved to avoid double-encoding.
+     */
+    private String encodePathSafely(String path) {
+        if (path == null || path.isEmpty()) {
+            return path;
+        }
+        String[] segments = path.split("/", -1);
+        for (int i = 0; i < segments.length; i++) {
+            segments[i] = encodeSegmentSafely(segments[i]);
+        }
+        return String.join("/", segments);
+    }
+
+    private String encodeSegmentSafely(String segment) {
+        if (segment == null || segment.isEmpty()) {
+            return segment;
+        }
+        StringBuilder sb = new StringBuilder();
+        int len = segment.length();
+        int lastIndex = 0;
+        int i = 0;
+        while (i < len) {
+            if (segment.charAt(i) == '%') {
+                if (i + 2 < len && isHexDigit(segment.charAt(i + 1)) && isHexDigit(segment.charAt(i + 2))) {
+                    if (i > lastIndex) {
+                        String part = segment.substring(lastIndex, i);
+                        sb.append(encodeSegmentPart(part));
+                    }
+                    sb.append(segment.substring(i, i + 3));
+                    i += 3;
+                    lastIndex = i;
+                    continue;
+                }
+            }
+            i++;
+        }
+        if (lastIndex < len) {
+            String part = segment.substring(lastIndex, len);
+            sb.append(encodeSegmentPart(part));
+        }
+        return sb.toString();
+    }
+
+    private String encodeSegmentPart(String part) {
+        String encoded = org.springframework.web.util.UriUtils.encodePathSegment(part, StandardCharsets.UTF_8);
+        return encoded.replace("+", "%2B");
+    }
+
+    private boolean isHexDigit(char c) {
+        return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
     }
 }

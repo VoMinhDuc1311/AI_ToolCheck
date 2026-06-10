@@ -39,6 +39,24 @@ springdoc:
     enabled: ${SPRINGDOC_SWAGGER_UI_ENABLED:false}
 
 ai:
+  failure-analysis:
+    prefer-gemini: ${AI_FAILURE_ANALYSIS_PREFER_GEMINI:true}
+
+  runtime:
+    enabled: ${AI_RUNTIME_ENABLED:false}
+    docker:
+      enabled: ${AI_RUNTIME_DOCKER_ENABLED:false}
+      network: ${AI_RUNTIME_DOCKER_NETWORK:ai-toolcheck-network}
+    internal-port: ${AI_RUNTIME_INTERNAL_PORT:8080}
+    port-min: ${AI_RUNTIME_PORT_MIN:18080}
+    port-max: ${AI_RUNTIME_PORT_MAX:18999}
+    container-prefix: ${AI_RUNTIME_CONTAINER_PREFIX:aitc-runtime}
+    public-host: ${AI_RUNTIME_PUBLIC_HOST:127.0.0.1}
+    build-timeout-seconds: ${AI_RUNTIME_BUILD_TIMEOUT_SECONDS:300}
+    start-timeout-seconds: ${AI_RUNTIME_START_TIMEOUT_SECONDS:120}
+    health-timeout-seconds: ${AI_RUNTIME_HEALTH_TIMEOUT_SECONDS:5}
+    max-active-runtimes: ${AI_RUNTIME_MAX_ACTIVE_RUNTIMES:5}
+
   gemini:
     api-key: ${AI_GEMINI_API_KEY}
     base-url: ${AI_GEMINI_BASE_URL:https://generativelanguage.googleapis.com/v1beta/models}
@@ -52,6 +70,8 @@ ai:
     # 90s: enough for qwen2.5-coder:7b with LegacySourceContextReducerService reduced input.
     # Override via env OLLAMA_READ_TIMEOUT_SECONDS if running a larger model.
     read-timeout-seconds: ${OLLAMA_READ_TIMEOUT_SECONDS:90}
+    enrich-api-doc-timeout-seconds: ${OLLAMA_ENRICH_API_DOC_TIMEOUT_SECONDS:180}
+    generate-test-case-timeout-seconds: ${OLLAMA_GENERATE_TEST_CASE_TIMEOUT_SECONDS:180}
 
 logging:
   level:
@@ -72,3 +92,16 @@ management:
   endpoint:
     health:
       show-details: never
+
+test-run:
+  stale:
+    enabled: ${TEST_RUN_STALE_ENABLED:true}
+    pending-timeout-minutes: ${TEST_RUN_STALE_PENDING_TIMEOUT_MINUTES:30}
+    running-timeout-minutes: ${TEST_RUN_STALE_RUNNING_TIMEOUT_MINUTES:120}
+
+# Schema compatibility migrator — runs at startup to ensure DB schema matches the Java model.
+# This is the mechanism that converts source_file.file_type from MySQL ENUM to VARCHAR(50).
+# Disable only if you have already applied the schema change manually and want to skip the check.
+app:
+  schema-compat:
+    enabled: ${APP_SCHEMA_COMPAT_ENABLED:true}

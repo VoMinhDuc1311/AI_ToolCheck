@@ -20,7 +20,10 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.legacy.LegacyEntrypointClas
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+// Each sub-service (analyzeProject, parseProject, generateAndSaveOpenApi) owns its own
+// @Transactional boundary. The orchestrator must NOT wrap the whole workflow in a single
+// transaction — doing so causes UnexpectedRollbackException when a nested service marks
+// the transaction rollback-only and the orchestrator swallows the exception.
 
 import java.util.ArrayList;
 import java.util.List;
@@ -66,7 +69,6 @@ public class SourceDocumentationOrchestratorServiceImpl implements SourceDocumen
     private final LegacyEntrypointClassifierService classifierService;
 
     @Override
-    @Transactional
     public SourceDocumentationPipelineResponse generateDocsFromSource(UUID projectId) {
         log.info("[DocOrchestrator] START generateDocsFromSource projectId={}", projectId);
 

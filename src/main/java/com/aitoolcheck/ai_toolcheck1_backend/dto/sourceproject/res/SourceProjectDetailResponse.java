@@ -46,6 +46,16 @@ public class SourceProjectDetailResponse {
     /** Derived: repository name segment from the repository URL. Not persisted. */
     private String repositoryName;
 
+    // ── Runtime execution target ───────────────────────────────────────────────
+
+    /**
+     * Project-level default runtime base URL for test execution.
+     * Distinct from repositoryUrl (which is for static source analysis).
+     * TestRun will fall back to this URL when no explicit baseUrl is provided.
+     * Null if not configured.
+     */
+    private String defaultTargetBaseUrl;
+
     private BackendType backendType;
     private ProjectStatus status;
     private ProjectVisibility visibility;

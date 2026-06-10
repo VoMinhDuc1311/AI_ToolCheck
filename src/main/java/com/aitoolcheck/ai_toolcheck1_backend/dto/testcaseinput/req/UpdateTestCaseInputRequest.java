@@ -11,15 +11,22 @@ import lombok.Builder;
 import lombok.Getter;
 import lombok.NoArgsConstructor;
 import lombok.Setter;
-import com.fasterxml.jackson.databind.JsonNode;
 
+import java.util.Map;
+
+/**
+ * Request DTO for updating a TestCaseInput.
+ *
+ * <p>JSON-typed fields use {@code Map<String, Object>} instead of {@code JsonNode}.
+ * See {@link CreateTestCaseInputRequest} for rationale.
+ */
 @Getter
 @Setter
 @Builder
 @AllArgsConstructor
 @NoArgsConstructor
-
 public class UpdateTestCaseInputRequest {
+
     @NotNull(message = "httpMethod is required")
     private HttpMethod httpMethod;
 
@@ -27,11 +34,14 @@ public class UpdateTestCaseInputRequest {
     @Size(max = 500, message = "requestPath must not exceed 500 characters")
     private String requestPath;
 
-    private JsonNode queryParamsJson;
+    /** JSON object for query parameters. Accepts {@code {"name":"value"}} or null. */
+    private Map<String, Object> queryParamsJson;
 
-    private JsonNode headersJson;
+    /** JSON object for request headers. Accepts {@code {"Accept":"application/json"}} or null. */
+    private Map<String, Object> headersJson;
 
-    private JsonNode requestBodyJson;
+    /** JSON object/array for request body. Null is valid for GET requests. */
+    private Map<String, Object> requestBodyJson;
 
     @Size(max = 100, message = "contentType must not exceed 100 characters")
     private String contentType;

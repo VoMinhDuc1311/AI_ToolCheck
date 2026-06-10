@@ -26,6 +26,10 @@ Rules:
 - Return valid JSON only.
 - Do not wrap JSON in markdown.
 - Do not include explanations outside JSON.
+- Return JSON only. No prose outside JSON. No code fences.
+- Keep strings short.
+- Escape quotes correctly.
+- Do not include multiline unescaped strings.
 - Do not expose secrets, tokens, passwords, cookies, API keys, or credentials.
 - If data is missing, clearly mark the conclusion as probable.
 - Do not invent file names, method names, class names, or stack traces.

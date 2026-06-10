@@ -22,7 +22,11 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationSeverity;
+import com.aitoolcheck.ai_toolcheck1_backend.enums.NotificationType;
+import com.aitoolcheck.ai_toolcheck1_backend.service.notification.ProjectNotificationEventPublisher;
 
 @Service
 @RequiredArgsConstructor
@@ -32,6 +36,7 @@ public class ProjectMemberServiceImpl implements ProjectMemberService {
     private final SourceProjectRepository sourceProjectRepository;
     private final AppUserRepository appUserRepository;
     private final ProjectAccessService projectAccessService;
+    private final ProjectNotificationEventPublisher notificationEventPublisher;
 
     @Override
     @Transactional(readOnly = true)
@@ -98,7 +103,25 @@ public class ProjectMemberServiceImpl implements ProjectMemberService {
             sourceProjectRepository.save(sourceProject);
         }
 
-        return toResponse(projectMemberRepository.save(member));
+        ProjectMember saved = projectMemberRepository.save(member);
+
+        try {
+            notificationEventPublisher.publishForCurrentUserAndSpecificRecipients(
+                    projectId,
+                    List.of(user.getId()),
+                    NotificationType.PROJECT_MEMBER_ADDED,
+                    NotificationSeverity.INFO,
+                    "New member added",
+                    "User " + user.getFullName() + " has been added to project " + sourceProject.getProjectName()
+                            + " with role " + request.getRole().name() + ".",
+                    "/source-projects/" + projectId,
+                    Map.of("projectId", projectId));
+        } catch (Exception ex) {
+            // Log and swallow so notification failures do not rollback project member
+            // additions
+        }
+
+        return toResponse(saved);
     }
 
     @Override
@@ -109,15 +132,60 @@ public class ProjectMemberServiceImpl implements ProjectMemberService {
 
         ProjectMember member = findMemberInProject(projectId, memberId);
         member.setRole(request.getRole());
-        return toResponse(projectMemberRepository.save(member));
+        ProjectMember saved = projectMemberRepository.save(member);
+
+        try {
+            notificationEventPublisher.publishForCurrentUserAndSpecificRecipients(
+                    projectId,
+                    List.of(member.getUser().getId()),
+                    NotificationType.PROJECT_ROLE_UPDATED,
+                    NotificationSeverity.INFO,
+                    "Project role updated",
+                    "User " + member.getUser().getFullName() + "'s role in project "
+                            + member.getSourceProject().getProjectName() + " has been updated to "
+                            + request.getRole().name() + ".",
+                    "/source-projects/" + projectId,
+                    Map.of("projectId", projectId));
+        } catch (Exception ex) {
+            // Log and swallow
+        }
+
+        return toResponse(saved);
     }
 
     @Override
     @Transactional
     public void removeMember(UUID projectId, UUID memberId) {
-        projectAccessService.requireCanAdminProject(projectId);
+        SourceProject project = projectAccessService.requireCanAdminProject(projectId);
         ProjectMember member = findMemberInProject(projectId, memberId);
+        AppUser user = member.getUser();
+        String projectName = member.getSourceProject().getProjectName();
         projectMemberRepository.delete(member);
+        projectMemberRepository.flush(); // ensure DELETE is flushed so the count below is accurate
+
+        // P1: auto-transition SHARED → PRIVATE when the last regular member is removed
+        if (project.getVisibility() == ProjectVisibility.SHARED) {
+            long remainingCount = projectMemberRepository.countBySourceProject_Id(projectId);
+            if (remainingCount == 0) {
+                project.setVisibility(ProjectVisibility.PRIVATE);
+                sourceProjectRepository.save(project);
+            }
+        }
+        // PUBLIC_READ and PRIVATE visibility remain unchanged
+
+        try {
+            notificationEventPublisher.publishForCurrentUserAndSpecificRecipients(
+                    projectId,
+                    List.of(user.getId()),
+                    NotificationType.PROJECT_MEMBER_REMOVED,
+                    NotificationSeverity.INFO,
+                    "Member removed",
+                    "User " + user.getFullName() + " has been removed from project " + projectName + ".",
+                    "/source-projects/" + projectId,
+                    Map.of("projectId", projectId));
+        } catch (Exception ex) {
+            // Log and swallow
+        }
     }
 
     private ProjectMember findMemberInProject(UUID projectId, UUID memberId) {

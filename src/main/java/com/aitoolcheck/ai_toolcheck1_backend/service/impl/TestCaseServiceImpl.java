@@ -17,17 +17,20 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseassertion.res.TestCaseA
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.req.CreateTestCaseInputRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.req.UpdateTestCaseInputRequest;
 import com.aitoolcheck.ai_toolcheck1_backend.dto.testcaseinput.res.TestCaseInputResponse;
+import com.aitoolcheck.ai_toolcheck1_backend.config.properties.GeminiProperties;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.*;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiJsonParseException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.AiPersistenceException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.BadRequestException;
 import com.aitoolcheck.ai_toolcheck1_backend.exception.ResourceNotFoundException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.*;
 import com.aitoolcheck.ai_toolcheck1_backend.repository.*;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiJsonParserService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.access.ProjectAccessService;
-import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiPromptConstants;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiTestCaseAssertionSanitizer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.rabbitmq.AiTaskProducer;
 import com.aitoolcheck.ai_toolcheck1_backend.service.AiPayloadOptimizerService;
 import com.aitoolcheck.ai_toolcheck1_backend.config.properties.AiOptimizationProperties;
@@ -69,6 +72,7 @@ public class TestCaseServiceImpl implements TestCaseService {
     private final AiJobLogRepository aiJobLogRepository;
     private final AiTaskProducer aiTaskProducer;
     private final AiModelRouterService aiModelRouterService;
+    private final GeminiApiClientService geminiApiClientService;
     private final AiJsonParserService aiJsonParserService;
     private final ProjectAccessService projectAccessService;
     private final AiSkillRepository aiSkillRepository;
@@ -76,6 +80,48 @@ public class TestCaseServiceImpl implements TestCaseService {
     private final org.springframework.context.ApplicationContext applicationContext;
     private final AiPayloadOptimizerService aiPayloadOptimizerService;
     private final AiOptimizationProperties aiOptimizationProperties;
+    private final AiTestCaseAssertionSanitizer aiTestCaseAssertionSanitizer;
+    private final GeminiProperties geminiProperties;
+
+    private static final String AGENT_2_COMPACT_PROMPT_TEMPLATE = """
+            Return JSON only. No markdown. No explanation.
+
+            Context:
+            {{OPENAPI_OPERATION_CONTEXT}}
+
+            Rules:
+            - Generate exactly 1 positive smoke testcase for GET, HEAD, or OPTIONS.
+            - Use STATUS_CODE EQUALS first 2xx response code; default 200.
+            - Do not assert exact whole response body.
+            - Do not include JSON_PATH body assertions unless the response example is stable and explicit.
+            - Do not expect {} or [] unless explicit OpenAPI example says so.
+            - Do not assert fixed dynamic fields: id, uuid, createdAt, updatedAt, timestamp, token.
+            - If context says no stable response example is available, generate status-code-only smoke test.
+            - Use only assertion_type STATUS_CODE, JSON_PATH, HEADER, RESPONSE_TIME.
+            - Use only comparison_operator EQUALS, NOT_EQUALS, CONTAINS, NOT_NULL, IS_NULL, EXISTS.
+
+            Output shape:
+            {
+              "test_cases": [
+                {
+                  "test_name": "Smoke: endpoint returns success",
+                  "case_type": "SUCCESS",
+                  "priority": "MEDIUM",
+                  "http_method": "GET",
+                  "url": "/api/path",
+                  "inputs": [],
+                  "assertions": [
+                    {
+                      "assertion_type": "STATUS_CODE",
+                      "json_path": "",
+                      "comparison_operator": "EQUALS",
+                      "expected_value": "200"
+                    }
+                  ]
+                }
+              ]
+            }
+            """;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -90,6 +136,7 @@ public class TestCaseServiceImpl implements TestCaseService {
             SourceProject project = endpoint.getSourceProject();
 
             for (AiTestCaseItemDto itemDto : request.getTestCases()) {
+                sanitizeTestCaseDto(itemDto, endpoint.getHttpMethod());
 
                 // 1. Map CaseType (Defensive)
                 CaseType caseType = CaseType.POSITIVE;
@@ -120,14 +167,34 @@ public class TestCaseServiceImpl implements TestCaseService {
                     }
                 }
 
+                HttpMethod method = itemDto.getHttpMethod();
+                boolean requiresWrite = method == HttpMethod.POST || method == HttpMethod.PUT || method == HttpMethod.PATCH || method == HttpMethod.DELETE;
+                boolean cleanupRequired = requiresWrite && (caseType == CaseType.POSITIVE);
+
+                boolean activeFlag = true;
+                if (method == HttpMethod.GET && caseType == CaseType.POSITIVE && itemDto.getUrl() != null) {
+                    String upperUrl = itemDto.getUrl().toUpperCase();
+                    if (upperUrl.contains("CUSTOMER_ABC_123") ||
+                        upperUrl.contains("UNKNOWN_") ||
+                        upperUrl.contains("SAMPLE_") ||
+                        upperUrl.contains("TEST_") ||
+                        upperUrl.contains("FAKE_") ||
+                        upperUrl.contains("DUMMY_")) {
+                        activeFlag = false;
+                    }
+                }
+
                 // 3. Tạo Entity TestCase (Bảng Cha)
                 TestCase testCase = TestCase.builder()
                         .caseName(itemDto.getTestName())
+                        .description(itemDto.getDescription())
                         .caseType(caseType)
                         .priorityLevel(priorityLevel)
                         .generatedBy(GeneratedBy.AI)
-                        .activeFlag(true)
+                        .activeFlag(activeFlag)
                         .deletedFlag(false)
+                        .requiresWrite(requiresWrite)
+                        .cleanupRequired(cleanupRequired)
                         .sourceProject(project)
                         .apiEndpoint(endpoint)
                         .build();
@@ -166,7 +233,7 @@ public class TestCaseServiceImpl implements TestCaseService {
                             try {
                                 String norm = assertionDto.getAssertionType().trim().toUpperCase();
                                 assertionType = switch (norm) {
-                                    case "JSON_BODY" -> AssertionType.JSON_PATH;
+                                    case "JSON_BODY", "BODY", "RESPONSE_BODY" -> AssertionType.JSON_PATH;
                                     default -> AssertionType.valueOf(norm);
                                 };
                             } catch (Exception e) {
@@ -203,10 +270,22 @@ public class TestCaseServiceImpl implements TestCaseService {
                     }
                 }
 
+                assertionEntities = aiTestCaseAssertionSanitizer.sanitize(
+                        assertionEntities,
+                        itemDto.getHttpMethod(),
+                        caseType,
+                        itemDto.getExpectedStatusCode(),
+                        false);
+
                 testCase.replaceAssertions(assertionEntities);
 
                 // Lưu TestCase (Kéo theo Input và Assertions nhờ CascadeType.ALL)
-                testCaseRepository.save(testCase);
+                TestCase savedTestCase = testCaseRepository.save(testCase);
+                if (itemDto.getDescription() != null
+                        && itemDto.getDescription().startsWith("Deterministic fallback smoke testcase generated")) {
+                    log.info("[GenerateTestCase][Fallback] persisted fallback testcase id={}",
+                            savedTestCase != null ? savedTestCase.getId() : testCase.getId());
+                }
             }
 
             log.info("[Phase 3] Hoàn thành lưu trữ AI test cases cho Job: {}", aiJobId);
@@ -594,79 +673,623 @@ public class TestCaseServiceImpl implements TestCaseService {
             throw new BadRequestException("ApiEndpoint ID is required for generating test cases.");
         }
 
-        // Khắc phục lỗi LazyInitializationException bằng cách gọi qua Proxy để kích
-        // hoạt Transaction đọc
+        // Load endpoint with lazy collections initialised inside a transaction
         TestCaseService proxySelf = applicationContext.getBean(TestCaseService.class);
         ApiEndpoint endpoint = proxySelf.getEndpointWithDetails(UUID.fromString(endpointId));
 
-        // 1. Tổng hợp thông tin API (Method, Path, Parameters)
-        String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name() : "GET";
-        String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+        UUID projectId = endpoint.getSourceProject().getId();
+        String httpMethod = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name() : "GET";
+        String endpointPath = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
 
-        StringBuilder apiDetails = new StringBuilder();
-        apiDetails.append("Method: ").append(method).append("\n");
-        apiDetails.append("Path: ").append(path).append("\n");
-
-        if (endpoint.getApiParameters() != null && !endpoint.getApiParameters().isEmpty()) {
-            apiDetails.append("Parameters:\n");
-            endpoint.getApiParameters().forEach(p -> apiDetails.append("- ").append(p.getParamName())
-                    .append(" (").append(p.getParamIn()).append("): ")
-                    .append(p.getDataType()).append("\n"));
-        }
-
-        // 2. Lấy Schema Definitions
-        StringBuilder schemas = new StringBuilder();
-        if (endpoint.getEndpointSchemaMaps() != null) {
-            endpoint.getEndpointSchemaMaps().forEach(map -> {
-                if (map.getApiSchema() != null) {
-                    schemas.append("Schema [").append(map.getUsageType()).append("]: ")
-                            .append(map.getApiSchema().getSchemaName()).append("\n");
-                }
-            });
-        }
-
-        // Optimize schema if needed
-        String optimizedSchemas = aiOptimizationProperties.isEnabled() ?
-                aiPayloadOptimizerService.truncateIfNeeded(schemas.toString(), aiOptimizationProperties.getMaxPromptChars() / 2) : schemas.toString();
-
-        // 3. Inject Context vào Prompt
-        String prompt = String.format(
-                AiPromptConstants.PROMPT_SKILL_2_GEN_TESTCASE,
-                apiDetails.toString(),
-                optimizedSchemas);
-
-        String rawResult = null;
-        try {
-            // 4. Định tuyến AI và thực thi (Tốn thời gian, không có @Transactional để tránh
-            // treo DB connection)
-            rawResult = aiModelRouterService.routeAndExecute(prompt, jobId);
-
-            // 5. Sau khi nhận kết quả, parse và persist ngay vào DB (New Flow - Week 8)
-            // Bước 5.1: Parse JSON AI thành DTO chuẩn
-            AiGeneratedTestCaseRequest testCaseRequest = aiJsonParserService.parseTestCaseRequest(rawResult);
-
-            // Bước 5.2: Khắc phục Self-Invocation bằng cách gọi qua Proxy của Spring
-            proxySelf.saveAiGeneratedTestCases(testCaseRequest, UUID.fromString(endpointId), jobId);
-
-        } catch (Exception e) {
-            log.error("[TestCaseService] Lỗi toàn cục khi xử lý AI cho Job {}: {}", jobId, e.getMessage());
-
-            // XỬ LÝ PHASE 4 THẤT BẠI TẠI ĐÂY (An toàn vì không bị dính dáng đến Transaction
-            // Rollback)
+        // 1. Load latest ApiDocumentVersion for this project (Agent 1 output)
+        ApiDocumentVersion latestVersion = resolveLatestOpenApiVersion(projectId);
+        if (latestVersion == null || latestVersion.getContentJson() == null
+                || latestVersion.getContentJson().isBlank()) {
+            String msg = "No OpenAPI document found for this project. " +
+                    "Please run Agent 1 Generate OpenAPI first. projectId=" + projectId;
+            log.warn("[GenerateTestCase] {} endpointId={} jobId={}", msg, endpointId, jobId);
             aiJobLogRepository.findById(jobId).ifPresent(job -> {
                 job.setExecutionStatus(ExecutionStatus.FAILED);
                 job.setCompletedAt(LocalDateTime.now());
-                job.setErrorMessage("Lỗi xử lý AI: " + e.getMessage());
+                job.setErrorMessage(msg);
                 aiJobLogRepository.save(job);
             });
+            throw new BadRequestException(msg);
+        }
 
-            if (!(e instanceof AiPersistenceException)) {
-                throw new AiPersistenceException("Quy trình sinh Test Case thất bại: " + e.getMessage(), e);
-            }
+        // 2. Build compact OpenAPI context from Agent 1 document
+        String compactContext;
+        try {
+            compactContext = buildCompactOpenApiContext(endpoint, latestVersion);
+        } catch (BadRequestException e) {
+            // Operation not found or document unreadable — fail the job clearly
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.FAILED);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setErrorMessage(e.getMessage());
+                aiJobLogRepository.save(job);
+            });
             throw e;
+        } catch (Exception e) {
+            String msg = "Failed to parse OpenAPI document for context building: " + e.getMessage();
+            log.error("[GenerateTestCase] {} endpointId={} jobId={}", msg, endpointId, jobId, e);
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.FAILED);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setErrorMessage(msg);
+                aiJobLogRepository.save(job);
+            });
+            throw new AiPersistenceException(msg, e);
+        }
+
+        // 3. Build prompt with compact OpenAPI context
+        String prompt;
+        int selectedResponseStatus = 200;
+        try {
+            prompt = buildGenerateTestCasePrompt(compactContext, endpointId, jobId);
+            selectedResponseStatus = extractSelectedResponseStatus(compactContext, 200);
+            log.info("[GenerateTestCase] Prompt built endpointId={} jobId={} promptCharsBefore={} promptCharsAfter={} " +
+                            "method={} path={} selectedStatus={} geminiTimeoutSeconds={}",
+                    endpointId, jobId, compactContext.length(), prompt.length(),
+                    httpMethod, endpointPath, selectedResponseStatus, geminiProperties.getTimeoutSeconds());
+        } catch (Exception e) {
+            log.error("[GenerateTestCase] Prompt build failed endpointId={} jobId={} cause={}",
+                    endpointId, jobId, e.getMessage(), e);
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.FAILED);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setErrorMessage("Prompt build failed: " + e.getMessage());
+                aiJobLogRepository.save(job);
+            });
+            throw new AiPersistenceException("Prompt build failed: " + e.getMessage(), e);
+        }
+
+        String rawResult = null;
+        boolean deterministicFallbackUsed = false;
+        boolean safeReadEndpoint = isSafeReadMethod(endpoint.getHttpMethod());
+        try {
+            // 4. Route to AI provider — does NOT mark job SUCCESS yet.
+            //    We only mark SUCCESS after parse + save both succeed.
+            AiGeneratedTestCaseRequest testCaseRequest = null;
+            if (safeReadEndpoint) {
+                log.info("[GenerateTestCase][Gemini] targetEndpoint={} {}", httpMethod, endpointPath);
+                log.info("[GenerateTestCase][Gemini] promptChars={}", prompt.length());
+                try {
+                    rawResult = geminiApiClientService.generateText(prompt);
+                    log.info("[GenerateTestCase][Gemini] rawResponseChars={}", rawResult != null ? rawResult.length() : 0);
+                } catch (Exception providerFailure) {
+                    if (!isDeterministicFallbackAllowed(endpoint, selectedResponseStatus)) {
+                        throw providerFailure;
+                    }
+                    deterministicFallbackUsed = true;
+                    testCaseRequest = buildDeterministicFallbackRequest(endpoint, selectedResponseStatus,
+                            "Deterministic fallback smoke testcase generated because AI provider failed.");
+                    rawResult = buildDeterministicFallbackRawJson(testCaseRequest);
+                    log.warn("[GenerateTestCase][Fallback] provider failure, creating deterministic smoke testcase " +
+                                    "endpointId={} jobId={} method={} path={} selectedStatus={} cause={}",
+                            endpointId, jobId, httpMethod, endpointPath, selectedResponseStatus,
+                            providerFailure.getMessage());
+                }
+            } else {
+                rawResult = aiModelRouterService.routeAndExecuteForSkillRaw("GENERATE_TEST_CASE", prompt);
+            }
+
+            // 5. Parse AI output
+            if (!deterministicFallbackUsed) {
+                try {
+                    testCaseRequest = aiJsonParserService.parseTestCaseRequest(rawResult);
+                } catch (AiJsonParseException parseFailure) {
+                    log.error("[GenerateTestCase][Parser][ERROR] invalidJson rootCause={} rawFirst500={}",
+                            rootCauseMessage(parseFailure), firstCharsForLog(rawResult, 500));
+
+                    String repairPrompt = buildJsonRepairPrompt(endpoint, selectedResponseStatus, rawResult);
+                    log.info("[GenerateTestCase][Repair] retrying once with JSON repair prompt");
+                    String repairedRaw = null;
+                    try {
+                        repairedRaw = geminiApiClientService.generateText(repairPrompt);
+                        log.info("[GenerateTestCase][Gemini] rawResponseChars={}", repairedRaw != null ? repairedRaw.length() : 0);
+                        testCaseRequest = aiJsonParserService.parseTestCaseRequest(repairedRaw);
+                        rawResult = repairedRaw;
+                        log.info("[GenerateTestCase][Repair] success");
+                    } catch (AiJsonParseException repairFailure) {
+                        log.warn("[GenerateTestCase][Repair] failed rootCause={} rawFirst500={}",
+                                rootCauseMessage(repairFailure), firstCharsForLog(repairedRaw, 500));
+                        if (!isDeterministicFallbackAllowed(endpoint, selectedResponseStatus)) {
+                            String msg = "AI response parse failed and deterministic fallback is not allowed for unsafe endpoint.";
+                            throw new AiJsonParseException(repairFailure.getErrorType(), msg, repairFailure);
+                        }
+                        deterministicFallbackUsed = true;
+                        testCaseRequest = buildDeterministicFallbackRequest(endpoint, selectedResponseStatus,
+                                "Deterministic fallback smoke testcase generated because AI returned invalid JSON.");
+                        rawResult = buildDeterministicFallbackRawJson(testCaseRequest);
+                        log.warn("[GenerateTestCase][Fallback] invalid AI JSON, creating deterministic smoke testcase");
+                    } catch (Exception repairProviderFailure) {
+                        log.warn("[GenerateTestCase][Repair][ERROR] providerFailure={}",
+                                rootCauseMessage(repairProviderFailure));
+                        if (!isDeterministicFallbackAllowed(endpoint, selectedResponseStatus)) {
+                            String msg = "AI JSON repair failed and deterministic fallback is not allowed for unsafe endpoint.";
+                            throw new AiJsonParseException(
+                                    AiJsonParseException.ErrorType.INVALID_JSON_SYNTAX,
+                                    msg,
+                                    repairProviderFailure);
+                        }
+                        deterministicFallbackUsed = true;
+                        testCaseRequest = buildDeterministicFallbackRequest(endpoint, selectedResponseStatus,
+                                "Deterministic fallback smoke testcase generated because AI JSON repair failed.");
+                        rawResult = buildDeterministicFallbackRawJson(testCaseRequest);
+                        log.warn("[GenerateTestCase][Fallback] repair failed, creating deterministic smoke testcase");
+                    }
+                }
+            }
+
+            // 6. Persist test cases
+            proxySelf.saveAiGeneratedTestCases(testCaseRequest, UUID.fromString(endpointId), jobId);
+
+            // 7. Mark job SUCCESS only after both parse AND persist succeed
+            int tokenInput = prompt.length() / 4;
+            int tokenOutput = rawResult.length() / 4;
+            String modelName = deterministicFallbackUsed
+                    ? "deterministic-fallback"
+                    : (safeReadEndpoint ? geminiProperties.getModel() : "router-selected");
+            aiJobLogRepository.findById(jobId).ifPresent(job -> {
+                job.setExecutionStatus(ExecutionStatus.SUCCESS);
+                job.setCompletedAt(LocalDateTime.now());
+                job.setTokenInput(tokenInput);
+                job.setTokenOutput(tokenOutput);
+                job.setModelName(modelName);
+                aiJobLogRepository.save(job);
+            });
+            log.info("[GenerateTestCase] Job {} marked COMPLETED after successful parse+save. endpointId={} fallbackUsed={}",
+                    jobId, endpointId, deterministicFallbackUsed);
+
+        } catch (AiJsonParseException e) {
+            String parseFailMsg = e.getMessage() != null && e.getMessage().contains("fallback is not allowed")
+                    ? e.getMessage()
+                    : "AI response parse failed: " + e.getErrorType();
+            log.error("[GenerateTestCase] {} endpointId={} jobId={}", parseFailMsg, endpointId, jobId);
+            markGenerateTestCaseJobFailed(jobId, parseFailMsg);
+            throw e;
+        } catch (AiPersistenceException e) {
+            String persistFailMsg = "Database persistence error while saving generated test cases: " + e.getMessage();
+            log.error("[GenerateTestCase] {} endpointId={} jobId={}", persistFailMsg, endpointId, jobId);
+            markGenerateTestCaseJobFailed(jobId, persistFailMsg);
+            throw e;
+        } catch (Exception e) {
+            String aiFailMsg = "AI provider failed while generating test cases from OpenAPI document: "
+                    + e.getMessage();
+            log.error("[GenerateTestCase] {} endpointId={} jobId={}", aiFailMsg, endpointId, jobId);
+            markGenerateTestCaseJobFailed(jobId, aiFailMsg);
+            throw new IllegalStateException(aiFailMsg, e);
         }
 
         return rawResult;
+    }
+
+    // =========================================================================
+    // OpenAPI Context Helpers — STEP 4 (compact context for Agent 2 prompt)
+    // =========================================================================
+
+    ApiDocumentVersion resolveLatestOpenApiVersion(UUID projectId) {
+        java.util.List<ApiDocumentVersion> versions =
+                apiDocumentVersionRepository.findByApiDocumentSourceProjectIdOrderByVersionNoDesc(projectId);
+        return versions.isEmpty() ? null : versions.get(0);
+    }
+
+    String buildCompactOpenApiContext(ApiEndpoint endpoint, ApiDocumentVersion version) {
+        String methodKey = endpoint.getHttpMethod() != null
+                ? endpoint.getHttpMethod().name().toLowerCase(java.util.Locale.ROOT)
+                : "get";
+        String pathKey = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+
+        // Parse the full OpenAPI JSON
+        com.fasterxml.jackson.databind.node.ObjectNode openApiRoot;
+        try {
+            openApiRoot = (com.fasterxml.jackson.databind.node.ObjectNode)
+                    objectMapper.readTree(version.getContentJson());
+        } catch (Exception e) {
+            throw new BadRequestException(
+                    "Cannot parse OpenAPI contentJson for version " + version.getId() + ": " + e.getMessage());
+        }
+
+        // Find operation node at paths[pathKey][methodKey]
+        JsonNode operation = findOperationNode(openApiRoot, pathKey, methodKey);
+        if (operation == null || operation.isMissingNode()) {
+            throw new BadRequestException(
+                    "OpenAPI operation not found for " + methodKey.toUpperCase(java.util.Locale.ROOT)
+                            + " " + pathKey + " in latest API document.");
+        }
+
+        JsonNode responses = operation.path("responses");
+        java.util.List<String> responseStatusCodes = new ArrayList<>();
+        responses.fieldNames().forEachRemaining(responseStatusCodes::add);
+        int selectedStatus = first2xxStatus(responses);
+        JsonNode selectedResponse = responses.path(String.valueOf(selectedStatus));
+        boolean hasExplicitExample = hasExplicitResponseExample(selectedResponse);
+        com.fasterxml.jackson.databind.node.ObjectNode responseSchemaSummary =
+                summarizeResponseSchema(openApiRoot, selectedResponse);
+        boolean emptySchema = responseSchemaSummary.path("emptyProperties").asBoolean(false);
+
+        log.info("[GenerateTestCase][OpenApi] Matched operation path={} method={} statusCodes={} " +
+                        "selectedStatus={} hasExplicitExample={} emptySchema={}",
+                pathKey, methodKey, responseStatusCodes, selectedStatus, hasExplicitExample, emptySchema);
+
+        // Assemble compact context object
+        com.fasterxml.jackson.databind.node.ObjectNode context =
+                objectMapper.createObjectNode();
+        context.put("source", "AGENT_1_OPENAPI_DOCUMENT");
+        context.put("path", pathKey);
+        context.put("method", methodKey);
+        if (operation.hasNonNull("operationId")) {
+            context.set("operationId", operation.get("operationId"));
+        }
+        com.fasterxml.jackson.databind.node.ArrayNode statusesNode = objectMapper.createArrayNode();
+        responseStatusCodes.forEach(statusesNode::add);
+        context.set("responseStatusCodes", statusesNode);
+        context.put("selectedResponseStatus", selectedStatus);
+        context.set("requestParams", compactRequestParams(operation));
+        context.set("responseSchemaSummary", responseSchemaSummary);
+        context.put("hasExplicitResponseExample", hasExplicitExample);
+        if (!hasExplicitExample && emptySchema) {
+            context.put("instruction",
+                    "No stable response example is available. Generate status-code-only smoke test.");
+        }
+
+        // Minify to compact JSON to keep token count low
+        try {
+            return objectMapper.writeValueAsString(context);
+        } catch (Exception e) {
+            throw new BadRequestException("Failed to serialize compact OpenAPI context: " + e.getMessage());
+        }
+    }
+
+    /** Finds paths[normalizedPath][method] in an OpenAPI root node. */
+    JsonNode findOperationNode(JsonNode openApiRoot, String path, String method) {
+        JsonNode paths = openApiRoot.get("paths");
+        if (paths == null || paths.isMissingNode()) return null;
+
+        // Try exact path first, then normalized (trim trailing slash)
+        String normalizedPath = path.endsWith("/") && path.length() > 1
+                ? path.substring(0, path.length() - 1) : path;
+
+        JsonNode pathItem = paths.get(path);
+        if (pathItem == null || pathItem.isMissingNode()) {
+            pathItem = paths.get(normalizedPath);
+        }
+        if (pathItem == null || pathItem.isMissingNode()) return null;
+
+        return pathItem.get(method);
+    }
+
+    /**
+     * Recursively collects all "$ref": "#/components/schemas/Foo" schema names
+     * referenced in the given JsonNode.
+     */
+    java.util.Set<String> collectSchemaRefs(JsonNode node) {
+        java.util.Set<String> refs = new java.util.LinkedHashSet<>();
+        collectSchemaRefsRecursive(node, refs, new java.util.HashSet<>(), 0);
+        return refs;
+    }
+
+    private void collectSchemaRefsRecursive(JsonNode node, java.util.Set<String> refs,
+                                            java.util.Set<String> visited, int depth) {
+        if (node == null || depth > 20) return;
+        if (node.isObject()) {
+            JsonNode ref = node.get("$ref");
+            if (ref != null && ref.isTextual()) {
+                String refValue = ref.asText();
+                if (refValue.startsWith("#/components/schemas/")) {
+                    String schemaName = refValue.substring("#/components/schemas/".length());
+                    refs.add(schemaName);
+                }
+            }
+            node.fields().forEachRemaining(entry ->
+                    collectSchemaRefsRecursive(entry.getValue(), refs, visited, depth + 1));
+        } else if (node.isArray()) {
+            node.forEach(child ->
+                    collectSchemaRefsRecursive(child, refs, visited, depth + 1));
+        }
+    }
+
+    /**
+     * Resolves schema definitions for the given ref names from components/schemas,
+     * expanding nested $refs recursively (with a visited guard to prevent cycles).
+     */
+    com.fasterxml.jackson.databind.node.ObjectNode resolveRelatedSchemas(
+            JsonNode openApiRoot, java.util.Set<String> refs, java.util.Set<String> visited) {
+        com.fasterxml.jackson.databind.node.ObjectNode result = objectMapper.createObjectNode();
+        JsonNode components = openApiRoot.get("components");
+        if (components == null || components.isMissingNode()) return result;
+        JsonNode schemas = components.get("schemas");
+        if (schemas == null || schemas.isMissingNode()) return result;
+
+        for (String schemaName : refs) {
+            if (visited.contains(schemaName)) continue;
+            visited.add(schemaName);
+            JsonNode schemaDef = schemas.get(schemaName);
+            if (schemaDef == null || schemaDef.isMissingNode()) continue;
+            result.set(schemaName, schemaDef);
+            // Resolve nested refs within this schema
+            java.util.Set<String> nestedRefs = collectSchemaRefs(schemaDef);
+            if (!nestedRefs.isEmpty()) {
+                com.fasterxml.jackson.databind.node.ObjectNode nestedResolved =
+                        resolveRelatedSchemas(openApiRoot, nestedRefs, visited);
+                nestedResolved.fields().forEachRemaining(e -> result.set(e.getKey(), e.getValue()));
+            }
+        }
+        return result;
+    }
+
+    private int first2xxStatus(JsonNode responses) {
+        if (responses != null && responses.isObject()) {
+            java.util.Iterator<String> fields = responses.fieldNames();
+            while (fields.hasNext()) {
+                String status = fields.next();
+                try {
+                    int code = Integer.parseInt(status);
+                    if (code >= 200 && code < 300) {
+                        return code;
+                    }
+                } catch (NumberFormatException ignored) {
+                    // Ignore default/non-numeric OpenAPI response keys.
+                }
+            }
+        }
+        return 200;
+    }
+
+    private com.fasterxml.jackson.databind.node.ArrayNode compactRequestParams(JsonNode operation) {
+        com.fasterxml.jackson.databind.node.ArrayNode params = objectMapper.createArrayNode();
+        JsonNode parameters = operation.path("parameters");
+        if (!parameters.isArray()) {
+            return params;
+        }
+        for (JsonNode parameter : parameters) {
+            com.fasterxml.jackson.databind.node.ObjectNode compact = objectMapper.createObjectNode();
+            copyTextField(parameter, compact, "name");
+            copyTextField(parameter, compact, "in");
+            if (parameter.has("required")) {
+                compact.put("required", parameter.path("required").asBoolean(false));
+            }
+            JsonNode schema = parameter.path("schema");
+            if (schema.hasNonNull("type")) {
+                compact.set("type", schema.get("type"));
+            }
+            params.add(compact);
+        }
+        return params;
+    }
+
+    private void copyTextField(JsonNode source, com.fasterxml.jackson.databind.node.ObjectNode target, String fieldName) {
+        if (source.hasNonNull(fieldName)) {
+            target.set(fieldName, source.get(fieldName));
+        }
+    }
+
+    private boolean hasExplicitResponseExample(JsonNode response) {
+        if (response == null || response.isMissingNode()) {
+            return false;
+        }
+        if (response.has("example") || response.has("examples")) {
+            return true;
+        }
+        JsonNode content = response.path("content");
+        if (content.isObject()) {
+            java.util.Iterator<JsonNode> mediaTypes = content.elements();
+            while (mediaTypes.hasNext()) {
+                JsonNode media = mediaTypes.next();
+                if (media.has("example") || media.has("examples") || media.path("schema").has("example")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private com.fasterxml.jackson.databind.node.ObjectNode summarizeResponseSchema(JsonNode openApiRoot, JsonNode response) {
+        com.fasterxml.jackson.databind.node.ObjectNode summary = objectMapper.createObjectNode();
+        JsonNode schema = findResponseSchema(response);
+        String schemaName = schemaNameFromRef(schema);
+        JsonNode resolved = resolveSchema(openApiRoot, schema);
+
+        if (schemaName != null) {
+            summary.put("schemaName", schemaName);
+        }
+        if (resolved.hasNonNull("type")) {
+            summary.set("type", resolved.get("type"));
+        } else if (schema.hasNonNull("type")) {
+            summary.set("type", schema.get("type"));
+        }
+
+        JsonNode properties = resolved.path("properties");
+        com.fasterxml.jackson.databind.node.ArrayNode props = objectMapper.createArrayNode();
+        if (properties.isObject()) {
+            java.util.Iterator<java.util.Map.Entry<String, JsonNode>> fields = properties.fields();
+            int count = 0;
+            while (fields.hasNext() && count < 8) {
+                java.util.Map.Entry<String, JsonNode> field = fields.next();
+                com.fasterxml.jackson.databind.node.ObjectNode prop = objectMapper.createObjectNode();
+                prop.put("name", field.getKey());
+                if (field.getValue().hasNonNull("type")) {
+                    prop.set("type", field.getValue().get("type"));
+                }
+                props.add(prop);
+                count++;
+            }
+        }
+        summary.set("properties", props);
+        summary.put("emptyProperties", props.isEmpty());
+        return summary;
+    }
+
+    private JsonNode findResponseSchema(JsonNode response) {
+        if (response == null || response.isMissingNode()) {
+            return objectMapper.createObjectNode();
+        }
+        JsonNode content = response.path("content");
+        JsonNode jsonMedia = content.path("application/json");
+        if (!jsonMedia.isMissingNode()) {
+            return jsonMedia.path("schema");
+        }
+        if (content.isObject()) {
+            java.util.Iterator<JsonNode> mediaTypes = content.elements();
+            if (mediaTypes.hasNext()) {
+                return mediaTypes.next().path("schema");
+            }
+        }
+        return objectMapper.createObjectNode();
+    }
+
+    private JsonNode resolveSchema(JsonNode openApiRoot, JsonNode schema) {
+        String schemaName = schemaNameFromRef(schema);
+        if (schemaName == null) {
+            return schema == null || schema.isMissingNode() ? objectMapper.createObjectNode() : schema;
+        }
+        return openApiRoot.path("components").path("schemas").path(schemaName);
+    }
+
+    private String schemaNameFromRef(JsonNode schema) {
+        if (schema == null || !schema.hasNonNull("$ref")) {
+            return null;
+        }
+        String ref = schema.path("$ref").asText();
+        String prefix = "#/components/schemas/";
+        return ref.startsWith(prefix) ? ref.substring(prefix.length()) : null;
+    }
+
+    /** Builds the final Agent 2 prompt by injecting the compact OpenAPI context. */
+    String buildGenerateTestCasePrompt(
+            String compactOpenApiContext,
+            String endpointId,
+            UUID jobId
+    ) {
+        String prompt = AGENT_2_COMPACT_PROMPT_TEMPLATE
+                .replace("{{OPENAPI_OPERATION_CONTEXT}}", nullToEmpty(compactOpenApiContext));
+
+        if (prompt.contains("{{OPENAPI_OPERATION_CONTEXT}}")) {
+            throw new IllegalStateException(
+                    "Prompt template has unresolved placeholder OPENAPI_OPERATION_CONTEXT, endpointId="
+                    + endpointId + ", jobId=" + jobId);
+        }
+        return prompt;
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    private int extractSelectedResponseStatus(String compactContext, int defaultStatus) {
+        try {
+            JsonNode root = objectMapper.readTree(compactContext);
+            return root.path("selectedResponseStatus").asInt(defaultStatus);
+        } catch (Exception ignored) {
+            return defaultStatus;
+        }
+    }
+
+    private boolean isSafeReadMethod(HttpMethod method) {
+        return method == HttpMethod.GET || method == HttpMethod.HEAD || method == HttpMethod.OPTIONS;
+    }
+
+    private boolean isDeterministicFallbackAllowed(ApiEndpoint endpoint, int statusCode) {
+        if (endpoint == null || !isSafeReadMethod(endpoint.getHttpMethod())) {
+            return false;
+        }
+        String path = endpoint.getEndpointPath();
+        if (path == null || path.isBlank() || path.toUpperCase(java.util.Locale.ROOT).contains("UNKNOWN")) {
+            return false;
+        }
+        if (statusCode < 200 || statusCode >= 300) {
+            return false;
+        }
+        if (endpoint.getApiParameters() != null) {
+            for (ApiParameter parameter : endpoint.getApiParameters()) {
+                boolean requiredPathParam = parameter.getParamIn() == ParamIn.PATH
+                        && Boolean.TRUE.equals(parameter.getRequiredFlag());
+                if (requiredPathParam && (parameter.getExampleValue() == null || parameter.getExampleValue().isBlank())) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private AiGeneratedTestCaseRequest buildDeterministicFallbackRequest(
+            ApiEndpoint endpoint,
+            int statusCode,
+            String description) {
+        AiTestCaseAssertionDto assertion = AiTestCaseAssertionDto.builder()
+                .assertionType("STATUS_CODE")
+                .jsonPath("")
+                .comparisonOperator("EQUALS")
+                .expectedValue(String.valueOf(statusCode))
+                .build();
+
+        AiTestCaseItemDto item = AiTestCaseItemDto.builder()
+                .testName("Smoke: " + endpoint.getHttpMethod() + " " + endpoint.getEndpointPath() + " returns " + statusCode)
+                .description(description)
+                .caseType("SUCCESS")
+                .priority("MEDIUM")
+                .httpMethod(endpoint.getHttpMethod() != null ? endpoint.getHttpMethod() : HttpMethod.GET)
+                .url(endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/")
+                .expectedStatusCode(statusCode)
+                .inputs(new ArrayList<>())
+                .assertions(new ArrayList<>(List.of(assertion)))
+                .build();
+
+        AiGeneratedTestCaseRequest request = new AiGeneratedTestCaseRequest();
+        request.setTestCases(new ArrayList<>(List.of(item)));
+        return request;
+    }
+
+    private String buildDeterministicFallbackRawJson(AiGeneratedTestCaseRequest request) {
+        try {
+            return objectMapper.writeValueAsString(request);
+        } catch (Exception e) {
+            return "{\"test_cases\":[]}";
+        }
+    }
+
+    private String buildJsonRepairPrompt(ApiEndpoint endpoint, int statusCode, String rawAiResponse) {
+        String method = endpoint.getHttpMethod() != null ? endpoint.getHttpMethod().name() : "GET";
+        String path = endpoint.getEndpointPath() != null ? endpoint.getEndpointPath() : "/";
+        String schema = "{\"test_cases\":[{\"test_name\":\"Smoke: endpoint returns success\","
+                + "\"case_type\":\"SUCCESS\",\"priority\":\"MEDIUM\",\"http_method\":\"" + method + "\","
+                + "\"url\":\"" + path + "\",\"expected_status_code\":" + statusCode
+                + ",\"inputs\":[],\"assertions\":[{\"assertion_type\":\"STATUS_CODE\","
+                + "\"json_path\":\"\",\"comparison_operator\":\"EQUALS\",\"expected_value\":\""
+                + statusCode + "\"}]}]}";
+        return "The previous response was invalid JSON. Return valid JSON only matching this schema:\n"
+                + schema
+                + "\nDo not include markdown or explanation.\nPrevious response first 1000 chars:\n"
+                + firstCharsForLog(rawAiResponse, 1000);
+    }
+
+    private String firstCharsForLog(String value, int limit) {
+        if (value == null) {
+            return "";
+        }
+        String sanitized = value.replaceAll("[\\r\\n\\t]+", " ").trim();
+        if (sanitized.length() <= limit) {
+            return sanitized;
+        }
+        return sanitized.substring(0, limit);
+    }
+
+    private String rootCauseMessage(Throwable throwable) {
+        Throwable current = throwable;
+        while (current.getCause() != null) {
+            current = current.getCause();
+        }
+        return current.getMessage();
+    }
+
+    private void markGenerateTestCaseJobFailed(UUID jobId, String message) {
+        aiJobLogRepository.findById(jobId).ifPresent(job -> {
+            job.setExecutionStatus(ExecutionStatus.FAILED);
+            job.setCompletedAt(LocalDateTime.now());
+            job.setErrorMessage(message);
+            aiJobLogRepository.save(job);
+        });
     }
 
     @Override
@@ -747,6 +1370,45 @@ public class TestCaseServiceImpl implements TestCaseService {
 
             String requestPath = requestPathArray[0];
 
+            if (apiEndpoint.getHttpMethod() == HttpMethod.GET && 
+                ("VALIDATION_ERROR".equalsIgnoreCase(dto.getCaseType()) || "CLIENT_ERROR".equalsIgnoreCase(dto.getCaseType()))) {
+                String pathPart = requestPath.contains("?") ? requestPath.substring(0, requestPath.indexOf("?")) : requestPath;
+                boolean hasSuspicious = pathPart.contains("#") || pathPart.contains(" ") || pathPart.contains("&") ||
+                                        pathPart.contains("=") || pathPart.contains("+") || pathPart.contains("%");
+                if (hasSuspicious) {
+                    boolean expects400 = false;
+                    for (com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiAssertionDto aDto : dto.getAssertions()) {
+                        if ("STATUS_CODE".equalsIgnoreCase(aDto.getAssertionType()) && "400".equals(aDto.getExpectedValue())) {
+                            expects400 = true;
+                            break;
+                        }
+                    }
+                    if (expects400) {
+                        int lastSlash = pathPart.lastIndexOf("/");
+                        if (lastSlash != -1) {
+                            String safeId = (pathPart.contains("customers") || pathPart.contains("customer")) ? "UNKNOWN_CUSTOMER_ID" : "UNKNOWN_ID";
+                            String newPathPart = pathPart.substring(0, lastSlash + 1) + safeId;
+                            requestPath = requestPath.contains("?") ? newPathPart + requestPath.substring(requestPath.indexOf("?")) : newPathPart;
+                            
+                            for (com.aitoolcheck.ai_toolcheck1_backend.dto.aiskill.res.AiAssertionDto aDto : dto.getAssertions()) {
+                                if ("STATUS_CODE".equalsIgnoreCase(aDto.getAssertionType())) {
+                                    aDto.setExpectedValue("404");
+                                }
+                                if (aDto.getTargetPath() != null && 
+                                    (aDto.getTargetPath().contains("message") || aDto.getTargetPath().contains("error"))) {
+                                    aDto.setTargetPath("$.error");
+                                    aDto.setExpectedValue("Not Found");
+                                    aDto.setOperator("CONTAINS");
+                                }
+                            }
+                            if (caseName.contains("malformed")) {
+                                caseName = caseName.replace("malformed", "unknown").replace("special characters", "unknown ID");
+                            }
+                        }
+                    }
+                }
+            }
+
             // 2. Serialize Query Params
             if (dto.getQueryParams() != null && !dto.getQueryParams().isNull()) {
                 try {
@@ -794,7 +1456,7 @@ public class TestCaseServiceImpl implements TestCaseService {
                     try {
                         String norm = aDto.getAssertionType().trim().toUpperCase();
                         assertionType = switch (norm) {
-                            case "JSON_BODY" -> AssertionType.JSON_PATH;
+                            case "JSON_BODY", "BODY", "RESPONSE_BODY" -> AssertionType.JSON_PATH;
                             default -> AssertionType.valueOf(norm);
                         };
                     } catch (IllegalArgumentException e) {
@@ -830,6 +1492,13 @@ public class TestCaseServiceImpl implements TestCaseService {
 
             // Xây dựng TestCase entity (Dùng constructor/setter thay vì builder để đảm bảo
             // Collections hoạt động chuẩn với JPA)
+            assertions = aiTestCaseAssertionSanitizer.sanitize(
+                    assertions,
+                    apiEndpoint.getHttpMethod(),
+                    caseType,
+                    null,
+                    false);
+
             TestCase testCase = new TestCase();
             testCase.setCaseName(caseName);
             testCase.setCaseType(caseType);
@@ -906,8 +1575,7 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         validateRequestPath(input.getRequestPath());
-        validateJsonObject(input.getQueryParamsJson(), "queryParamsJson");
-        validateJsonObject(input.getHeadersJson(), "headersJson");
+        // Map<String,Object> fields are always JSON objects by construction — no further check needed.
     }
 
     private void validateUpdateInput(UpdateTestCaseInputRequest input) {
@@ -916,8 +1584,7 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
 
         validateRequestPath(input.getRequestPath());
-        validateJsonObject(input.getQueryParamsJson(), "queryParamsJson");
-        validateJsonObject(input.getHeadersJson(), "headersJson");
+        // Map<String,Object> fields are always JSON objects by construction — no further check needed.
     }
 
     private void validateCreateAssertions(List<CreateTestCaseAssertionRequest> assertions) {
@@ -942,6 +1609,8 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
     }
 
+    // validateJsonObject for Map is not needed — Map<String,Object> is always a JSON object.
+    // Kept for backward compatibility if called from other paths with JsonNode.
     private void validateJsonObject(JsonNode jsonNode, String fieldName) {
         if (jsonNode != null && !jsonNode.isNull() && !jsonNode.isObject()) {
             throw new BadRequestException(fieldName + " must be a JSON object");
@@ -1096,9 +1765,9 @@ public class TestCaseServiceImpl implements TestCaseService {
                 .testCaseId(input.getTestCase() == null ? null : input.getTestCase().getId())
                 .httpMethod(input.getHttpMethod())
                 .requestPath(input.getRequestPath())
-                .queryParamsJson(toJsonNode(input.getQueryParamsJson()))
-                .headersJson(toJsonNode(input.getHeadersJson()))
-                .requestBodyJson(toJsonNode(input.getRequestBodyJson()))
+                .queryParamsJson(toJsonMap(input.getQueryParamsJson()))
+                .headersJson(toJsonMap(input.getHeadersJson()))
+                .requestBodyJson(toJsonMap(input.getRequestBodyJson()))
                 .contentType(input.getContentType())
                 .timeoutMs(input.getTimeoutMs())
                 .inputData(input.getInputData())
@@ -1122,6 +1791,25 @@ public class TestCaseServiceImpl implements TestCaseService {
                 .build();
     }
 
+    /**
+     * Serializes a {@code Map<String, Object>} to a JSON string for DB persistence.
+     * Returns {@code null} when the map is null or empty.
+     */
+    private String toJsonString(java.util.Map<String, Object> map) {
+        if (map == null) {
+            return null;
+        }
+        try {
+            return objectMapper.writeValueAsString(map);
+        } catch (Exception ex) {
+            throw new BadRequestException("Invalid JSON value.");
+        }
+    }
+
+    /**
+     * Serializes a {@link JsonNode} to a JSON string for DB persistence (used by AI flow).
+     * Returns {@code null} when the node is null or a JSON null.
+     */
     private String toJsonString(JsonNode jsonNode) {
         if (jsonNode == null || jsonNode.isNull()) {
             return null;
@@ -1134,6 +1822,27 @@ public class TestCaseServiceImpl implements TestCaseService {
         }
     }
 
+    /**
+     * Deserializes a stored JSON string back to a {@code Map<String, Object>} for API responses.
+     * Returns {@code null} when the string is blank.
+     */
+    @SuppressWarnings("unchecked")
+    private java.util.Map<String, Object> toJsonMap(String json) {
+        if (!hasText(json)) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(json, java.util.Map.class);
+        } catch (Exception ex) {
+            // Stored value might not be a JSON object (e.g. array, primitive) — return as-is wrapped
+            log.warn("[TestCaseService] Could not deserialize stored JSON to Map — field will be null. Value: {}", json);
+            return null;
+        }
+    }
+
+    /**
+     * Deserializes a stored JSON string to a {@link JsonNode} — used only internally for AI flow.
+     */
     private JsonNode toJsonNode(String json) {
         if (!hasText(json)) {
             return null;
@@ -1185,5 +1894,60 @@ public class TestCaseServiceImpl implements TestCaseService {
             });
         }
         return endpoint;
+    }
+
+    private void sanitizeTestCaseDto(AiTestCaseItemDto itemDto, HttpMethod endpointMethod) {
+        if (itemDto == null || endpointMethod != HttpMethod.GET || itemDto.getUrl() == null) {
+            return;
+        }
+
+        String url = itemDto.getUrl();
+        String pathPart = url.contains("?") ? url.substring(0, url.indexOf("?")) : url;
+
+        // Check if path contains suspicious reserved characters
+        boolean hasSuspicious = pathPart.contains("#") || pathPart.contains(" ") || pathPart.contains("&") ||
+                                pathPart.contains("=") || pathPart.contains("+") || pathPart.contains("%");
+
+        if (hasSuspicious) {
+            boolean expects400 = false;
+            if (itemDto.getAssertions() != null) {
+                for (AiTestCaseAssertionDto assertionDto : itemDto.getAssertions()) {
+                    if ("STATUS_CODE".equalsIgnoreCase(assertionDto.getAssertionType()) && "400".equals(assertionDto.getExpectedValue())) {
+                        expects400 = true;
+                        break;
+                    }
+                }
+            }
+
+            if (expects400) {
+                int lastSlash = pathPart.lastIndexOf("/");
+                if (lastSlash != -1) {
+                    String safeId = (pathPart.contains("customers") || pathPart.contains("customer")) ? "UNKNOWN_CUSTOMER_ID" : "UNKNOWN_ID";
+                    String newPathPart = pathPart.substring(0, lastSlash + 1) + safeId;
+                    String newUrl = url.contains("?") ? newPathPart + url.substring(url.indexOf("?")) : newPathPart;
+                    itemDto.setUrl(newUrl);
+
+                    if (itemDto.getAssertions() != null) {
+                        for (AiTestCaseAssertionDto assertionDto : itemDto.getAssertions()) {
+                            if ("STATUS_CODE".equalsIgnoreCase(assertionDto.getAssertionType())) {
+                                assertionDto.setExpectedValue("404");
+                            }
+                            if (assertionDto.getJsonPath() != null && 
+                                (assertionDto.getJsonPath().contains("message") || assertionDto.getJsonPath().contains("error"))) {
+                                assertionDto.setJsonPath("$.error");
+                                assertionDto.setExpectedValue("Not Found");
+                                assertionDto.setComparisonOperator("CONTAINS");
+                            }
+                        }
+                    }
+
+                    if (itemDto.getTestName() != null) {
+                        itemDto.setTestName(itemDto.getTestName()
+                            .replace("malformed", "unknown")
+                            .replace("special characters", "unknown ID"));
+                    }
+                }
+            }
+        }
     }
 }

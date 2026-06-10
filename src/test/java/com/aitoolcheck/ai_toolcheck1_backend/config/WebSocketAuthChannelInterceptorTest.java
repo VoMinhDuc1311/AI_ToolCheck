@@ -122,6 +122,7 @@ class WebSocketAuthChannelInterceptorTest {
         if (destination != null) {
             accessor.setDestination(destination);
         }
+        accessor.setLeaveMutable(true);
         return MessageBuilder.createMessage(new byte[0], accessor.getMessageHeaders());
     }
 

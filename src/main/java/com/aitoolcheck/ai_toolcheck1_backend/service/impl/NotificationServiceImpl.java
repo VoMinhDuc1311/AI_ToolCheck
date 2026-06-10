@@ -33,7 +33,7 @@ public class NotificationServiceImpl implements NotificationService {
 
     @Override
     @Transactional
-    public UUID createNotification(
+    public NotificationResponse createNotification(
             AppUser recipient,
             SourceProject project,
             NotificationType type,
@@ -55,10 +55,10 @@ public class NotificationServiceImpl implements NotificationService {
                 .readFlag(false)
                 .build();
 
-        Notification saved = notificationRepository.save(notification);
+        Notification saved = notificationRepository.saveAndFlush(notification);
         log.debug("[NotificationService] Created notification id={} for userId={} type={}",
                 saved.getId(), recipient.getId(), type);
-        return saved.getId();
+        return toResponse(saved);
     }
 
     @Override

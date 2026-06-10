@@ -20,9 +20,13 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.UUID;
 
 @Service
@@ -32,6 +36,7 @@ public class RuleEngineServiceImpl implements RuleEngineService {
 
     private final TestResultRepository testResultRepository;
     private final TestCaseAssertionRepository testCaseAssertionRepository;
+    private final ObjectMapper objectMapper;
 
     @Override
     @Transactional
@@ -212,10 +217,7 @@ public class RuleEngineServiceImpl implements RuleEngineService {
             case ERROR_MESSAGE:
                 return testResult.getErrorMessage();
             case HEADER:
-                // TODO: Support HEADER assertion after adding actualHeadersJson to TestResult.
-                log.warn("[RuleEngine] HEADER assertion is unsupported");
-                throw new UnsupportedOperationException(
-                        "HEADER assertion is not supported because actual headers are not stored");
+                return extractHeaderValue(assertion.getTargetPath(), testResult.getActualResponseHeadersJson());
             case BODY_NOT_NULL:
                 return testResult.getActualResponseJson();
             default:
@@ -344,6 +346,51 @@ public class RuleEngineServiceImpl implements RuleEngineService {
                 .assertionResults(new ArrayList<>())
                 .summaryMessage(errorMessage)
                 .build();
+    }
+
+    /**
+     * Extracts a specific header value from the stored JSON string.
+     *
+     * <p>Header name lookup is case-insensitive (HTTP/1.1 spec).
+     * If {@code actualResponseHeadersJson} is null or blank (e.g. network error or legacy record),
+     * returns a sentinel string that will cause the assertion to FAIL (not ERROR).
+     *
+     * @param headerName              the header name from {@code assertion.targetPath}
+     * @param actualResponseHeadersJson JSON string of captured headers, may be null
+     * @return the header value if found; null if header name not present; or a FAIL-sentinel if headers unavailable
+     */
+    private Object extractHeaderValue(String headerName, String actualResponseHeadersJson) {
+        if (headerName == null || headerName.isBlank()) {
+            log.warn("[RuleEngine] HEADER assertion targetPath (header name) is blank");
+            return null;
+        }
+
+        if (actualResponseHeadersJson == null || actualResponseHeadersJson.isBlank()) {
+            // Headers were not captured (network error or legacy TestResult).
+            // Return a special sentinel — compare() will produce FAIL, not ERROR or exception.
+            log.warn("[RuleEngine] HEADER assertion: actualResponseHeadersJson is null — headers not captured");
+            return "__HEADERS_NOT_CAPTURED__";
+        }
+
+        try {
+            Map<String, String> headers = objectMapper.readValue(
+                    actualResponseHeadersJson,
+                    new TypeReference<Map<String, String>>() {});
+
+            // Case-insensitive lookup
+            String lowerTarget = headerName.trim().toLowerCase(Locale.ROOT);
+            for (Map.Entry<String, String> entry : headers.entrySet()) {
+                if (entry.getKey() != null && entry.getKey().toLowerCase(Locale.ROOT).equals(lowerTarget)) {
+                    return entry.getValue();
+                }
+            }
+            // Header name not found in response
+            log.debug("[RuleEngine] HEADER assertion: header '{}' not found in response headers", headerName);
+            return null;
+        } catch (Exception e) {
+            log.warn("[RuleEngine] HEADER assertion: failed to parse actualResponseHeadersJson: {}", e.getMessage());
+            return null;
+        }
     }
 
     private boolean hasText(String value) {

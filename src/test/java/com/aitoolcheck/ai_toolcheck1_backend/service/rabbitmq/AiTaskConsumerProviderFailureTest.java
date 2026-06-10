@@ -7,6 +7,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.dto.rabbitmq.AiTaskMessage;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.ExecutionStatus;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.JobType;
 import com.aitoolcheck.ai_toolcheck1_backend.enums.LogStatus;
+import com.aitoolcheck.ai_toolcheck1_backend.exception.AiProviderFailureException;
 import com.aitoolcheck.ai_toolcheck1_backend.model.AiJobLog;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceFile;
 import com.aitoolcheck.ai_toolcheck1_backend.model.SourceProject;
@@ -19,6 +20,7 @@ import com.aitoolcheck.ai_toolcheck1_backend.service.AiModelRouterService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.DocumentEnrichmentService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.GeminiApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.LegacyInferenceLogService;
+import com.aitoolcheck.ai_toolcheck1_backend.service.ApiMetadataCleanupService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.OllamaApiClientService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.TestCaseService;
 import com.aitoolcheck.ai_toolcheck1_backend.service.ai.AiProviderErrorClassifier;
@@ -52,6 +54,7 @@ class AiTaskConsumerProviderFailureTest {
     @Mock private AiJsonParserService aiJsonParserService;
     @Mock private AiTaskPersistenceService persistenceService;
     @Mock private LegacyInferenceLogService legacyInferenceLogService;
+    @Mock private ApiMetadataCleanupService apiMetadataCleanupService;
     @Mock private AiJobLogRepository aiJobLogRepository;
     @Mock private SourceProjectRepository sourceProjectRepository;
     @Mock private com.aitoolcheck.ai_toolcheck1_backend.service.AiJobLogService aiJobLogService;
@@ -82,6 +85,7 @@ class AiTaskConsumerProviderFailureTest {
                 aiJsonParserService,
                 persistenceService,
                 legacyInferenceLogService,
+                apiMetadataCleanupService,
                 aiJobLogRepository,
                 sourceProjectRepository,
                 aiJobLogService,
@@ -143,7 +147,7 @@ class AiTaskConsumerProviderFailureTest {
 
         ArgumentCaptor<String> failureCaptor = ArgumentCaptor.forClass(String.class);
         verify(aiJobLogService).markJobAsFailed(eq(jobId), failureCaptor.capture());
-        assertTrue(failureCaptor.getValue().contains("AI_PROVIDER_FAILED"));
+        assertTrue(failureCaptor.getValue().contains(AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED));
         assertFalse(failureCaptor.getValue().contains("DTO_VALIDATION_FAILED"));
 
         verify(legacyInferenceLogService).createLog(
@@ -154,8 +158,8 @@ class AiTaskConsumerProviderFailureTest {
                 eq(null),
                 eq(null),
                 eq(LogStatus.FAILED),
-                eq("AI_PROVIDER_FAILED"));
-        assertTrue(failureCaptor.getValue().contains("AI_PROVIDER_FAILED"));
+                eq(AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED));
+        assertTrue(failureCaptor.getValue().contains(AiProviderFailureException.LLM_ALL_PROVIDERS_FAILED));
 
         verify(persistenceService, never()).persistLegacyInference(any(), any(), any(), any(), any());
         verify(channel).basicAck(10L, false);
