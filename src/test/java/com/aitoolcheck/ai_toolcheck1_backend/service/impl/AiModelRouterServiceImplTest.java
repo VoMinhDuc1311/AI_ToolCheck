@@ -238,6 +238,26 @@ class AiModelRouterServiceImplTest {
     }
 
     @Test
+    void failureAnalysis_preferGemini_routesGeminiBeforeOllama() {
+        when(geminiApiClientService.generateText(eq("failure prompt")))
+                .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
+        when(ollamaApiClientService.generateTextWithModel(eq("failure prompt"), eq("qwen2.5-coder:7b"), eq(90)))
+                .thenReturn("{\"summary\":\"ollama fallback\"}");
+
+        String result = router.executeWithFallbackForSkill(
+                "analyze_test_result",
+                () -> "failure prompt",
+                () -> "failure prompt",
+                raw -> {});
+
+        assertEquals("{\"summary\":\"ollama fallback\"}", result);
+        InOrder inOrder = inOrder(geminiApiClientService, ollamaApiClientService);
+        inOrder.verify(geminiApiClientService).generateText(eq("failure prompt"));
+        inOrder.verify(ollamaApiClientService)
+                .generateTextWithModel(eq("failure prompt"), eq("qwen2.5-coder:7b"), eq(90));
+    }
+
+    @Test
     void generateTestCase_gemini429_thenOllamaSuccess_returnsOllamaResult() {
         when(geminiApiClientService.generateText(anyString()))
                 .thenThrow(AiProviderFailureException.rateLimited("Gemini", "gemini-2.5-flash", 34, null));
