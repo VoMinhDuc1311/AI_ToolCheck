@@ -17,6 +17,33 @@ AI ToolCheck accepts source code ZIP uploads of Spring Boot / legacy Java projec
 
 ---
 
+## Demo Video
+
+Watch the AI ToolCheck demo here:  
+[▶ AI ToolCheck Demo on YouTube](https://youtu.be/74SNE-bm4VE)
+
+---
+
+## Screenshots
+
+### System Overview
+
+![System Overview](docs/screenshots/Tong%20Quat%20He%20Thong.png)
+
+### Landing Page
+
+![Landing Page](docs/screenshots/LandingPage.png)
+
+### Dashboard
+
+![Dashboard](docs/screenshots/DashBoard.png)
+
+### API Endpoints & OpenAPI Preview
+
+![API Endpoints and OpenAPI Preview](docs/screenshots/OpenAPI.png)
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |
