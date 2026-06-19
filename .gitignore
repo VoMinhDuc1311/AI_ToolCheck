@@ -22,11 +22,20 @@ HELP.md
 # 3. Security and local environment config
 # ==========================================
 .env
-.env.*
+*.env
 application-secret.yml
 application-dev.yml
 application-local.yml
+application-prod.yml
+application-prod.properties
 *.properties.local
+# Certificate and key files
+*.pem
+*.key
+*.p12
+*.jks
+# Postman environment files (may contain tokens)
+*postman_environment*.json
 
 # ==========================================
 # 4. Runtime and logs
