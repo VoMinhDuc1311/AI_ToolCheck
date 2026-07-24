@@ -19,8 +19,7 @@ AI ToolCheck accepts source code ZIP uploads of Spring Boot / legacy Java projec
 
 ## Demo Video
 
-Watch the AI ToolCheck demo here:  
-[▶ AI ToolCheck Demo on YouTube](https://youtu.be/74SNE-bm4VE)
+
 
 ---
 
